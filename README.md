@@ -42,7 +42,7 @@ bun run build
 {
   dir = "~/path/to/say/nvim",
   config = function()
-    require("say").setup()
+    require("dictate").setup()
   end,
 }
 ```
@@ -66,7 +66,7 @@ export DEBUG=1  # Enable debug logging
 Plugin configuration:
 
 ```lua
-require("say").setup({
+require("dictate").setup({
   daemon_cmd = nil,             -- Auto-detect (or specify path)
   keymap = '<Leader>d',         -- Toggle keymap (nil to disable)
   ghost_hl = 'Comment',         -- Highlight group for ghost text

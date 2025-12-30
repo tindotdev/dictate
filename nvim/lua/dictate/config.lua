@@ -1,12 +1,12 @@
 local M = {}
 
----@class SayConfig
+---@class DictateConfig
 ---@field daemon_cmd string[]|nil Command to run the daemon
 ---@field keymap string|nil Keymap to toggle dictation
 ---@field ghost_hl string Highlight group for ghost text
 ---@field insert_trailing_space boolean Add space after inserted text
 
----@type SayConfig
+---@type DictateConfig
 local defaults = {
   daemon_cmd = nil, -- Auto-detect
   keymap = '<Leader>d',
@@ -14,7 +14,7 @@ local defaults = {
   insert_trailing_space = true,
 }
 
----@type SayConfig
+---@type DictateConfig
 local config = vim.deepcopy(defaults)
 
 ---Find the daemon command by looking for dist or dev paths
@@ -32,12 +32,12 @@ local function find_daemon_cmd()
   elseif vim.fn.filereadable(dev) == 1 then
     return { 'bun', 'run', dev }
   else
-    error('say: daemon not found at ' .. dist .. ' or ' .. dev .. '. Run `bun run build` in daemon/')
+    error('dictate: daemon not found at ' .. dist .. ' or ' .. dev .. '. Run `bun run build` in daemon/')
   end
 end
 
 ---Setup the plugin configuration
----@param opts SayConfig|nil
+---@param opts DictateConfig|nil
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', defaults, opts or {})
 
@@ -53,7 +53,7 @@ function M.setup(opts)
 end
 
 ---Get the current configuration
----@return SayConfig
+---@return DictateConfig
 function M.get()
   return config
 end

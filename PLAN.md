@@ -39,8 +39,8 @@ say/
     dist/                   # Built output
   nvim/
     plugin/
-      say.lua               # Auto-load commands
-    lua/say/
+      dictate.lua           # Auto-load commands
+    lua/dictate/
       init.lua              # Main module, setup()
       job.lua               # Daemon lifecycle
       ui.lua                # Ghost text rendering
@@ -102,30 +102,32 @@ say/
 
 ### Phase 6: Neovim Plugin
 
-**File: `nvim/lua/say/config.lua`**
+**Note:** The Lua module is named `dictate` (not `say`) to avoid conflict with plenary.nvim's `say` module.
+
+**File: `nvim/lua/dictate/config.lua`**
 - Default options: `daemon_cmd`, `keymap`, `ghost_hl`, `insert_trailing_space`
 - Auto-detect daemon path (dist or dev)
 
-**File: `nvim/lua/say/job.lua`**
+**File: `nvim/lua/dictate/job.lua`**
 - `jobstart()` daemon process
 - Parse JSONL from stdout
 - Dispatch to `ui.lua` handlers
 - `send()` JSONL to stdin
 - State tracking: stopped/connecting/ready/recording
 
-**File: `nvim/lua/say/ui.lua`**
+**File: `nvim/lua/dictate/ui.lua`**
 - On `speech_started`: capture cursor position
 - On `delta`: show ghost text (inline `virt_text`) at cursor
 - On `final`: clear ghost, insert text at captured position, advance cursor
 
-**File: `nvim/lua/say/init.lua`**
+**File: `nvim/lua/dictate/init.lua`**
 - `setup(opts)` function
 - Register `:DictateToggle`, `:DictateStart`, `:DictateStop` commands
 - Optional keymap (`<Leader>d`)
 
-**File: `nvim/plugin/say.lua`**
+**File: `nvim/plugin/dictate.lua`**
 - Guard against double-load
-- Provide `:SaySetup` fallback command
+- Provide `:DictateSetup` fallback command
 
 ### Phase 7: Testing
 
@@ -160,11 +162,11 @@ say/
 7. `say/daemon/src/pipewire.ts` - audio capture
 8. `say/daemon/src/realtime.ts` - WebSocket client
 9. `say/daemon/src/main.ts` - orchestration
-10. `say/nvim/lua/say/config.lua` - plugin config
-11. `say/nvim/lua/say/job.lua` - daemon management
-12. `say/nvim/lua/say/ui.lua` - ghost text rendering
-13. `say/nvim/lua/say/init.lua` - plugin entry
-14. `say/nvim/plugin/say.lua` - auto-load
+10. `say/nvim/lua/dictate/config.lua` - plugin config
+11. `say/nvim/lua/dictate/job.lua` - daemon management
+12. `say/nvim/lua/dictate/ui.lua` - ghost text rendering
+13. `say/nvim/lua/dictate/init.lua` - plugin entry
+14. `say/nvim/plugin/dictate.lua` - auto-load
 
 ## Milestone 1 Scope (This Implementation)
 
@@ -192,5 +194,5 @@ export OPENAI_STT_MODEL="gpt-4o-mini-transcribe"  # optional
 export OPENAI_STT_PROMPT="..."  # optional
 
 # Neovim setup (LazyVim example)
-{ dir = "~/path/to/say/nvim", config = function() require("say").setup() end }
+{ dir = "~/path/to/say/nvim", config = function() require("dictate").setup() end }
 ```

@@ -4,6 +4,8 @@ import type { Config } from './config.js';
 import { emitDebug } from './protocol.js';
 
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
+// The realtime model for the WebSocket connection (not the transcription model)
+const REALTIME_MODEL = 'gpt-4o-mini-realtime-preview';
 
 export interface RealtimeEvents {
   open: [];
@@ -30,8 +32,8 @@ export class RealtimeClient extends EventEmitter<RealtimeEvents> {
       return;
     }
 
-    const url = `${REALTIME_URL}?model=${this.config.model}`;
-    emitDebug(`Connecting to ${url}`);
+    const url = `${REALTIME_URL}?model=${REALTIME_MODEL}`;
+    emitDebug(`Connecting to ${url} (transcription model: ${this.config.model})`);
 
     this.ws = new WebSocket(url, {
       headers: {
@@ -72,9 +74,10 @@ export class RealtimeClient extends EventEmitter<RealtimeEvents> {
     const sessionConfig = {
       type: 'session.update',
       session: {
+        modalities: ['text'],  // Transcription-only, no audio response
         input_audio_format: 'pcm16',
         input_audio_transcription: {
-          model: this.config.model,
+          model: this.config.model,  // The transcription model (e.g., gpt-4o-mini-transcribe)
           ...(this.config.prompt && { prompt: this.config.prompt }),
         },
         turn_detection: {

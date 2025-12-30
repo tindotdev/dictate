@@ -1,7 +1,7 @@
 local M = {}
-local config = require('say.config')
+local config = require('dictate.config')
 
-local ns_id = vim.api.nvim_create_namespace('say_ghost')
+local ns_id = vim.api.nvim_create_namespace('dictate_ghost')
 
 -- Track ghost text extmarks per item_id
 ---@type table<string, integer> item_id -> extmark_id
@@ -91,7 +91,7 @@ function M.on_final(item_id, text)
   -- Insert text at captured cursor position
   local ok, err = pcall(vim.api.nvim_buf_set_text, bufnr, line, col, line, col, { insert_text })
   if not ok then
-    vim.notify('say: failed to insert text: ' .. tostring(err), vim.log.levels.ERROR)
+    vim.notify('dictate: failed to insert text: ' .. tostring(err), vim.log.levels.ERROR)
     return
   end
 

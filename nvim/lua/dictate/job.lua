@@ -1,6 +1,6 @@
 local M = {}
-local config = require('say.config')
-local ui = require('say.ui')
+local config = require('dictate.config')
+local ui = require('dictate.ui')
 
 ---@type integer|nil
 local job_id = nil
@@ -44,7 +44,7 @@ function M.handle_message(msg)
   if t == 'status' then
     state = msg.state
     if state == 'error' then
-      vim.notify('say: ' .. (msg.message or 'unknown error'), vim.log.levels.ERROR)
+      vim.notify('dictate: ' .. (msg.message or 'unknown error'), vim.log.levels.ERROR)
     end
   elseif t == 'speech_started' then
     ui.on_speech_started(msg.item_id)
@@ -55,11 +55,11 @@ function M.handle_message(msg)
   elseif t == 'final' then
     ui.on_final(msg.item_id, msg.text)
   elseif t == 'error' then
-    vim.notify('say: [' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown'), vim.log.levels.ERROR)
+    vim.notify('dictate: [' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown'), vim.log.levels.ERROR)
   elseif t == 'debug' then
     -- Debug messages only shown when debug is enabled
-    if vim.g.say_debug then
-      vim.notify('say debug: ' .. (msg.message or ''), vim.log.levels.DEBUG)
+    if vim.g.dictate_debug then
+      vim.notify('dictate debug: ' .. (msg.message or ''), vim.log.levels.DEBUG)
     end
   end
 end
@@ -83,7 +83,7 @@ function M.start()
 
   local cfg = config.get()
   if not cfg.daemon_cmd then
-    vim.notify('say: daemon_cmd not configured', vim.log.levels.ERROR)
+    vim.notify('dictate: daemon_cmd not configured', vim.log.levels.ERROR)
     return
   end
 
@@ -99,7 +99,7 @@ function M.start()
       vim.schedule(function()
         for _, line in ipairs(data) do
           if line and line ~= '' then
-            vim.notify('say daemon: ' .. line, vim.log.levels.WARN)
+            vim.notify('dictate daemon: ' .. line, vim.log.levels.WARN)
           end
         end
       end)
@@ -111,7 +111,7 @@ function M.start()
         line_buffer = ''
         ui.clear_all()
         if code ~= 0 then
-          vim.notify('say: daemon exited with code ' .. code, vim.log.levels.WARN)
+          vim.notify('dictate: daemon exited with code ' .. code, vim.log.levels.WARN)
         end
       end)
     end,
@@ -120,7 +120,7 @@ function M.start()
   })
 
   if job_id <= 0 then
-    vim.notify('say: failed to start daemon', vim.log.levels.ERROR)
+    vim.notify('dictate: failed to start daemon', vim.log.levels.ERROR)
     job_id = nil
     return
   end

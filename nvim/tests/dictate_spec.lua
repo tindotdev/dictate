@@ -1,13 +1,13 @@
--- Tests for the say plugin
+-- Tests for the dictate plugin
 -- Run with: nvim --headless -c "PlenaryBustedDirectory tests/ {minimal_init = 'tests/minimal_init.lua'}"
 
-describe('say.config', function()
-  local config = require('say.config')
+describe('dictate.config', function()
+  local config = require('dictate.config')
 
   before_each(function()
     -- Reset to defaults before each test
-    package.loaded['say.config'] = nil
-    config = require('say.config')
+    package.loaded['dictate.config'] = nil
+    config = require('dictate.config')
   end)
 
   it('has default values', function()
@@ -42,22 +42,22 @@ describe('say.config', function()
   end)
 end)
 
-describe('say.ui', function()
-  local ui = require('say.ui')
+describe('dictate.ui', function()
+  local ui = require('dictate.ui')
   local ns_id
 
   before_each(function()
     -- Reset UI state
-    package.loaded['say.ui'] = nil
-    package.loaded['say.config'] = nil
+    package.loaded['dictate.ui'] = nil
+    package.loaded['dictate.config'] = nil
 
     -- Setup config with defaults
-    local config = require('say.config')
+    local config = require('dictate.config')
     config.setup({
       daemon_cmd = { 'echo', 'test' },
     })
 
-    ui = require('say.ui')
+    ui = require('dictate.ui')
     ns_id = ui.get_namespace()
 
     -- Create a test buffer
@@ -122,20 +122,20 @@ describe('say.ui', function()
   end)
 end)
 
-describe('say.job', function()
-  local job = require('say.job')
+describe('dictate.job', function()
+  local job = require('dictate.job')
 
   before_each(function()
-    package.loaded['say.job'] = nil
-    package.loaded['say.ui'] = nil
-    package.loaded['say.config'] = nil
+    package.loaded['dictate.job'] = nil
+    package.loaded['dictate.ui'] = nil
+    package.loaded['dictate.config'] = nil
 
-    local config = require('say.config')
+    local config = require('dictate.config')
     config.setup({
       daemon_cmd = { 'echo', 'test' },
     })
 
-    job = require('say.job')
+    job = require('dictate.job')
   end)
 
   after_each(function()

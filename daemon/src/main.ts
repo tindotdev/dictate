@@ -1,4 +1,5 @@
 import * as readline from 'readline';
+import * as path from 'path';
 import { loadConfig } from './config.js';
 import {
   ClientMessageSchema,
@@ -12,6 +13,29 @@ import {
 } from './protocol.js';
 import { AudioCapture } from './pipewire.js';
 import { RealtimeClient } from './realtime.js';
+
+// Load .env file from daemon directory synchronously
+const daemonDir = path.dirname(Bun.main);
+const envPath = path.join(daemonDir, '..', '.env');
+try {
+  const envFile = Bun.file(envPath);
+  if (await envFile.exists()) {
+    const content = await envFile.text();
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIndex = trimmed.indexOf('=');
+      if (eqIndex === -1) continue;
+      const key = trimmed.slice(0, eqIndex).trim();
+      const value = trimmed.slice(eqIndex + 1).trim().replace(/^["']|["']$/g, '');
+      if (!process.env[key]) {
+        process.env[key] = value;
+      }
+    }
+  }
+} catch {
+  // .env file doesn't exist or can't be read, that's fine
+}
 
 // Load configuration
 let config: ReturnType<typeof loadConfig>;
