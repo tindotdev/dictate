@@ -1,0 +1,5 @@
+{
+  "name": "say",
+  "private": true,
+  "workspaces": ["daemon"]
+}
