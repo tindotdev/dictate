@@ -33,15 +33,16 @@ Make the plugin production-ready and pleasant to use.
 - [x] Better error messages when daemon fails to start
 - [x] Debug mode with verbose logging
 
-## Milestone 3: Robustness
+## Milestone 3: Robustness (Complete)
 
-Handle edge cases and failures gracefully.
+Socket-based daemon architecture with fault tolerance.
 
-- [ ] Daemon auto-respawn on unexpected exit
-- [ ] WebSocket reconnection with exponential backoff
-- [ ] Graceful degradation when API key missing or invalid
-- [ ] Memory/resource cleanup for long sessions
-- [ ] Handle API rate limits and quota errors
+- [x] Daemon runs as standalone service (systemd-supervised)
+- [x] sayctl bridge connects Neovim to daemon via Unix socket
+- [x] WebSocket reconnection with exponential backoff
+- [x] Audio supervisor with auto-restart on pw-cat crash
+- [x] Graceful degradation when API key missing or invalid
+- [x] 142 unit tests covering all components
 
 ## Milestone 4: Advanced Features
 

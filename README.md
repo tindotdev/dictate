@@ -88,8 +88,11 @@ require("dictate").setup({
 ```lua
 local dictate = require("dictate")
 
-dictate.is_running()  -- Returns true if daemon is active
-dictate.get_state()   -- Returns: 'stopped'|'connecting'|'ready'|'recording'|'error'
+dictate.is_running()   -- Returns true if sayctl process is active
+dictate.get_state()    -- Returns: 'stopped'|'connecting'|'connected'|'idle'|'listening'|'error'
+dictate.is_active()    -- Returns true if actively listening
+dictate.is_audio_ok()  -- Returns true if audio capture is working
+dictate.is_ws_ok()     -- Returns true if WebSocket is connected
 ```
 
 ## Commands
@@ -116,18 +119,21 @@ bun run build
 ## Architecture
 
 ```
-┌─────────────┐    stdio JSONL    ┌──────────────┐    WebSocket    ┌─────────────┐
-│   Neovim    │◄─────────────────►│   Daemon     │◄───────────────►│ OpenAI API  │
-│  (Lua)      │                   │ (TypeScript) │                 │  Realtime   │
-└─────────────┘                   └──────────────┘                 └─────────────┘
-                                        ▲
-                                        │ spawn
-                                        ▼
-                                  ┌──────────────┐
-                                  │   pw-cat     │
-                                  │  (PipeWire)  │
-                                  └──────────────┘
+┌─────────────┐  stdio   ┌─────────┐  Unix Socket  ┌──────────────┐  WebSocket  ┌─────────────┐
+│   Neovim    │◄────────►│ sayctl  │◄─────────────►│    Daemon    │◄───────────►│ OpenAI API  │
+│   (Lua)     │  JSONL   │ (bridge)│               │ (TypeScript) │             │  Realtime   │
+└─────────────┘          └─────────┘               └──────────────┘             └─────────────┘
+                                                          ▲
+                                                          │ supervises
+                                                          ▼
+                                                   ┌──────────────┐
+                                                   │    pw-cat    │
+                                                   │  (PipeWire)  │
+                                                   └──────────────┘
 ```
+
+The daemon runs as a standalone service (optionally via systemd) and survives Neovim restarts.
+Multiple Neovim instances can connect to the same daemon.
 
 ## License
 
