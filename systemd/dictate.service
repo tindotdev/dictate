@@ -1,17 +1,17 @@
 [Unit]
-Description=Say Dictation Daemon
+Description=Dictate Daemon
 After=pipewire.service
 
 [Service]
 Type=simple
 Environment=PATH=%h/.local/bin:%h/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bun run %h/.local/share/nvim/lazy/say/daemon/dist/main.js
+ExecStart=/usr/bin/env bun run %h/.local/share/nvim/lazy/dictate/daemon/dist/main.js
 Restart=on-failure
 RestartSec=5
-EnvironmentFile=-%h/.config/say/env
+EnvironmentFile=-%h/.config/dictate/env
 
 # Note: Bun doesn't support systemd socket activation (fd passing).
-# The daemon creates its own socket at $XDG_RUNTIME_DIR/say/say.sock
+# The daemon creates its own socket at $XDG_RUNTIME_DIR/dictate/dictate.sock
 
 [Install]
 WantedBy=default.target

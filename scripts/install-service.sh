@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install say daemon as a systemd user service
+# Install dictate daemon as a systemd user service
 #
 # This script:
 # 1. Checks for bun in PATH
@@ -29,14 +29,14 @@ for arg in "$@"; do
       echo "Options:"
       echo "  --no-lazy    Skip creating lazy.nvim symlink"
       echo ""
-      echo "By default, creates symlink at ~/.local/share/nvim/lazy/say"
+      echo "By default, creates symlink at ~/.local/share/nvim/lazy/dictate"
       echo "for lazy.nvim plugin manager integration."
       exit 0
       ;;
   esac
 done
 
-echo "=== Say Daemon Installer ==="
+echo "=== Dictate Daemon Installer ==="
 echo ""
 
 # -----------------------------------------------------------------------------
@@ -79,7 +79,7 @@ echo "  Daemon: $DAEMON_PATH"
 echo ""
 echo "Creating directories..."
 mkdir -p ~/.config/systemd/user
-mkdir -p ~/.config/say
+mkdir -p ~/.config/dictate
 
 # -----------------------------------------------------------------------------
 # Install systemd service
@@ -87,44 +87,44 @@ mkdir -p ~/.config/say
 echo "Installing systemd service..."
 
 # Copy service file
-cp "$PROJECT_ROOT/systemd/say.service" ~/.config/systemd/user/
+cp "$PROJECT_ROOT/systemd/dictate.service" ~/.config/systemd/user/
 
 # Update ExecStart path to use actual daemon location
 ESCAPED_PATH=$(printf '%s\n' "$DAEMON_PATH" | sed 's/[\/&]/\\&/g')
-sed -i "s|%h/.local/share/nvim/lazy/say/daemon/dist/main.js|$ESCAPED_PATH|g" \
-  ~/.config/systemd/user/say.service
+sed -i "s|%h/.local/share/nvim/lazy/dictate/daemon/dist/main.js|$ESCAPED_PATH|g" \
+  ~/.config/systemd/user/dictate.service
 
 # Update PATH to include bun's directory
 # The service file has a default PATH, we prepend bun's location
 sed -i "s|Environment=PATH=|Environment=PATH=$BUN_DIR:|g" \
-  ~/.config/systemd/user/say.service
+  ~/.config/systemd/user/dictate.service
 
-echo "  Installed: ~/.config/systemd/user/say.service"
+echo "  Installed: ~/.config/systemd/user/dictate.service"
 
 # -----------------------------------------------------------------------------
 # Create env file
 # -----------------------------------------------------------------------------
-if [[ ! -f ~/.config/say/env ]]; then
+if [[ ! -f ~/.config/dictate/env ]]; then
   echo ""
   echo "Setting up API key..."
 
   if [[ -n "$OPENAI_API_KEY" ]]; then
-    echo "OPENAI_API_KEY=$OPENAI_API_KEY" > ~/.config/say/env
-    echo "  Created ~/.config/say/env (using existing OPENAI_API_KEY)"
+    echo "OPENAI_API_KEY=$OPENAI_API_KEY" > ~/.config/dictate/env
+    echo "  Created ~/.config/dictate/env (using existing OPENAI_API_KEY)"
   else
     read -p "  Enter OPENAI_API_KEY (or press Enter to skip): " api_key
     if [[ -z "$api_key" ]]; then
       echo "  Warning: No API key provided."
-      echo "  Set OPENAI_API_KEY in ~/.config/say/env before starting the service."
-      touch ~/.config/say/env
+      echo "  Set OPENAI_API_KEY in ~/.config/dictate/env before starting the service."
+      touch ~/.config/dictate/env
     else
-      echo "OPENAI_API_KEY=$api_key" > ~/.config/say/env
-      echo "  Created ~/.config/say/env"
+      echo "OPENAI_API_KEY=$api_key" > ~/.config/dictate/env
+      echo "  Created ~/.config/dictate/env"
     fi
   fi
-  chmod 600 ~/.config/say/env
+  chmod 600 ~/.config/dictate/env
 else
-  echo "  ~/.config/say/env already exists, skipping"
+  echo "  ~/.config/dictate/env already exists, skipping"
 fi
 
 # -----------------------------------------------------------------------------
@@ -135,7 +135,7 @@ if [[ "$LAZY_SYMLINK" == "true" ]]; then
   echo "Creating lazy.nvim symlink..."
 
   LAZY_DIR="$HOME/.local/share/nvim/lazy"
-  LAZY_LINK="$LAZY_DIR/say"
+  LAZY_LINK="$LAZY_DIR/dictate"
 
   mkdir -p "$LAZY_DIR"
 
@@ -160,22 +160,28 @@ fi
 echo ""
 echo "Starting service..."
 
-# Stop old socket-based setup if running
+# Stop old say-based setup if running (migration from old naming)
+systemctl --user stop say.service 2>/dev/null || true
+systemctl --user disable say.service 2>/dev/null || true
 systemctl --user stop say.socket 2>/dev/null || true
 systemctl --user disable say.socket 2>/dev/null || true
 
+# Stop old dictate socket-based setup if running
+systemctl --user stop dictate.socket 2>/dev/null || true
+systemctl --user disable dictate.socket 2>/dev/null || true
+
 # Reload and start
 systemctl --user daemon-reload
-systemctl --user enable say.service
-systemctl --user restart say.service
+systemctl --user enable dictate.service
+systemctl --user restart dictate.service
 
 # Check status
 sleep 1
-if systemctl --user is-active --quiet say.service; then
+if systemctl --user is-active --quiet dictate.service; then
   echo "  Service is running"
 else
   echo "  Warning: Service may have failed to start"
-  echo "  Check: journalctl --user -u say.service"
+  echo "  Check: journalctl --user -u dictate.service"
 fi
 
 # -----------------------------------------------------------------------------
@@ -185,17 +191,17 @@ echo ""
 echo "=== Installation Complete ==="
 echo ""
 echo "Commands:"
-echo "  systemctl --user status say.service   # Check status"
-echo "  systemctl --user restart say.service  # Restart"
-echo "  journalctl --user -u say.service -f   # View logs"
+echo "  systemctl --user status dictate.service   # Check status"
+echo "  systemctl --user restart dictate.service  # Restart"
+echo "  journalctl --user -u dictate.service -f   # View logs"
 echo ""
-echo "Socket: /run/user/$(id -u)/say/say.sock"
+echo "Socket: /run/user/$(id -u)/dictate/dictate.sock"
 echo ""
 
 # -----------------------------------------------------------------------------
 # Troubleshooting hints
 # -----------------------------------------------------------------------------
-if ! systemctl --user is-active --quiet say.service; then
+if ! systemctl --user is-active --quiet dictate.service; then
   echo "=== Troubleshooting ==="
   echo ""
   echo "If the service fails to start, check:"
@@ -204,12 +210,12 @@ if ! systemctl --user is-active --quiet say.service; then
   echo "   which bun && bun --version"
   echo ""
   echo "2. API key - ensure it's set:"
-  echo "   cat ~/.config/say/env"
+  echo "   cat ~/.config/dictate/env"
   echo ""
   echo "3. Daemon build - ensure dist exists:"
   echo "   ls -la $PROJECT_ROOT/daemon/dist/main.js"
   echo ""
   echo "4. Service logs:"
-  echo "   journalctl --user -u say.service --no-pager -n 50"
+  echo "   journalctl --user -u dictate.service --no-pager -n 50"
   echo ""
 fi
