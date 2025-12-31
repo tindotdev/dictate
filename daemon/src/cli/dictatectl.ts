@@ -9,7 +9,7 @@ import {
   resetBackoff,
   type BackoffState,
 } from '../backoff.js';
-import type { SayctlMessage } from '../protocol.js';
+import type { DictatectlMessage } from '../protocol.js';
 
 // ============================================================================
 // Constants
@@ -25,17 +25,17 @@ const CONNECT_TIMEOUT_MS = 2000;
 function getSocketPath(): string {
   const xdgRuntime = process.env.XDG_RUNTIME_DIR;
   if (xdgRuntime) {
-    return path.join(xdgRuntime, 'say', 'say.sock');
+    return path.join(xdgRuntime, 'dictate', 'dictate.sock');
   }
   // Fallback
-  return path.join(process.env.HOME ?? '/tmp', '.local', 'state', 'say', 'say.sock');
+  return path.join(process.env.HOME ?? '/tmp', '.local', 'state', 'dictate', 'dictate.sock');
 }
 
 // ============================================================================
 // Output helpers
 // ============================================================================
 
-function emit(msg: SayctlMessage): void {
+function emit(msg: DictatectlMessage): void {
   const line = JSON.stringify(msg);
   process.stdout.write(line + '\n');
 }
@@ -48,9 +48,9 @@ function emitDaemonUnavailable(hint?: string): void {
   emit({
     type: 'error',
     code: 'DAEMON_UNAVAILABLE',
-    message: 'Cannot connect to say daemon',
+    message: 'Cannot connect to dictate daemon',
     recoverable: false,
-    hint: hint ?? 'Run: systemctl --user enable --now say.socket',
+    hint: hint ?? 'Run: systemctl --user enable --now dictate.service',
   });
 }
 
@@ -58,7 +58,7 @@ function emitDaemonUnavailable(hint?: string): void {
 // Connection handling
 // ============================================================================
 
-class SayctlBridge {
+class DictatectlBridge {
   private socket: net.Socket | null = null;
   private backoffState: BackoffState;
   private socketPath: string;
@@ -81,9 +81,9 @@ class SayctlBridge {
     if (!fs.existsSync(this.socketPath)) {
       const dir = path.dirname(this.socketPath);
       if (!fs.existsSync(dir)) {
-        emitDaemonUnavailable('Socket directory does not exist. Run: systemctl --user enable --now say.socket');
+        emitDaemonUnavailable('Socket directory does not exist. Run: systemctl --user enable --now dictate.service');
       } else {
-        emitDaemonUnavailable('Socket file does not exist. Run: systemctl --user enable --now say.socket');
+        emitDaemonUnavailable('Socket file does not exist. Run: systemctl --user enable --now dictate.service');
       }
       process.exit(1);
     }
@@ -242,8 +242,8 @@ class SayctlBridge {
 // Main
 // ============================================================================
 
-const bridge = new SayctlBridge();
+const bridge = new DictatectlBridge();
 bridge.start().catch((err) => {
-  console.error(`sayctl error: ${err.message}`);
+  console.error(`dictatectl error: ${err.message}`);
   process.exit(1);
 });

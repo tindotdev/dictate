@@ -47,10 +47,10 @@ export interface SocketServerOptions {
 export function getDefaultSocketPath(): string {
   const xdgRuntime = process.env.XDG_RUNTIME_DIR;
   if (xdgRuntime) {
-    return path.join(xdgRuntime, 'say', 'say.sock');
+    return path.join(xdgRuntime, 'dictate', 'dictate.sock');
   }
   // Fallback
-  return path.join(process.env.HOME ?? '/tmp', '.local', 'state', 'say', 'say.sock');
+  return path.join(process.env.HOME ?? '/tmp', '.local', 'state', 'dictate', 'dictate.sock');
 }
 
 function ensureSocketDir(socketPath: string): void {

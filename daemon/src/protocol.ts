@@ -20,7 +20,7 @@ export type DaemonState = z.infer<typeof DaemonStateSchema>;
 // ============================================================================
 
 export const ErrorCodeSchema = z.enum([
-  // sayctl errors
+  // dictatectl errors
   'DAEMON_UNAVAILABLE', // Socket doesn't exist (systemd not set up)
 
   // Daemon errors
@@ -131,22 +131,22 @@ export const DaemonMessageSchema = z.discriminatedUnion('type', [
 export type DaemonMessage = z.infer<typeof DaemonMessageSchema>;
 
 // ============================================================================
-// sayctl-specific status events (emitted before daemon connection)
+// dictatectl-specific status events (emitted before daemon connection)
 // These use a simpler status format without audio_ok/ws_ok
 // ============================================================================
 
-export const SayctlStateSchema = z.enum([
+export const DictatectlStateSchema = z.enum([
   'connecting',     // Initial connection attempt
   'connected',      // Socket connected, forwarding
   'reconnecting',   // Lost connection, retrying
 ]);
 
-export type SayctlState = z.infer<typeof SayctlStateSchema>;
+export type DictatectlState = z.infer<typeof DictatectlStateSchema>;
 
-export const SayctlMessageSchema = z.discriminatedUnion('type', [
+export const DictatectlMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('status'),
-    state: SayctlStateSchema,
+    state: DictatectlStateSchema,
   }),
   z.object({
     type: z.literal('error'),
@@ -157,7 +157,7 @@ export const SayctlMessageSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
-export type SayctlMessage = z.infer<typeof SayctlMessageSchema>;
+export type DictatectlMessage = z.infer<typeof DictatectlMessageSchema>;
 
 // ============================================================================
 // Protocol version
