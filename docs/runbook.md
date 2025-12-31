@@ -94,23 +94,27 @@ bun src/cli/sayctl.ts
 :lua print(require('dictate.job').is_ws_ok())
 ```
 
-## Systemd (Optional)
+## Systemd
 
 ```bash
-# Install service
+# Install service (creates lazy.nvim symlink by default)
 ./scripts/install-service.sh
 
-# Enable socket activation
-systemctl --user enable say.socket
-systemctl --user start say.socket
+# Or skip the lazy.nvim symlink
+./scripts/install-service.sh --no-lazy
 
 # Check status
-systemctl --user status say.socket
 systemctl --user status say.service
 
 # View logs
 journalctl --user -u say.service -f
+
+# Restart after code changes
+cd daemon && bun run build
+systemctl --user restart say.service
 ```
+
+The service auto-starts on login and runs continuously.
 
 ## Troubleshooting
 
