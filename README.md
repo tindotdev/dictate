@@ -1,4 +1,4 @@
-# say
+# dictate
 
 Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcription API.
 
@@ -31,7 +31,7 @@ sudo apt install pipewire
 ### Build the Daemon
 
 ```bash
-cd say/daemon
+cd dictate/daemon
 bun install
 bun run build
 ```
@@ -40,7 +40,7 @@ bun run build
 
 ```lua
 {
-  dir = "~/path/to/say/nvim",
+  dir = "~/path/to/dictate/nvim",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },
@@ -88,7 +88,7 @@ require("dictate").setup({
 ```lua
 local dictate = require("dictate")
 
-dictate.is_running()   -- Returns true if sayctl process is active
+dictate.is_running()   -- Returns true if dictatectl process is active
 dictate.get_state()    -- Returns: 'stopped'|'connecting'|'connected'|'idle'|'listening'|'error'
 dictate.is_active()    -- Returns true if actively listening
 dictate.is_audio_ok()  -- Returns true if audio capture is working
@@ -119,17 +119,17 @@ bun run build
 ## Architecture
 
 ```
-┌─────────────┐  stdio   ┌─────────┐  Unix Socket  ┌──────────────┐  WebSocket  ┌─────────────┐
-│   Neovim    │◄────────►│ sayctl  │◄─────────────►│    Daemon    │◄───────────►│ OpenAI API  │
-│   (Lua)     │  JSONL   │ (bridge)│               │ (TypeScript) │             │  Realtime   │
-└─────────────┘          └─────────┘               └──────────────┘             └─────────────┘
-                                                          ▲
-                                                          │ supervises
-                                                          ▼
-                                                   ┌──────────────┐
-                                                   │    pw-cat    │
-                                                   │  (PipeWire)  │
-                                                   └──────────────┘
+┌─────────────┐  stdio   ┌────────────┐  Unix Socket  ┌──────────────┐  WebSocket  ┌─────────────┐
+│   Neovim    │◄────────►│ dictatectl │◄─────────────►│    Daemon    │◄───────────►│ OpenAI API  │
+│   (Lua)     │  JSONL   │  (bridge)  │               │ (TypeScript) │             │  Realtime   │
+└─────────────┘          └────────────┘               └──────────────┘             └─────────────┘
+                                                             ▲
+                                                             │ supervises
+                                                             ▼
+                                                      ┌──────────────┐
+                                                      │    pw-cat    │
+                                                      │  (PipeWire)  │
+                                                      └──────────────┘
 ```
 
 The daemon runs as a standalone service (optionally via systemd) and survives Neovim restarts.

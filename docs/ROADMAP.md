@@ -38,7 +38,7 @@ Make the plugin production-ready and pleasant to use.
 Socket-based daemon architecture with fault tolerance.
 
 - [x] Daemon runs as standalone service (systemd-supervised)
-- [x] sayctl bridge connects Neovim to daemon via Unix socket
+- [x] dictatectl bridge connects Neovim to daemon via Unix socket
 - [x] WebSocket reconnection with exponential backoff
 - [x] Audio supervisor with auto-restart on pw-cat crash
 - [x] Graceful degradation when API key missing or invalid

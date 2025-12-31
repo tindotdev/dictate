@@ -68,12 +68,12 @@ cd daemon
 DEBUG=1 bun src/main.ts
 ```
 
-### Connect with sayctl
+### Connect with dictatectl
 
 ```bash
 # In another terminal
 cd daemon
-bun src/cli/sayctl.ts
+bun src/cli/dictatectl.ts
 
 # Send commands via stdin:
 {"type":"start_listening"}
@@ -104,14 +104,14 @@ bun src/cli/sayctl.ts
 ./scripts/install-service.sh --no-lazy
 
 # Check status
-systemctl --user status say.service
+systemctl --user status dictate.service
 
 # View logs
-journalctl --user -u say.service -f
+journalctl --user -u dictate.service -f
 
 # Restart after code changes
 cd daemon && bun run build
-systemctl --user restart say.service
+systemctl --user restart dictate.service
 ```
 
 The service auto-starts on login and runs continuously.
@@ -122,10 +122,10 @@ The service auto-starts on login and runs continuously.
 
 ```bash
 # Check socket exists
-ls -la $XDG_RUNTIME_DIR/say/
+ls -la $XDG_RUNTIME_DIR/dictate/
 
 # Remove stale socket
-rm $XDG_RUNTIME_DIR/say/say.sock
+rm $XDG_RUNTIME_DIR/dictate/dictate.sock
 
 # Kill orphan daemon
 pkill -f "bun.*main"
