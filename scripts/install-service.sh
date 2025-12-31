@@ -102,6 +102,17 @@ sed -i "s|Environment=PATH=|Environment=PATH=$BUN_DIR:|g" \
 echo "  Installed: ~/.config/systemd/user/dictate.service"
 
 # -----------------------------------------------------------------------------
+# Migrate old config (say -> dictate)
+# -----------------------------------------------------------------------------
+if [[ -f ~/.config/say/env ]] && [[ ! -f ~/.config/dictate/env ]]; then
+  echo ""
+  echo "Migrating config from ~/.config/say/env..."
+  cp ~/.config/say/env ~/.config/dictate/env
+  chmod 600 ~/.config/dictate/env
+  echo "  Migrated to ~/.config/dictate/env"
+fi
+
+# -----------------------------------------------------------------------------
 # Create env file
 # -----------------------------------------------------------------------------
 if [[ ! -f ~/.config/dictate/env ]]; then
@@ -136,8 +147,15 @@ if [[ "$LAZY_SYMLINK" == "true" ]]; then
 
   LAZY_DIR="$HOME/.local/share/nvim/lazy"
   LAZY_LINK="$LAZY_DIR/dictate"
+  OLD_LAZY_LINK="$LAZY_DIR/say"
 
   mkdir -p "$LAZY_DIR"
+
+  # Remove old 'say' symlink if it exists (migration)
+  if [[ -L "$OLD_LAZY_LINK" ]]; then
+    rm "$OLD_LAZY_LINK"
+    echo "  Removed old symlink: $OLD_LAZY_LINK"
+  fi
 
   if [[ -L "$LAZY_LINK" ]]; then
     # Remove existing symlink
