@@ -1,0 +1,192 @@
+local M = {}
+
+local health = vim.health
+
+---Check if a command exists
+---@param cmd string
+---@return boolean
+local function command_exists(cmd)
+  return vim.fn.executable(cmd) == 1
+end
+
+---Get plugin root directory
+---@return string
+local function get_plugin_root()
+  local source = debug.getinfo(1, 'S').source:sub(2)
+  return vim.fn.fnamemodify(source, ':h:h:h:h')
+end
+
+---@class HealthReporter
+---@field start fun(msg: string)
+---@field ok fun(msg: string)
+---@field warn fun(msg: string)
+---@field error fun(msg: string, advice?: string[])
+---@field info fun(msg: string)
+
+---Create a standalone reporter that outputs to messages
+---@return HealthReporter
+local function create_message_reporter()
+  local lines = {}
+  local function add(icon, msg)
+    table.insert(lines, icon .. ' ' .. msg)
+  end
+  return {
+    start = function(msg)
+      table.insert(lines, '\n== ' .. msg .. ' ==')
+    end,
+    ok = function(msg)
+      add('OK:', msg)
+    end,
+    warn = function(msg)
+      add('WARN:', msg)
+    end,
+    error = function(msg, advice)
+      add('ERROR:', msg)
+      if advice then
+        for _, a in ipairs(advice) do
+          table.insert(lines, '  - ' .. a)
+        end
+      end
+    end,
+    info = function(msg)
+      add('INFO:', msg)
+    end,
+    output = function()
+      return table.concat(lines, '\n')
+    end,
+  }
+end
+
+---Run health checks with a given reporter
+---@param h HealthReporter
+local function run_checks(h)
+  h.start('dictate.nvim')
+
+  -- Check Neovim version
+  local nvim_version = vim.version()
+  if nvim_version.major == 0 and nvim_version.minor < 9 then
+    h.error('Neovim 0.9+ required', { 'Upgrade to Neovim 0.9 or later' })
+  else
+    h.ok('Neovim ' .. nvim_version.major .. '.' .. nvim_version.minor .. '.' .. nvim_version.patch)
+  end
+
+  -- Check Bun runtime
+  if command_exists('bun') then
+    local version = vim.fn.system('bun --version'):gsub('%s+', '')
+    h.ok('bun ' .. version .. ' found')
+  else
+    h.error('bun not found', {
+      'Install bun: curl -fsSL https://bun.sh/install | bash',
+      'Or visit: https://bun.sh',
+    })
+  end
+
+  -- Check daemon files
+  local plugin_root = get_plugin_root()
+  local dist = plugin_root .. '/daemon/dist/main.js'
+  local dev = plugin_root .. '/daemon/src/main.ts'
+
+  if vim.fn.filereadable(dist) == 1 then
+    h.ok('daemon found at ' .. dist)
+  elseif vim.fn.filereadable(dev) == 1 then
+    h.ok('daemon (dev) found at ' .. dev)
+  else
+    h.error('daemon not found', {
+      'Run: cd ' .. plugin_root .. '/daemon && bun run build',
+      'Expected: ' .. dist,
+    })
+  end
+
+  -- Check OPENAI_API_KEY
+  local api_key = vim.env.OPENAI_API_KEY
+  if api_key and api_key ~= '' then
+    local masked = api_key:sub(1, 7) .. '...' .. api_key:sub(-4)
+    h.ok('OPENAI_API_KEY is set (' .. masked .. ')')
+  else
+    -- Check daemon/.env file
+    local env_file = plugin_root .. '/daemon/.env'
+    if vim.fn.filereadable(env_file) == 1 then
+      h.ok('OPENAI_API_KEY found in ' .. env_file)
+    else
+      h.error('OPENAI_API_KEY not set', {
+        'Set environment variable: export OPENAI_API_KEY=sk-...',
+        'Or create ' .. env_file .. ' with: OPENAI_API_KEY=sk-...',
+      })
+    end
+  end
+
+  -- Check PipeWire / pw-cat
+  if command_exists('pw-cat') then
+    h.ok('pw-cat found (PipeWire audio)')
+  else
+    h.error('pw-cat not found', {
+      'Install PipeWire: sudo apt install pipewire pipewire-audio-client-libraries',
+      'Or: sudo dnf install pipewire pipewire-utils',
+      'pw-cat is required for audio capture',
+    })
+  end
+
+  -- Check optional: nvim-notify
+  local has_notify = pcall(require, 'notify')
+  if has_notify then
+    h.ok('nvim-notify available (enhanced notifications)')
+  else
+    h.info('nvim-notify not installed (optional, for enhanced notifications)')
+  end
+
+  -- Check plugin configuration
+  local ok, cfg = pcall(function()
+    return require('dictate.config').get()
+  end)
+  if ok and cfg then
+    h.ok('configuration loaded')
+
+    if cfg.daemon_cmd then
+      h.ok('daemon_cmd: ' .. table.concat(cfg.daemon_cmd, ' '))
+    else
+      h.warn('daemon_cmd not configured (will auto-detect)')
+    end
+
+    if cfg.debug then
+      h.info('debug mode is enabled')
+    end
+
+    if #cfg.disabled_filetypes > 0 then
+      h.info('disabled filetypes: ' .. table.concat(cfg.disabled_filetypes, ', '))
+    end
+  else
+    h.warn('configuration not loaded (run setup() first)')
+  end
+
+  -- Test daemon can be started
+  h.start('daemon connectivity')
+
+  local daemon_cmd = nil
+  if ok and cfg and cfg.daemon_cmd then
+    daemon_cmd = cfg.daemon_cmd
+  elseif vim.fn.filereadable(dist) == 1 then
+    daemon_cmd = { 'bun', dist }
+  elseif vim.fn.filereadable(dev) == 1 then
+    daemon_cmd = { 'bun', dev }
+  end
+
+  if daemon_cmd then
+    h.ok('daemon command is executable')
+  else
+    h.error('cannot determine daemon command')
+  end
+end
+
+---Run health checks for :checkhealth dictate (uses vim.health buffer)
+function M.check()
+  run_checks(health)
+end
+
+---Run health checks and print to messages (for :DictateHealth command)
+function M.check_standalone()
+  local reporter = create_message_reporter()
+  run_checks(reporter)
+  print(reporter.output())
+end
+
+return M

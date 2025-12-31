@@ -1,6 +1,7 @@
 local M = {}
 local config = require('dictate.config')
 local ui = require('dictate.ui')
+local notify = require('dictate.notify')
 
 ---@type integer|nil
 local job_id = nil
@@ -8,8 +9,47 @@ local job_id = nil
 ---@type 'stopped'|'connecting'|'ready'|'recording'|'error'
 local state = 'stopped'
 
+---@type 'stopped'|'connecting'|'ready'|'recording'|'error'
+local prev_state = 'stopped'
+
 -- Buffer for incomplete JSONL lines
 local line_buffer = ''
+
+---Call on_start callback if configured
+local function call_on_start()
+  local cfg = config.get()
+  if cfg.on_start and type(cfg.on_start) == 'function' then
+    local ok, err = pcall(cfg.on_start)
+    if not ok then
+      notify.warn('on_start callback error: ' .. tostring(err))
+    end
+  end
+end
+
+---Call on_stop callback if configured
+local function call_on_stop()
+  local cfg = config.get()
+  if cfg.on_stop and type(cfg.on_stop) == 'function' then
+    local ok, err = pcall(cfg.on_stop)
+    if not ok then
+      notify.warn('on_stop callback error: ' .. tostring(err))
+    end
+  end
+end
+
+---Update state and trigger callbacks on transitions
+---@param new_state 'stopped'|'connecting'|'ready'|'recording'|'error'
+local function set_state(new_state)
+  prev_state = state
+  state = new_state
+
+  -- Trigger callbacks on state transitions
+  if prev_state ~= 'recording' and new_state == 'recording' then
+    call_on_start()
+  elseif prev_state == 'recording' and new_state ~= 'recording' then
+    call_on_stop()
+  end
+end
 
 ---Parse JSONL data from stdout
 ---@param data string[]
@@ -47,25 +87,29 @@ function M.handle_message(msg)
   local t = msg.type
 
   if t == 'status' then
-    state = msg.state
+    set_state(msg.state)
     if state == 'error' then
-      vim.notify('dictate: ' .. (msg.message or 'unknown error'), vim.log.levels.ERROR)
+      notify.error(msg.message or 'unknown error')
+    elseif state == 'ready' then
+      notify.debug('daemon ready')
+    elseif state == 'recording' then
+      notify.debug('recording started')
     end
   elseif t == 'speech_started' then
     ui.on_speech_started(msg.item_id)
+    notify.debug('speech detected')
   elseif t == 'speech_stopped' then
     ui.on_speech_stopped(msg.item_id)
+    notify.debug('speech ended')
   elseif t == 'delta' then
     ui.on_delta(msg.item_id, msg.text)
   elseif t == 'final' then
     ui.on_final(msg.item_id, msg.text)
+    notify.debug('transcription: ' .. (msg.text or ''))
   elseif t == 'error' then
-    vim.notify('dictate: [' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown'), vim.log.levels.ERROR)
+    notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown'))
   elseif t == 'debug' then
-    -- Debug messages only shown when debug is enabled
-    if vim.g.dictate_debug then
-      vim.notify('dictate debug: ' .. (msg.message or ''), vim.log.levels.DEBUG)
-    end
+    notify.debug(msg.message or '')
   end
 end
 
@@ -80,6 +124,13 @@ end
 
 ---Start the daemon and begin dictation
 function M.start()
+  -- Check if buffer is allowed
+  local allowed, reason = config.is_buffer_allowed()
+  if not allowed then
+    notify.warn(reason or 'buffer not allowed')
+    return
+  end
+
   if job_id then
     -- Already running, just send start
     M.send({ type = 'start' })
@@ -88,11 +139,14 @@ function M.start()
 
   local cfg = config.get()
   if not cfg.daemon_cmd then
-    vim.notify('dictate: daemon_cmd not configured', vim.log.levels.ERROR)
+    notify.error('daemon_cmd not configured. Run :checkhealth dictate for help.')
     return
   end
 
+  notify.debug('starting daemon: ' .. table.concat(cfg.daemon_cmd, ' '))
+
   line_buffer = ''
+  set_state('connecting')
 
   job_id = vim.fn.jobstart(cfg.daemon_cmd, {
     on_stdout = function(_, data, _)
@@ -104,7 +158,7 @@ function M.start()
       vim.schedule(function()
         for _, line in ipairs(data) do
           if line and line ~= '' then
-            vim.notify('dictate daemon: ' .. line, vim.log.levels.WARN)
+            notify.debug('daemon stderr: ' .. line)
           end
         end
       end)
@@ -112,11 +166,13 @@ function M.start()
     on_exit = function(_, code, _)
       vim.schedule(function()
         job_id = nil
-        state = 'stopped'
+        set_state('stopped')
         line_buffer = ''
         ui.clear_all()
         if code ~= 0 then
-          vim.notify('dictate: daemon exited with code ' .. code, vim.log.levels.WARN)
+          notify.warn('daemon exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
+        else
+          notify.debug('daemon stopped')
         end
       end)
     end,
@@ -125,8 +181,9 @@ function M.start()
   })
 
   if job_id <= 0 then
-    vim.notify('dictate: failed to start daemon', vim.log.levels.ERROR)
+    notify.error('failed to start daemon. Is bun installed? Run :checkhealth dictate for help.')
     job_id = nil
+    set_state('error')
     return
   end
 
@@ -146,7 +203,7 @@ function M.stop()
       end
     end, 100)
   end
-  state = 'stopped'
+  set_state('stopped')
   line_buffer = ''
   ui.clear_all()
 end

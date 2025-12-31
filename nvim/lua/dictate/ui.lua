@@ -1,5 +1,6 @@
 local M = {}
 local config = require('dictate.config')
+local notify = require('dictate.notify')
 
 local ns_id = vim.api.nvim_create_namespace('dictate_ghost')
 
@@ -91,7 +92,7 @@ function M.on_final(item_id, text)
   -- Insert text at captured cursor position
   local ok, err = pcall(vim.api.nvim_buf_set_text, bufnr, line, col, line, col, { insert_text })
   if not ok then
-    vim.notify('dictate: failed to insert text: ' .. tostring(err), vim.log.levels.ERROR)
+    notify.error('failed to insert text: ' .. tostring(err))
     return
   end
 

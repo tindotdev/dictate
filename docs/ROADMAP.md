@@ -11,24 +11,27 @@ Initial working implementation of real-time dictation.
 - [x] Text insertion on speech completion
 - [x] Basic configuration options
 
-## Milestone 2: Polish & Ergonomics
+## Milestone 2: Polish & Ergonomics (Complete)
 
 Make the plugin production-ready and pleasant to use.
 
 ### Configuration
-- [ ] Config validation with helpful error messages
-- [ ] `on_start` / `on_stop` callback hooks
-- [ ] Buffer/filetype filtering (disable in help, terminal, etc.)
+
+- [x] Config validation with helpful error messages
+- [x] `on_start` / `on_stop` callback hooks
+- [x] Buffer/filetype filtering (disable in help, terminal, etc.)
 
 ### User Feedback
-- [ ] Statusline component: `require("dictate").statusline()`
-- [ ] Improved notifications (shorter, clearer messages)
-- [ ] Optional integration with `nvim-notify` or similar
+
+- [x] Statusline component: `require("dictate").statusline()`
+- [x] Improved notifications (shorter, clearer messages)
+- [x] Optional integration with `nvim-notify` or similar
 
 ### Developer Experience
-- [ ] `:checkhealth dictate` for troubleshooting
-- [ ] Better error messages when daemon fails to start
-- [ ] Debug mode with verbose logging
+
+- [x] `:checkhealth dictate` for troubleshooting
+- [x] Better error messages when daemon fails to start
+- [x] Debug mode with verbose logging
 
 ## Milestone 3: Robustness
 
@@ -66,8 +69,5 @@ Integration with the broader Neovim ecosystem.
 Features that may be explored in the future:
 
 - Voice commands (e.g., "new line", "delete that")
-- Multi-language support
+- Explore system-level programming language for the daemon (Rust, Go, Zig) **after everything is stable (no premature optimization)\***
 - Custom vocabulary/terminology training
-- Audio input device selection
-- Recording/playback of audio segments
-- Integration with other AI models (Whisper local, etc.)
