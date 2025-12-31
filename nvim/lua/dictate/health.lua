@@ -81,20 +81,20 @@ local function run_checks(h)
     })
   end
 
-  -- Check daemon files (new architecture: sayctl + daemon)
+  -- Check daemon files (new architecture: dictatectl + daemon)
   local plugin_root = get_plugin_root()
-  local dist_sayctl = plugin_root .. '/daemon/dist/cli/sayctl.js'
-  local dev_sayctl = plugin_root .. '/daemon/src/cli/sayctl.ts'
+  local dist_dictatectl = plugin_root .. '/daemon/dist/cli/dictatectl.js'
+  local dev_dictatectl = plugin_root .. '/daemon/src/cli/dictatectl.ts'
   local dist_daemon = plugin_root .. '/daemon/dist/main.js'
   local dev_daemon = plugin_root .. '/daemon/src/main.ts'
 
-  -- Check sayctl (new architecture)
-  if vim.fn.filereadable(dist_sayctl) == 1 then
-    h.ok('sayctl found at ' .. dist_sayctl)
-  elseif vim.fn.filereadable(dev_sayctl) == 1 then
-    h.ok('sayctl (dev) found at ' .. dev_sayctl)
+  -- Check dictatectl (new architecture)
+  if vim.fn.filereadable(dist_dictatectl) == 1 then
+    h.ok('dictatectl found at ' .. dist_dictatectl)
+  elseif vim.fn.filereadable(dev_dictatectl) == 1 then
+    h.ok('dictatectl (dev) found at ' .. dev_dictatectl)
   else
-    h.warn('sayctl not found (new architecture not built)')
+    h.warn('dictatectl not found (new architecture not built)')
   end
 
   -- Check daemon
@@ -175,29 +175,29 @@ local function run_checks(h)
 
   if command_exists('systemctl') then
     -- Check if user session is available
-    local socket_status = vim.fn.system('systemctl --user is-active say.socket 2>/dev/null'):gsub('%s+', '')
-    local service_status = vim.fn.system('systemctl --user is-active say.service 2>/dev/null'):gsub('%s+', '')
+    local socket_status = vim.fn.system('systemctl --user is-active dictate.socket 2>/dev/null'):gsub('%s+', '')
+    local service_status = vim.fn.system('systemctl --user is-active dictate.service 2>/dev/null'):gsub('%s+', '')
 
     if socket_status == 'active' then
-      h.ok('say.socket is active (socket activation enabled)')
+      h.ok('dictate.socket is active (socket activation enabled)')
     elseif socket_status == 'inactive' then
-      h.info('say.socket is inactive')
+      h.info('dictate.socket is inactive')
     else
-      h.info('say.socket not installed (systemd mode is optional)')
+      h.info('dictate.socket not installed (systemd mode is optional)')
     end
 
     if service_status == 'active' then
-      h.ok('say.service is running')
+      h.ok('dictate.service is running')
     elseif service_status == 'inactive' then
-      h.info('say.service is not running (starts on demand with socket activation)')
+      h.info('dictate.service is not running (starts on demand with socket activation)')
     else
-      h.info('say.service not installed')
+      h.info('dictate.service not installed')
     end
 
     -- Check socket file
     local xdg_runtime = vim.env.XDG_RUNTIME_DIR
     if xdg_runtime then
-      local socket_path = xdg_runtime .. '/say/say.sock'
+      local socket_path = xdg_runtime .. '/dictate/dictate.sock'
       if vim.fn.filereadable(socket_path) == 1 or vim.fn.isdirectory(vim.fn.fnamemodify(socket_path, ':h')) == 1 then
         h.ok('socket directory exists: ' .. vim.fn.fnamemodify(socket_path, ':h'))
       end
@@ -212,10 +212,10 @@ local function run_checks(h)
   local daemon_cmd = nil
   if ok and cfg and cfg.daemon_cmd then
     daemon_cmd = cfg.daemon_cmd
-  elseif vim.fn.filereadable(dist_sayctl) == 1 then
-    daemon_cmd = { 'bun', dist_sayctl }
-  elseif vim.fn.filereadable(dev_sayctl) == 1 then
-    daemon_cmd = { 'bun', dev_sayctl }
+  elseif vim.fn.filereadable(dist_dictatectl) == 1 then
+    daemon_cmd = { 'bun', dist_dictatectl }
+  elseif vim.fn.filereadable(dev_dictatectl) == 1 then
+    daemon_cmd = { 'bun', dev_dictatectl }
   elseif vim.fn.filereadable(dist_daemon) == 1 then
     daemon_cmd = { 'bun', dist_daemon }
   elseif vim.fn.filereadable(dev_daemon) == 1 then

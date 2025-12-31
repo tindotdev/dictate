@@ -7,8 +7,8 @@ local notify = require('dictate.notify')
 local job_id = nil
 
 -- New daemon states: idle, audio_starting, listening, flushing, reconnecting, error
--- sayctl states: connecting, connected, reconnecting
--- We track both the daemon state and sayctl state
+-- dictatectl states: connecting, connected, reconnecting
+-- We track both the daemon state and dictatectl state
 ---@type 'stopped'|'connecting'|'connected'|'idle'|'audio_starting'|'listening'|'flushing'|'reconnecting'|'error'
 local state = 'stopped'
 
@@ -19,7 +19,7 @@ local prev_state = 'stopped'
 local audio_ok = false
 local ws_ok = false
 
--- Flag to send start_listening after sayctl connects
+-- Flag to send start_listening after dictatectl connects
 local pending_start_listening = false
 
 -- Buffer for incomplete JSONL lines
@@ -121,7 +121,7 @@ function M.handle_message(msg)
       notify.debug('connecting to daemon...')
     elseif state == 'connected' then
       notify.debug('connected to daemon')
-      -- Send pending start_listening now that sayctl is connected
+      -- Send pending start_listening now that dictatectl is connected
       if pending_start_listening then
         pending_start_listening = false
         M.send({ type = 'start_listening' })
@@ -194,7 +194,7 @@ function M.start()
     return
   end
 
-  notify.debug('starting sayctl: ' .. table.concat(cfg.daemon_cmd, ' '))
+  notify.debug('starting dictatectl: ' .. table.concat(cfg.daemon_cmd, ' '))
 
   line_buffer = ''
   audio_ok = false
@@ -211,7 +211,7 @@ function M.start()
       vim.schedule(function()
         for _, line in ipairs(data) do
           if line and line ~= '' then
-            notify.debug('sayctl stderr: ' .. line)
+            notify.debug('dictatectl stderr: ' .. line)
           end
         end
       end)
@@ -226,9 +226,9 @@ function M.start()
         pending_start_listening = false
         ui.clear_all()
         if code ~= 0 then
-          notify.warn('sayctl exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
+          notify.warn('dictatectl exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
         else
-          notify.debug('sayctl stopped')
+          notify.debug('dictatectl stopped')
         end
       end)
     end,
@@ -237,7 +237,7 @@ function M.start()
   })
 
   if job_id <= 0 then
-    notify.error('failed to start sayctl. Is bun installed? Run :checkhealth dictate for help.')
+    notify.error('failed to start dictatectl. Is bun installed? Run :checkhealth dictate for help.')
     job_id = nil
     set_state('error')
     return
@@ -251,7 +251,7 @@ end
 function M.stop()
   if job_id then
     M.send({ type = 'stop_listening' })
-    -- Give it a moment to clean up, then force stop sayctl
+    -- Give it a moment to clean up, then force stop dictatectl
     vim.defer_fn(function()
       if job_id then
         vim.fn.jobstop(job_id)
