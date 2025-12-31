@@ -27,9 +27,36 @@ bun run build
 
 ```bash
 cd daemon
-bun test              # Run all 142 tests
+bun test              # Run all 160 tests
 bun test --watch      # Watch mode
 bun test backoff      # Run specific test file
+```
+
+## Integration Tests
+
+Multi-client integration tests verify daemon behavior with multiple simultaneous
+connections. These use mocked supervisors (no real audio/OpenAI) for fast CI runs.
+
+```bash
+cd daemon
+bun test src/__tests__/integration/    # Run integration tests only
+```
+
+**Test coverage (18 tests):**
+- 4.1: Multiple clients connecting simultaneously
+- 4.2: Broadcast status/transcription to all clients
+- 4.3: Client disconnect handling
+- 4.4: Duplicate command handling
+
+**Architecture:**
+```
+TestClient 1 ──┐
+TestClient 2 ──┼──▶ SocketServer ──▶ StateMachine
+TestClient N ──┘    (real)          (real)
+                       │                │
+                       ▼                ▼
+            MockAudioSupervisor    NetworkSupervisor
+            (EventEmitter)         (local WS mock)
 ```
 
 ## Manual Testing
