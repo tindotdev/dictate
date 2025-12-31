@@ -28,9 +28,9 @@ local function find_daemon_cmd()
   local dev = plugin_root .. '/daemon/src/main.ts'
 
   if vim.fn.filereadable(dist) == 1 then
-    return { 'node', dist }
+    return { 'bun', dist }
   elseif vim.fn.filereadable(dev) == 1 then
-    return { 'bun', 'run', dev }
+    return { 'bun', dev }
   else
     error('dictate: daemon not found at ' .. dist .. ' or ' .. dev .. '. Run `bun run build` in daemon/')
   end

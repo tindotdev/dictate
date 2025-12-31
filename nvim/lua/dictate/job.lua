@@ -14,19 +14,24 @@ local line_buffer = ''
 ---Parse JSONL data from stdout
 ---@param data string[]
 local function parse_jsonl(data)
-  for _, chunk in ipairs(data) do
-    if chunk and chunk ~= '' then
-      line_buffer = line_buffer .. chunk
-    end
+  -- Neovim's jobstart splits output on newlines, so each element
+  -- in data[] is already a line. The last element may be incomplete
+  -- (no newline after it yet), so we buffer it for the next call.
+
+  -- Prepend any leftover buffer to first element
+  if line_buffer ~= '' and #data > 0 then
+    data[1] = line_buffer .. (data[1] or '')
+    line_buffer = ''
   end
 
-  -- Split on newlines, keep incomplete last line in buffer
-  local lines = vim.split(line_buffer, '\n', { plain = true })
-  line_buffer = lines[#lines] or ''
+  -- Last element might be incomplete (no trailing newline)
+  if #data > 0 then
+    line_buffer = data[#data] or ''
+  end
 
-  -- Process complete lines
-  for i = 1, #lines - 1 do
-    local line = lines[i]
+  -- Process all complete lines (all but the last element)
+  for i = 1, #data - 1 do
+    local line = data[i]
     if line and line ~= '' then
       local ok, msg = pcall(vim.json.decode, line)
       if ok and msg then
