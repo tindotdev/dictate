@@ -13,7 +13,6 @@ import {
 // ============================================================================
 
 const REALTIME_URL = 'wss://api.openai.com/v1/realtime';
-const REALTIME_MODEL = 'gpt-4o-mini-realtime-preview';
 
 // ============================================================================
 // Supervisor Types
@@ -76,7 +75,7 @@ export class NetworkSupervisor extends EventEmitter {
     super();
     this.config = options.config;
     this.backoffState = createBackoffState(options.backoff);
-    this.wsUrl = options.wsUrl ?? `${REALTIME_URL}?model=${REALTIME_MODEL}`;
+    this.wsUrl = options.wsUrl ?? REALTIME_URL;
   }
 
   private setState(newState: NetworkSupervisorState): void {
@@ -218,23 +217,62 @@ export class NetworkSupervisor extends EventEmitter {
   }
 
   private sendSessionUpdate(): void {
-    const sessionConfig = {
+    const sessionConfig: {
+      type: string;
+      session: {
+        audio: {
+          input: {
+            format: { type: string; rate: number };
+            transcription: {
+              model: string;
+              prompt?: string;
+            };
+            turn_detection: {
+              type: string;
+              threshold: number;
+              prefix_padding_ms: number;
+              silence_duration_ms: number;
+            };
+            noise_reduction?: { type: string } | null;
+          };
+        };
+        include?: string[];
+      };
+    } = {
       type: 'session.update',
       session: {
-        modalities: ['text'],
-        input_audio_format: 'pcm16',
-        input_audio_transcription: {
-          model: this.config.model,
-          ...(this.config.prompt && { prompt: this.config.prompt }),
-        },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: this.config.vadThreshold,
-          prefix_padding_ms: this.config.vadPrefixPaddingMs,
-          silence_duration_ms: this.config.vadSilenceDurationMs,
+        audio: {
+          input: {
+            format: {
+              type: 'audio/pcm',
+              rate: 24000,
+            },
+            transcription: {
+              model: this.config.model,
+              ...(this.config.prompt && { prompt: this.config.prompt }),
+            },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: this.config.vadThreshold,
+              prefix_padding_ms: this.config.vadPrefixPaddingMs,
+              silence_duration_ms: this.config.vadSilenceDurationMs,
+            },
+          },
         },
       },
     };
+
+    // Add noise reduction if configured
+    if (this.config.noiseReduction) {
+      sessionConfig.session.audio.input.noise_reduction = {
+        type: this.config.noiseReduction,
+      };
+    }
+
+    // Add logprobs if configured
+    if (this.config.includeLogprobs) {
+      sessionConfig.session.include = ['item.input_audio_transcription.logprobs'];
+    }
 
     this.send(sessionConfig);
   }
