@@ -17,8 +17,8 @@ describe('SocketServer', () => {
 
   beforeEach(() => {
     // Create a temp directory for each test
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'say-test-'));
-    socketPath = path.join(testDir, 'say.sock');
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dictate-test-'));
+    socketPath = path.join(testDir, 'dictate.sock');
     server = createSocketServer();
   });
 
@@ -63,7 +63,7 @@ describe('SocketServer', () => {
       process.env.XDG_RUNTIME_DIR = '/run/user/1000';
 
       const result = getDefaultSocketPath();
-      expect(result).toBe('/run/user/1000/say/say.sock');
+      expect(result).toBe('/run/user/1000/dictate/dictate.sock');
 
       if (original) {
         process.env.XDG_RUNTIME_DIR = original;

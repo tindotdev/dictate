@@ -4,7 +4,7 @@ import {
   DaemonMessageSchema,
   DaemonStateSchema,
   ErrorCodeSchema,
-  SayctlMessageSchema,
+  DictatectlMessageSchema,
 } from '../protocol.js';
 
 describe('ClientMessageSchema', () => {
@@ -262,19 +262,19 @@ describe('DaemonMessageSchema', () => {
   });
 });
 
-describe('SayctlMessageSchema', () => {
-  it('validates sayctl status message', () => {
-    const result = SayctlMessageSchema.safeParse({
+describe('DictatectlMessageSchema', () => {
+  it('validates dictatectl status message', () => {
+    const result = DictatectlMessageSchema.safeParse({
       type: 'status',
       state: 'connecting',
     });
     expect(result.success).toBe(true);
   });
 
-  it('validates all sayctl states', () => {
+  it('validates all dictatectl states', () => {
     const states = ['connecting', 'connected', 'reconnecting'];
     for (const state of states) {
-      const result = SayctlMessageSchema.safeParse({
+      const result = DictatectlMessageSchema.safeParse({
         type: 'status',
         state,
       });
@@ -282,13 +282,13 @@ describe('SayctlMessageSchema', () => {
     }
   });
 
-  it('validates sayctl DAEMON_UNAVAILABLE error', () => {
-    const result = SayctlMessageSchema.safeParse({
+  it('validates dictatectl DAEMON_UNAVAILABLE error', () => {
+    const result = DictatectlMessageSchema.safeParse({
       type: 'error',
       code: 'DAEMON_UNAVAILABLE',
-      message: 'Cannot connect to say daemon',
+      message: 'Cannot connect to dictate daemon',
       recoverable: false,
-      hint: 'Run: systemctl --user enable --now say.socket',
+      hint: 'Run: systemctl --user enable --now dictate.service',
     });
     expect(result.success).toBe(true);
   });

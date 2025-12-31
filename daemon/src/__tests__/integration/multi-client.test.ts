@@ -4,7 +4,7 @@
  * These tests verify that the daemon correctly handles multiple simultaneous
  * client connections, corresponding to TEST_CHECKLIST.md Section 4:
  *
- * 4.1 Multiple sayctl Instances - Multiple clients can connect simultaneously
+ * 4.1 Multiple dictatectl Instances - Multiple clients can connect simultaneously
  * 4.2 Broadcast to All Clients - Status/transcription events reach all clients
  * 4.3 Client Disconnect - Daemon handles disconnections gracefully
  * 4.4 Multiple Neovim Instances - Duplicate commands handled safely
@@ -94,8 +94,8 @@ const mockConfig: Config = {
 
 async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
   // Create temp directory for socket
-  const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'say-integration-'));
-  const socketPath = path.join(testDir, 'say.sock');
+  const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dictate-integration-'));
+  const socketPath = path.join(testDir, 'dictate.sock');
 
   // Create mock WebSocket server
   const mockWsServer = await new Promise<WebSocketServer>((resolve) => {
@@ -385,7 +385,7 @@ describe('Multi-Client Integration', () => {
   }
 
   // ==========================================================================
-  // Test 4.1: Multiple sayctl Instances Connect
+  // Test 4.1: Multiple dictatectl Instances Connect
   // ==========================================================================
 
   describe('4.1 Multiple clients connecting', () => {
