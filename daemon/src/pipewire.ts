@@ -29,9 +29,10 @@ export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
     this.intentionalStop = false;
     emitDebug(`Starting pw-cat with ${SAMPLE_RATE}Hz, ${CHANNELS}ch, s16`);
 
-    // pw-cat --record --rate=24000 --channels=1 --format=s16 -
+    // pw-cat --record --raw --rate=24000 --channels=1 --format=s16 -
     this.process = spawn('pw-cat', [
       '--record',
+      '--raw',
       `--rate=${SAMPLE_RATE}`,
       `--channels=${CHANNELS}`,
       '--format=s16',

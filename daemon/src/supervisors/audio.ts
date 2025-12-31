@@ -128,6 +128,7 @@ export class AudioSupervisor extends EventEmitter {
     try {
       this.process = spawn(this.pwCatPath, [
         '--record',
+        '--raw',
         `--rate=${SAMPLE_RATE}`,
         `--channels=${CHANNELS}`,
         '--format=s16',
