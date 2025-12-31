@@ -42,6 +42,23 @@ function M.get_state()
   return require('dictate.job').get_state()
 end
 
+---Map daemon state to display state
+---@param state string
+---@return string
+local function map_state(state)
+  local state_map = {
+    connecting = 'connecting',
+    connected = 'connecting',
+    audio_starting = 'connecting',
+    idle = 'ready',
+    listening = 'recording',
+    flushing = 'recording',
+    reconnecting = 'connecting',
+    error = 'error',
+  }
+  return state_map[state] or state
+end
+
 ---@class DictateStatuslineOpts
 ---@field icons table<string, string>|nil Icons for each state
 ---@field labels table<string, string>|nil Text labels for each state
@@ -75,8 +92,9 @@ function M.statusline(opts)
     return ''
   end
 
-  local icon = icons[state] or ''
-  local label = labels[state] or state
+  local display_state = map_state(state)
+  local icon = icons[display_state] or ''
+  local label = labels[display_state] or display_state
 
   if opts.show_label then
     return icon .. ' ' .. label
@@ -97,19 +115,29 @@ function M.lualine(opts)
       return M.get_state() ~= 'stopped'
     end,
     color = function()
-      local state = M.get_state()
-      if state == 'recording' then
+      local display_state = map_state(M.get_state())
+      if display_state == 'recording' then
         return { fg = '#f38ba8' } -- Red for recording
-      elseif state == 'connecting' then
+      elseif display_state == 'connecting' then
         return { fg = '#f9e2af' } -- Yellow for connecting
-      elseif state == 'ready' then
+      elseif display_state == 'ready' then
         return { fg = '#a6e3a1' } -- Green for ready
-      elseif state == 'error' then
+      elseif display_state == 'error' then
         return { fg = '#fab387' } -- Orange for error
       end
       return nil
     end,
   }
+end
+
+---Get nvui statusline module
+---Returns a function compatible with nvui's modules table
+---@param opts DictateStatuslineOpts|nil
+---@return function
+function M.nvui(opts)
+  return function()
+    return M.statusline(opts)
+  end
 end
 
 return M
