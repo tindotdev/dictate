@@ -9,7 +9,6 @@
       "name": "say-daemon",
       "version": "0.1.0",
       "dependencies": {
-        "ws": "^8.18.3",
         "zod": "^4.2.1",
       },
       "devDependencies": {
@@ -20,6 +19,7 @@
         "tsx": "^4.21.0",
         "typescript": "^5.9.3",
         "vitest": "^4.0.16",
+        "ws": "^8.18.3",
       },
     },
   },

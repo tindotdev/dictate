@@ -1,4 +1,3 @@
-import WebSocket from 'ws';
 import { EventEmitter } from 'events';
 import type { Config } from '../config.js';
 import {
@@ -132,7 +131,7 @@ export class NetworkSupervisor extends EventEmitter {
       return;
     }
 
-    // Basic backpressure check
+    // Basic backpressure check (bufferedAmount available on browser WebSocket API)
     if (this.ws.bufferedAmount > 1024 * 1024) {
       return; // Drop frame if buffer is too full
     }
@@ -147,6 +146,7 @@ export class NetworkSupervisor extends EventEmitter {
     this.setState('connecting');
 
     try {
+      // Bun native WebSocket supports custom headers as a Bun-specific extension
       this.ws = new WebSocket(this.wsUrl, {
         headers: {
           Authorization: `Bearer ${this.config.apiKey}`,
@@ -159,29 +159,31 @@ export class NetworkSupervisor extends EventEmitter {
       return;
     }
 
-    this.ws.on('open', () => {
+    this.ws.addEventListener('open', () => {
       this.setState('connected');
       resetBackoff(this.backoffState);
       this.sendSessionUpdate();
       this.emit('connected');
     });
 
-    this.ws.on('message', (data) => {
+    this.ws.addEventListener('message', (event) => {
       try {
-        const event = JSON.parse(data.toString());
-        this.handleEvent(event);
+        const data = typeof event.data === 'string' ? event.data : event.data.toString();
+        const parsed = JSON.parse(data);
+        this.handleEvent(parsed);
       } catch (err) {
         this.emit('error', err as Error);
       }
     });
 
-    this.ws.on('close', (code, reason) => {
+    this.ws.addEventListener('close', (event) => {
       this.ws = null;
-      this.handleClose(code, reason.toString());
+      this.handleClose(event.code, event.reason);
     });
 
-    this.ws.on('error', (err) => {
-      this.emit('error', err);
+    this.ws.addEventListener('error', () => {
+      // Browser WebSocket error events don't expose error details
+      this.emit('error', new Error('WebSocket error'));
       // Error is usually followed by close, so we handle reconnection in close handler
     });
   }
