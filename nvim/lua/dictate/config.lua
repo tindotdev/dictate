@@ -9,7 +9,7 @@ local M = {}
 ---@type DictateConfig
 local defaults = {
   daemon_cmd = nil, -- Auto-detect
-  keymap = '<Leader>d',
+  keymap = nil, -- No default keymap; set in lazy.nvim keys or opts.keymap
   ghost_hl = 'Comment',
   insert_trailing_space = true,
 }

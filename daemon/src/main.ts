@@ -68,7 +68,8 @@ audio.on('error', (err) => {
 });
 
 audio.on('close', (code) => {
-  if (code !== 0 && code !== null) {
+  // Only report as error if pw-cat exited unexpectedly (not from intentional stop)
+  if (code !== 0 && code !== null && !audio.wasIntentionallyStopped()) {
     emitError('AUDIO_CLOSED', `pw-cat exited with code ${code}`);
   }
 });

@@ -36,14 +36,16 @@ bun install
 bun run build
 ```
 
-### Neovim Plugin (LazyVim)
+### Neovim Plugin (lazy.nvim)
 
 ```lua
 {
   dir = "~/path/to/say/nvim",
-  config = function()
-    require("dictate").setup()
-  end,
+  keys = {
+    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
+  },
+  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
+  opts = {},
 }
 ```
 
@@ -63,12 +65,12 @@ export OPENAI_STT_PROMPT="technical terms like Neovim, TypeScript, PipeWire"
 export DEBUG=1  # Enable debug logging
 ```
 
-Plugin configuration:
+Plugin options:
 
 ```lua
 require("dictate").setup({
-  daemon_cmd = nil,             -- Auto-detect (or specify path)
-  keymap = '<Leader>d',         -- Toggle keymap (nil to disable)
+  daemon_cmd = nil,             -- Auto-detect (or specify explicit path)
+  keymap = nil,                 -- Optional: set a keymap (prefer lazy.nvim keys)
   ghost_hl = 'Comment',         -- Highlight group for ghost text
   insert_trailing_space = true, -- Add space after inserted text
 })
@@ -76,10 +78,19 @@ require("dictate").setup({
 
 ## Usage
 
-1. Start dictation: `:DictateToggle` or `<Leader>d`
+1. Start dictation: `:DictateToggle` (or your configured keymap)
 2. Speak - ghost text appears at cursor
 3. Pause - text is inserted when speech completes
 4. Stop: `:DictateToggle` again
+
+## API
+
+```lua
+local dictate = require("dictate")
+
+dictate.is_running()  -- Returns true if daemon is active
+dictate.get_state()   -- Returns: 'stopped'|'connecting'|'ready'|'recording'|'error'
+```
 
 ## Commands
 

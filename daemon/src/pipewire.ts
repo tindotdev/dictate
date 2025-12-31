@@ -18,6 +18,7 @@ export interface AudioCaptureEvents {
 export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
   private process: ChildProcessWithoutNullStreams | null = null;
   private buffer: Buffer = Buffer.alloc(0);
+  private intentionalStop: boolean = false;
 
   start(): void {
     if (this.process) {
@@ -25,6 +26,7 @@ export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
       return;
     }
 
+    this.intentionalStop = false;
     emitDebug(`Starting pw-cat with ${SAMPLE_RATE}Hz, ${CHANNELS}ch, s16`);
 
     // pw-cat --record --rate=24000 --channels=1 --format=s16 -
@@ -71,6 +73,7 @@ export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
   stop(): void {
     if (this.process) {
       emitDebug('Stopping pw-cat');
+      this.intentionalStop = true;
       this.process.kill('SIGTERM');
       this.process = null;
       this.buffer = Buffer.alloc(0);
@@ -79,6 +82,10 @@ export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
 
   isRunning(): boolean {
     return this.process !== null;
+  }
+
+  wasIntentionallyStopped(): boolean {
+    return this.intentionalStop;
   }
 }
 
