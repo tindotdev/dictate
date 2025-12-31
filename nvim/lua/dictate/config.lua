@@ -199,22 +199,32 @@ end
 ---@type DictateConfig
 local config = vim.deepcopy(defaults)
 
----Find the daemon command by looking for dist or dev paths
+---Find the sayctl command by looking for dist or dev paths
 ---@return string[]
 local function find_daemon_cmd()
   -- Get the plugin root directory
   local source = debug.getinfo(1, 'S').source:sub(2)
   local plugin_root = vim.fn.fnamemodify(source, ':h:h:h:h')
 
-  local dist = plugin_root .. '/daemon/dist/main.js'
-  local dev = plugin_root .. '/daemon/src/main.ts'
+  -- New architecture: use sayctl (stdio bridge to daemon socket)
+  local dist_sayctl = plugin_root .. '/daemon/dist/cli/sayctl.js'
+  local dev_sayctl = plugin_root .. '/daemon/src/cli/sayctl.ts'
 
-  if vim.fn.filereadable(dist) == 1 then
-    return { 'bun', dist }
-  elseif vim.fn.filereadable(dev) == 1 then
-    return { 'bun', dev }
+  -- Fallback to old main.js/main.ts for backwards compatibility
+  local dist_main = plugin_root .. '/daemon/dist/main.js'
+  local dev_main = plugin_root .. '/daemon/src/main.ts'
+
+  if vim.fn.filereadable(dist_sayctl) == 1 then
+    return { 'bun', dist_sayctl }
+  elseif vim.fn.filereadable(dev_sayctl) == 1 then
+    return { 'bun', dev_sayctl }
+  elseif vim.fn.filereadable(dist_main) == 1 then
+    -- Fallback to old daemon (pre-socket architecture)
+    return { 'bun', dist_main }
+  elseif vim.fn.filereadable(dev_main) == 1 then
+    return { 'bun', dev_main }
   else
-    error('dictate: daemon not found at ' .. dist .. ' or ' .. dev .. '. Run `bun run build` in daemon/')
+    error('dictate: sayctl not found. Run `bun run build` in daemon/')
   end
 end
 

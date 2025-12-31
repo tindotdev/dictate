@@ -1,0 +1,17 @@
+[Unit]
+Description=Say Dictation Daemon
+Requires=say.socket
+After=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/bun run %h/.local/share/nvim/lazy/say/daemon/dist/main.js
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-%h/.config/say/env
+
+# Note: Socket is passed via LISTEN_FDS env var (fd 3)
+# Daemon detects this via process.env.LISTEN_FDS
+
+[Install]
+WantedBy=default.target

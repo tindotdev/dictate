@@ -1,20 +1,20 @@
-import * as readline from 'readline';
 import * as path from 'path';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import {
-  ClientMessageSchema,
-  emitStatus,
-  emitError,
-  emitDelta,
-  emitFinal,
-  emitSpeechStarted,
-  emitSpeechStopped,
-  emitDebug,
+  type DaemonMessage,
+  type DaemonState,
+  type ErrorCode,
+  DAEMON_VERSION,
 } from './protocol.js';
-import { AudioCapture } from './pipewire.js';
-import { RealtimeClient } from './realtime.js';
+import { createSocketServer, type SocketServer } from './server.js';
+import { createAudioSupervisor, type AudioSupervisor } from './supervisors/audio.js';
+import { createNetworkSupervisor, type NetworkSupervisor } from './supervisors/network.js';
+import { createStateMachine, type DaemonStateMachine } from './state-machine.js';
 
-// Load .env file from daemon directory synchronously
+// ============================================================================
+// Load environment variables
+// ============================================================================
+
 const daemonDir = path.dirname(Bun.main);
 const envPath = path.join(daemonDir, '..', '.env');
 try {
@@ -37,151 +37,314 @@ try {
   // .env file doesn't exist or can't be read, that's fine
 }
 
+// ============================================================================
 // Load configuration
-let config: ReturnType<typeof loadConfig>;
+// ============================================================================
+
+let config: Config;
 try {
   config = loadConfig();
 } catch (err) {
-  emitError('CONFIG_ERROR', (err as Error).message);
+  console.error(`CONFIG_ERROR: ${(err as Error).message}`);
   process.exit(1);
 }
 
+// ============================================================================
+// Debug logging
+// ============================================================================
+
+const DEBUG = process.env.DEBUG === '1';
+
+function debug(message: string): void {
+  if (DEBUG) {
+    console.error(`[daemon] ${message}`);
+  }
+}
+
+// ============================================================================
 // Initialize components
-const audio = new AudioCapture();
-const realtime = new RealtimeClient(config);
+// ============================================================================
+
+const server: SocketServer = createSocketServer();
+const audio: AudioSupervisor = createAudioSupervisor();
+const network: NetworkSupervisor = createNetworkSupervisor({ config });
+const stateMachine: DaemonStateMachine = createStateMachine();
 
 // Track accumulated text per item_id (for delta -> full text conversion)
 const itemTexts = new Map<string, string>();
 
 // ============================================================================
-// Wire audio capture -> WebSocket
+// Helper: Broadcast status to all clients
 // ============================================================================
+
+function broadcastStatus(message?: string): void {
+  const state = stateMachine.getState();
+  const audioOk = audio.isRunning();
+  const wsOk = network.isConnected();
+
+  server.broadcast({
+    type: 'status',
+    state,
+    audio_ok: audioOk,
+    ws_ok: wsOk,
+    message,
+  });
+}
+
+function broadcastError(code: ErrorCode, message: string, recoverable: boolean, hint?: string): void {
+  server.broadcast({
+    type: 'error',
+    code,
+    message,
+    recoverable,
+    hint,
+  });
+}
+
+function broadcastMessage(msg: DaemonMessage): void {
+  server.broadcast(msg);
+}
+
+// ============================================================================
+// State machine event handlers
+// ============================================================================
+
+stateMachine.on('transition', (from: DaemonState, to: DaemonState) => {
+  debug(`State: ${from} -> ${to}`);
+  broadcastStatus();
+});
+
+stateMachine.on('error', (message: string) => {
+  debug(`State machine error: ${message}`);
+  broadcastError('INTERNAL_ERROR', message, false);
+});
+
+// ============================================================================
+// Audio supervisor event handlers
+// ============================================================================
+
+audio.on('started', () => {
+  debug('Audio capture started');
+  stateMachine.transition({ type: 'AUDIO_READY' });
+});
+
+audio.on('stopped', () => {
+  debug('Audio capture stopped');
+});
 
 audio.on('chunk', (chunk: Buffer) => {
   const base64 = chunk.toString('base64');
-  realtime.sendAudio(base64);
+  network.sendAudio(base64);
 });
 
-audio.on('error', (err) => {
-  emitError('AUDIO_ERROR', err.message);
-  emitStatus('error', err.message);
+audio.on('error', (err: Error) => {
+  debug(`Audio error: ${err.message}`);
+  broadcastError('AUDIO_UNAVAILABLE', err.message, true);
 });
 
-audio.on('close', (code) => {
-  // Only report as error if pw-cat exited unexpectedly (not from intentional stop)
-  if (code !== 0 && code !== null && !audio.wasIntentionallyStopped()) {
-    emitError('AUDIO_CLOSED', `pw-cat exited with code ${code}`);
-  }
+audio.on('restarting', (attempt: number, delayMs: number) => {
+  debug(`Audio restarting (attempt ${attempt}, delay ${delayMs}ms)`);
+});
+
+audio.on('failed', (err: Error) => {
+  debug(`Audio failed: ${err.message}`);
+  broadcastError('AUDIO_UNAVAILABLE', err.message, false, 'Check PipeWire is running: pw-cli info');
+  stateMachine.transition({ type: 'FATAL_ERROR', message: err.message });
 });
 
 // ============================================================================
-// Wire WebSocket events -> JSONL stdout
+// Network supervisor event handlers
 // ============================================================================
 
-realtime.on('open', () => {
-  emitStatus('ready');
-  // Start audio capture after connection is ready
-  if (!audio.isRunning()) {
-    audio.start();
-    emitStatus('recording');
+network.on('connected', () => {
+  debug('WebSocket connected');
+  stateMachine.transition({ type: 'WS_READY' });
+});
+
+network.on('disconnected', () => {
+  debug('WebSocket disconnected');
+});
+
+network.on('reconnecting', (attempt: number, delayMs: number) => {
+  debug(`WebSocket reconnecting (attempt ${attempt}, delay ${delayMs}ms)`);
+  stateMachine.transition({ type: 'WS_DISCONNECTED' });
+});
+
+network.on('failed', (err: Error) => {
+  debug(`WebSocket failed: ${err.message}`);
+  broadcastError('NETWORK_ERROR', err.message, false);
+  stateMachine.transition({ type: 'FATAL_ERROR', message: err.message });
+});
+
+network.on('error', (err: Error) => {
+  debug(`WebSocket error: ${err.message}`);
+  // Check for auth errors
+  if (err.message.includes('401') || err.message.includes('Unauthorized')) {
+    broadcastError('AUTH_FAILED', 'Invalid API key', false, 'Check your OPENAI_API_KEY');
+  } else {
+    broadcastError('NETWORK_ERROR', err.message, true);
   }
 });
 
-realtime.on('speech_started', (itemId) => {
+network.on('speech_started', (itemId: string) => {
+  debug(`Speech started: ${itemId}`);
   itemTexts.set(itemId, '');
-  emitSpeechStarted(itemId);
+  broadcastMessage({ type: 'speech_started', item_id: itemId });
 });
 
-realtime.on('speech_stopped', (itemId) => {
-  emitSpeechStopped(itemId);
+network.on('speech_stopped', (itemId: string) => {
+  debug(`Speech stopped: ${itemId}`);
+  broadcastMessage({ type: 'speech_stopped', item_id: itemId });
 });
 
-realtime.on('delta', (itemId, delta) => {
+network.on('delta', (itemId: string, delta: string) => {
   // Accumulate text for this item
   const current = itemTexts.get(itemId) ?? '';
   const newText = current + delta;
   itemTexts.set(itemId, newText);
   // Emit accumulated text (not just delta) for easier UI rendering
-  emitDelta(itemId, newText);
+  broadcastMessage({ type: 'partial_transcript', item_id: itemId, text: newText });
 });
 
-realtime.on('completed', (itemId, transcript) => {
+network.on('completed', (itemId: string, transcript: string) => {
+  debug(`Transcription completed: ${itemId}`);
   itemTexts.delete(itemId);
-  emitFinal(itemId, transcript);
-});
+  broadcastMessage({ type: 'final_transcript', item_id: itemId, text: transcript });
 
-realtime.on('error', (err) => {
-  emitError('REALTIME_ERROR', err.message);
-});
-
-realtime.on('close', (code, reason) => {
-  audio.stop();
-  emitStatus('stopped', `WebSocket closed: ${code} ${reason}`);
-});
-
-// ============================================================================
-// Read commands from stdin (JSONL)
-// ============================================================================
-
-const rl = readline.createInterface({
-  input: process.stdin,
-  terminal: false,
-});
-
-rl.on('line', (line) => {
-  if (!line.trim()) return;
-
-  try {
-    const parsed = JSON.parse(line);
-    const msg = ClientMessageSchema.parse(parsed);
-
-    switch (msg.type) {
-      case 'start':
-        emitDebug('Received start command');
-        if (!realtime.isConnected()) {
-          emitStatus('connecting');
-          realtime.connect();
-          // Audio starts after 'open' event
-        } else if (!audio.isRunning()) {
-          audio.start();
-          emitStatus('recording');
-        }
-        break;
-
-      case 'stop':
-        emitDebug('Received stop command');
-        audio.stop();
-        realtime.disconnect();
-        itemTexts.clear();
-        emitStatus('stopped');
-        break;
-
-      case 'config':
-        emitDebug(`Received config update: ${JSON.stringify(msg)}`);
-        // Runtime config updates could be implemented here
-        // For now, config is loaded at startup only
-        break;
-    }
-  } catch (err) {
-    emitError('PARSE_ERROR', (err as Error).message);
+  // If we're in flushing state, this final transcript completes the flush
+  if (stateMachine.getState() === 'flushing') {
+    stateMachine.transition({ type: 'FINAL_TRANSCRIPT_RECEIVED' });
   }
 });
 
-rl.on('close', () => {
-  emitDebug('stdin closed, shutting down');
-  audio.stop();
-  realtime.disconnect();
-  process.exit(0);
+// ============================================================================
+// Socket server event handlers
+// ============================================================================
+
+server.on('client_connected', (clientId: string) => {
+  debug(`Client connected: ${clientId}`);
+  // Send current status to the new client
+  server.send(clientId, {
+    type: 'status',
+    state: stateMachine.getState(),
+    audio_ok: audio.isRunning(),
+    ws_ok: network.isConnected(),
+  });
 });
+
+server.on('client_disconnected', (clientId: string) => {
+  debug(`Client disconnected: ${clientId}`);
+});
+
+server.on('client_message', (clientId: string, msg) => {
+  debug(`Message from ${clientId}: ${JSON.stringify(msg)}`);
+
+  switch (msg.type) {
+    case 'initialize':
+      // Already handled by server.ts (sends 'initialized' response)
+      break;
+
+    case 'start_listening':
+    case 'start': // Legacy support
+      handleStartListening();
+      break;
+
+    case 'stop_listening':
+    case 'stop': // Legacy support
+      handleStopListening();
+      break;
+
+    case 'set_mode':
+      // Future: handle mode switching
+      debug(`Mode switch requested: ${msg.mode}`);
+      break;
+
+    case 'disconnect':
+      // Client is disconnecting gracefully - nothing to do
+      break;
+
+    case 'config':
+      // Legacy: runtime config updates not supported
+      debug('Runtime config updates not supported');
+      break;
+  }
+});
+
+server.on('error', (err: Error) => {
+  debug(`Server error: ${err.message}`);
+});
+
+// ============================================================================
+// Command handlers
+// ============================================================================
+
+function handleStartListening(): void {
+  const state = stateMachine.getState();
+
+  if (state === 'listening') {
+    debug('Already listening');
+    return;
+  }
+
+  if (state === 'error') {
+    debug('Cannot start from error state - reset first');
+    return;
+  }
+
+  // Transition to audio_starting and begin the startup sequence
+  const started = stateMachine.transition({ type: 'START_LISTENING' });
+  if (!started) {
+    debug(`Cannot start listening from state: ${state}`);
+    return;
+  }
+
+  // Start both supervisors - state machine handles the transitions
+  network.connect();
+  audio.start();
+}
+
+function handleStopListening(): void {
+  const state = stateMachine.getState();
+
+  if (state === 'idle') {
+    debug('Already idle');
+    return;
+  }
+
+  // Transition to flushing (waiting for final transcripts)
+  stateMachine.transition({ type: 'STOP_LISTENING' });
+
+  // Stop audio capture
+  audio.stop();
+
+  // Don't disconnect WebSocket immediately - wait for final transcripts
+  // The state machine will transition to idle when FINAL_TRANSCRIPT_RECEIVED
+  // For now, if we're not mid-transcription, just go straight to idle
+  if (itemTexts.size === 0) {
+    stateMachine.transition({ type: 'FINAL_TRANSCRIPT_RECEIVED' });
+    network.disconnect();
+  } else {
+    // Set a timeout to force disconnect if no final transcript arrives
+    setTimeout(() => {
+      if (stateMachine.getState() === 'flushing') {
+        debug('Flush timeout - forcing disconnect');
+        stateMachine.transition({ type: 'FINAL_TRANSCRIPT_RECEIVED' });
+        network.disconnect();
+        itemTexts.clear();
+      }
+    }, 5000);
+  }
+}
 
 // ============================================================================
 // Graceful shutdown
 // ============================================================================
 
-function shutdown() {
-  emitDebug('Shutting down...');
+function shutdown(): void {
+  debug('Shutting down...');
   audio.stop();
-  realtime.disconnect();
+  network.disconnect();
+  server.close();
   process.exit(0);
 }
 
@@ -189,8 +352,8 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
 // ============================================================================
-// Initial state
+// Start server
 // ============================================================================
 
-emitStatus('stopped');
-emitDebug('Daemon ready, waiting for commands');
+server.listen();
+debug(`Daemon v${DAEMON_VERSION} ready, listening on socket`);

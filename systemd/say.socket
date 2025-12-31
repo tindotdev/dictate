@@ -1,0 +1,9 @@
+[Unit]
+Description=Say Dictation Daemon Socket
+
+[Socket]
+ListenStream=%t/say/say.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

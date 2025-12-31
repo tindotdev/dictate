@@ -6,11 +6,21 @@ local notify = require('dictate.notify')
 ---@type integer|nil
 local job_id = nil
 
----@type 'stopped'|'connecting'|'ready'|'recording'|'error'
+-- New daemon states: idle, audio_starting, listening, flushing, reconnecting, error
+-- sayctl states: connecting, connected, reconnecting
+-- We track both the daemon state and sayctl state
+---@type 'stopped'|'connecting'|'connected'|'idle'|'audio_starting'|'listening'|'flushing'|'reconnecting'|'error'
 local state = 'stopped'
 
----@type 'stopped'|'connecting'|'ready'|'recording'|'error'
+---@type 'stopped'|'connecting'|'connected'|'idle'|'audio_starting'|'listening'|'flushing'|'reconnecting'|'error'
 local prev_state = 'stopped'
+
+-- Subsystem health (from daemon status messages)
+local audio_ok = false
+local ws_ok = false
+
+-- Flag to send start_listening after sayctl connects
+local pending_start_listening = false
 
 -- Buffer for incomplete JSONL lines
 local line_buffer = ''
@@ -37,16 +47,23 @@ local function call_on_stop()
   end
 end
 
+---Check if state is "active" (recording/listening)
+---@param s string
+---@return boolean
+local function is_active_state(s)
+  return s == 'listening' or s == 'recording' -- Support both old and new names
+end
+
 ---Update state and trigger callbacks on transitions
----@param new_state 'stopped'|'connecting'|'ready'|'recording'|'error'
+---@param new_state string
 local function set_state(new_state)
   prev_state = state
   state = new_state
 
   -- Trigger callbacks on state transitions
-  if prev_state ~= 'recording' and new_state == 'recording' then
+  if not is_active_state(prev_state) and is_active_state(new_state) then
     call_on_start()
-  elseif prev_state == 'recording' and new_state ~= 'recording' then
+  elseif is_active_state(prev_state) and not is_active_state(new_state) then
     call_on_stop()
   end
 end
@@ -81,33 +98,67 @@ local function parse_jsonl(data)
   end
 end
 
----Handle a parsed message from the daemon
+---Handle a parsed message from the daemon or sayctl
 ---@param msg table
 function M.handle_message(msg)
   local t = msg.type
 
   if t == 'status' then
+    -- Update subsystem health if provided (daemon messages)
+    if msg.audio_ok ~= nil then audio_ok = msg.audio_ok end
+    if msg.ws_ok ~= nil then ws_ok = msg.ws_ok end
+
     set_state(msg.state)
+
+    -- Log state transitions
     if state == 'error' then
       notify.error(msg.message or 'unknown error')
-    elseif state == 'ready' then
+    elseif state == 'idle' or state == 'ready' then
       notify.debug('daemon ready')
-    elseif state == 'recording' then
+    elseif state == 'listening' or state == 'recording' then
       notify.debug('recording started')
+    elseif state == 'connecting' then
+      notify.debug('connecting to daemon...')
+    elseif state == 'connected' then
+      notify.debug('connected to daemon')
+      -- Send pending start_listening now that sayctl is connected
+      if pending_start_listening then
+        pending_start_listening = false
+        M.send({ type = 'start_listening' })
+      end
+    elseif state == 'reconnecting' then
+      notify.debug('reconnecting...')
+    elseif state == 'audio_starting' then
+      notify.debug('starting audio capture...')
+    elseif state == 'flushing' then
+      notify.debug('waiting for final transcript...')
     end
+
+  elseif t == 'initialized' then
+    -- Handshake response from daemon
+    notify.debug('daemon v' .. (msg.daemon_version or '?') .. ' ready')
+
   elseif t == 'speech_started' then
     ui.on_speech_started(msg.item_id)
     notify.debug('speech detected')
+
   elseif t == 'speech_stopped' then
     ui.on_speech_stopped(msg.item_id)
     notify.debug('speech ended')
-  elseif t == 'delta' then
+
+  elseif t == 'partial_transcript' or t == 'delta' then
+    -- Support both new (partial_transcript) and legacy (delta) names
     ui.on_delta(msg.item_id, msg.text)
-  elseif t == 'final' then
+
+  elseif t == 'final_transcript' or t == 'final' then
+    -- Support both new (final_transcript) and legacy (final) names
     ui.on_final(msg.item_id, msg.text)
     notify.debug('transcription: ' .. (msg.text or ''))
+
   elseif t == 'error' then
-    notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown'))
+    local hint = msg.hint and (' (' .. msg.hint .. ')') or ''
+    notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown') .. hint)
+
   elseif t == 'debug' then
     notify.debug(msg.message or '')
   end
@@ -132,8 +183,8 @@ function M.start()
   end
 
   if job_id then
-    -- Already running, just send start
-    M.send({ type = 'start' })
+    -- Already running, just send start_listening
+    M.send({ type = 'start_listening' })
     return
   end
 
@@ -143,9 +194,11 @@ function M.start()
     return
   end
 
-  notify.debug('starting daemon: ' .. table.concat(cfg.daemon_cmd, ' '))
+  notify.debug('starting sayctl: ' .. table.concat(cfg.daemon_cmd, ' '))
 
   line_buffer = ''
+  audio_ok = false
+  ws_ok = false
   set_state('connecting')
 
   job_id = vim.fn.jobstart(cfg.daemon_cmd, {
@@ -158,7 +211,7 @@ function M.start()
       vim.schedule(function()
         for _, line in ipairs(data) do
           if line and line ~= '' then
-            notify.debug('daemon stderr: ' .. line)
+            notify.debug('sayctl stderr: ' .. line)
           end
         end
       end)
@@ -168,11 +221,14 @@ function M.start()
         job_id = nil
         set_state('stopped')
         line_buffer = ''
+        audio_ok = false
+        ws_ok = false
+        pending_start_listening = false
         ui.clear_all()
         if code ~= 0 then
-          notify.warn('daemon exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
+          notify.warn('sayctl exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
         else
-          notify.debug('daemon stopped')
+          notify.debug('sayctl stopped')
         end
       end)
     end,
@@ -181,21 +237,21 @@ function M.start()
   })
 
   if job_id <= 0 then
-    notify.error('failed to start daemon. Is bun installed? Run :checkhealth dictate for help.')
+    notify.error('failed to start sayctl. Is bun installed? Run :checkhealth dictate for help.')
     job_id = nil
     set_state('error')
     return
   end
 
-  -- Send start command to daemon
-  M.send({ type = 'start' })
+  -- Set flag to send start_listening after sayctl connects
+  pending_start_listening = true
 end
 
 ---Stop dictation and the daemon
 function M.stop()
   if job_id then
-    M.send({ type = 'stop' })
-    -- Give it a moment to clean up, then force stop
+    M.send({ type = 'stop_listening' })
+    -- Give it a moment to clean up, then force stop sayctl
     vim.defer_fn(function()
       if job_id then
         vim.fn.jobstop(job_id)
@@ -205,6 +261,9 @@ function M.stop()
   end
   set_state('stopped')
   line_buffer = ''
+  audio_ok = false
+  ws_ok = false
+  pending_start_listening = false
   ui.clear_all()
 end
 
@@ -227,6 +286,24 @@ end
 ---@return string
 function M.get_state()
   return state
+end
+
+---Check if audio subsystem is healthy
+---@return boolean
+function M.is_audio_ok()
+  return audio_ok
+end
+
+---Check if WebSocket subsystem is healthy
+---@return boolean
+function M.is_ws_ok()
+  return ws_ok
+end
+
+---Check if currently recording/listening
+---@return boolean
+function M.is_active()
+  return is_active_state(state)
 end
 
 return M

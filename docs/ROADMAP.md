@@ -58,16 +58,7 @@ Power-user features for specific workflows.
 Integration with the broader Neovim ecosystem.
 
 - [ ] `noice.nvim` integration for loading spinner while recording
-- [ ] Telescope picker for transcription history
-- [ ] Which-key integration
-- [ ] Lualine/statusline preset
 - [ ] Documentation in vimdoc format (`:help dictate`)
-
----
-
-## Known Issues
-
-- **Ghost text not appearing**: Transcription inserts directly without showing ghost text preview. Likely caused by OpenAI API not sending delta (interim) events before the final transcript. Needs investigation with `debug = true` enabled.
 
 ---
 
