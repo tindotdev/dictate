@@ -33,7 +33,7 @@ describe('ConfigSchema', () => {
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.model).toBe('gpt-4o-mini-transcribe');
+      expect(result.data.model).toBe('gpt-4o-transcribe');
       expect(result.data.vadThreshold).toBe(0.5);
       expect(result.data.vadPrefixPaddingMs).toBe(300);
       expect(result.data.vadSilenceDurationMs).toBe(500);

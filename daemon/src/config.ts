@@ -13,7 +13,7 @@ export type NoiseReduction = z.infer<typeof NoiseReductionSchema>;
 
 export const ConfigSchema = z.object({
   apiKey: z.string().min(1, 'OPENAI_API_KEY is required'),
-  model: TranscriptionModelSchema.default('gpt-4o-mini-transcribe'),
+  model: TranscriptionModelSchema.default('gpt-4o-transcribe'),
   prompt: z.string().optional(),
   vadThreshold: z.number().min(0).max(1).default(0.5),
   vadPrefixPaddingMs: z.number().positive().default(300),
@@ -28,7 +28,7 @@ export type Config = z.infer<typeof ConfigSchema>;
 export function loadConfig(): Config {
   const rawConfig = {
     apiKey: process.env.OPENAI_API_KEY ?? '',
-    model: process.env.OPENAI_STT_MODEL ?? 'gpt-4o-mini-transcribe',
+    model: process.env.OPENAI_STT_MODEL ?? 'gpt-4o-transcribe',
     prompt: process.env.OPENAI_STT_PROMPT,
     debug: process.env.DEBUG === '1',
   };

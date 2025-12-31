@@ -7,7 +7,7 @@ Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcript
 - `:DictateToggle` starts/stops dictation
 - Live ghost text preview as you speak
 - Text inserted at cursor on speech completion
-- Uses OpenAI's gpt-4o-mini-transcribe model
+- Uses OpenAI's gpt-4o-transcribe model
 
 ## Requirements
 
@@ -60,7 +60,7 @@ export OPENAI_API_KEY="sk-..."
 Optional environment variables:
 
 ```bash
-export OPENAI_STT_MODEL="gpt-4o-transcribe"  # Default: gpt-4o-mini-transcribe
+export OPENAI_STT_MODEL="gpt-4o-mini-transcribe"  # Default: gpt-4o-transcribe
 export OPENAI_STT_PROMPT="technical terms like Neovim, TypeScript, PipeWire"
 export DEBUG=1  # Enable debug logging
 ```
