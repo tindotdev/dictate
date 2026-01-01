@@ -1,7 +1,7 @@
-import * as net from 'net';
-import * as fs from 'fs';
 import * as path from 'path';
 import { EventEmitter } from 'events';
+import { stat, unlink, mkdir, chmod } from 'node:fs/promises';
+import type { Socket as BunSocket, SocketHandler } from 'bun';
 import {
   ClientMessageSchema,
   type ClientMessage,
@@ -13,9 +13,16 @@ import {
 // Types
 // ============================================================================
 
+/** Client-specific data attached to each socket */
+interface ClientData {
+  id: string;
+  version?: string;
+  buffer: string;
+}
+
 export interface Client {
   id: string;
-  socket: net.Socket;
+  socket: BunSocket<ClientData>;
   version?: string;
   buffer: string;
 }
@@ -53,27 +60,33 @@ export function getDefaultSocketPath(): string {
   return path.join(process.env.HOME ?? '/tmp', '.local', 'state', 'dictate', 'dictate.sock');
 }
 
-function ensureSocketDir(socketPath: string): void {
+async function ensureSocketDir(socketPath: string): Promise<void> {
   const dir = path.dirname(socketPath);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    await stat(dir);
+  } catch {
+    // Directory doesn't exist, create it
+    await mkdir(dir, { recursive: true, mode: 0o700 });
   }
 }
 
-function cleanupStaleSocket(socketPath: string): void {
-  if (fs.existsSync(socketPath)) {
-    // Check if it's a socket file
-    const stats = fs.statSync(socketPath);
+async function cleanupStaleSocket(socketPath: string): Promise<void> {
+  try {
+    // Check if socket file exists
+    const stats = await stat(socketPath);
+
     if (!stats.isSocket()) {
       // Not a socket (regular file, etc.) - safe to remove
-      fs.unlinkSync(socketPath);
+      await unlink(socketPath);
       return;
     }
 
     // It's a socket - check if something is listening
-    // We do this synchronously by just removing it; if another process
+    // We do this by just removing it; if another process
     // is using it, they'll get EADDRINUSE when we try to bind
-    fs.unlinkSync(socketPath);
+    await unlink(socketPath);
+  } catch {
+    // File doesn't exist or error - that's fine
   }
 }
 
@@ -81,14 +94,26 @@ function cleanupStaleSocket(socketPath: string): void {
 // Socket Server
 // ============================================================================
 
+/** Server instance returned by Bun.listen */
+type BunServer = ReturnType<typeof Bun.listen>;
+
 export class SocketServer extends EventEmitter {
-  private server: net.Server | null = null;
-  private clients: Map<string, Client> = new Map();
+  private server: BunServer | null = null;
+  private clients: Map<string, BunSocket<ClientData>> = new Map();
   private nextClientId = 1;
   private socketPath: string | null = null;
+  private _ready: Promise<void> | null = null;
 
   constructor() {
     super();
+  }
+
+  /**
+   * Promise that resolves when the server is ready to accept connections.
+   * Only relevant in standalone mode (not systemd socket activation).
+   */
+  get ready(): Promise<void> {
+    return this._ready ?? Promise.resolve();
   }
 
   /**
@@ -99,28 +124,70 @@ export class SocketServer extends EventEmitter {
       return; // Already listening
     }
 
-    this.server = net.createServer((socket) => this.handleConnection(socket));
-
-    this.server.on('error', (err) => {
-      this.emit('error', err);
-    });
-
     // Check for systemd socket activation
     if (process.env.LISTEN_FDS === '1') {
       // fd 3 is the socket passed by systemd
-      this.server.listen({ fd: 3 });
+      this.server = Bun.listen<ClientData>({
+        fd: 3,
+        socket: this.createSocketHandlers(),
+      });
       return;
     }
 
     // Standalone mode: create socket ourselves
     this.socketPath = options.socketPath ?? getDefaultSocketPath();
-    ensureSocketDir(this.socketPath);
-    cleanupStaleSocket(this.socketPath);
 
-    this.server.listen(this.socketPath);
+    // Setup socket directory and cleanup, then start listening
+    this._ready = this.setupAndListen();
+  }
+
+  private async setupAndListen(): Promise<void> {
+    if (!this.socketPath) return;
+
+    await ensureSocketDir(this.socketPath);
+    await cleanupStaleSocket(this.socketPath);
+
+    this.server = Bun.listen<ClientData>({
+      unix: this.socketPath,
+      socket: this.createSocketHandlers(),
+    });
 
     // Set socket permissions (owner only)
-    fs.chmodSync(this.socketPath, 0o600);
+    await chmod(this.socketPath, 0o600);
+  }
+
+  private createSocketHandlers(): SocketHandler<ClientData> {
+    return {
+      open: (socket) => {
+        const clientId = `client_${this.nextClientId++}`;
+        socket.data = {
+          id: clientId,
+          buffer: '',
+        };
+
+        this.clients.set(clientId, socket);
+        this.emit('client_connected', clientId);
+      },
+
+      data: (socket, data) => {
+        this.handleData(socket, data);
+      },
+
+      close: (socket) => {
+        const clientId = socket.data.id;
+        this.clients.delete(clientId);
+        this.emit('client_disconnected', clientId);
+      },
+
+      error: (socket, err) => {
+        const clientId = socket.data?.id ?? 'unknown';
+        this.emit('error', new Error(`Client ${clientId}: ${err.message}`));
+      },
+
+      drain: (_socket) => {
+        // Socket ready for more data (backpressure cleared)
+      },
+    };
   }
 
   /**
@@ -128,32 +195,41 @@ export class SocketServer extends EventEmitter {
    */
   close(): void {
     // Disconnect all clients
-    for (const client of this.clients.values()) {
-      client.socket.destroy();
+    for (const socket of this.clients.values()) {
+      socket.end();
     }
     this.clients.clear();
 
     // Close server
     if (this.server) {
-      this.server.close();
+      this.server.stop();
       this.server = null;
     }
 
     // Clean up socket file (only in standalone mode)
-    if (this.socketPath && fs.existsSync(this.socketPath)) {
-      fs.unlinkSync(this.socketPath);
+    if (this.socketPath) {
+      // Note: Using sync to match original behavior in close()
+      try {
+        const fs = require('fs');
+        if (fs.existsSync(this.socketPath)) {
+          fs.unlinkSync(this.socketPath);
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
     }
     this.socketPath = null;
+    this._ready = null;
   }
 
   /**
    * Send a message to a specific client.
    */
   send(clientId: string, message: DaemonMessage): void {
-    const client = this.clients.get(clientId);
-    if (client && !client.socket.destroyed) {
+    const socket = this.clients.get(clientId);
+    if (socket) {
       const line = JSON.stringify(message) + '\n';
-      client.socket.write(line);
+      socket.write(line);
     }
   }
 
@@ -162,10 +238,8 @@ export class SocketServer extends EventEmitter {
    */
   broadcast(message: DaemonMessage): void {
     const line = JSON.stringify(message) + '\n';
-    for (const client of this.clients.values()) {
-      if (!client.socket.destroyed) {
-        client.socket.write(line);
-      }
+    for (const socket of this.clients.values()) {
+      socket.write(line);
     }
   }
 
@@ -183,40 +257,15 @@ export class SocketServer extends EventEmitter {
     return Array.from(this.clients.keys());
   }
 
-  private handleConnection(socket: net.Socket): void {
-    const clientId = `client_${this.nextClientId++}`;
-    const client: Client = {
-      id: clientId,
-      socket,
-      buffer: '',
-    };
-
-    this.clients.set(clientId, client);
-    this.emit('client_connected', clientId);
-
-    socket.on('data', (data) => {
-      this.handleData(client, data);
-    });
-
-    socket.on('close', () => {
-      this.clients.delete(clientId);
-      this.emit('client_disconnected', clientId);
-    });
-
-    socket.on('error', (err) => {
-      // Log but don't crash on client errors
-      this.emit('error', new Error(`Client ${clientId}: ${err.message}`));
-    });
-  }
-
-  private handleData(client: Client, data: Buffer): void {
-    client.buffer += data.toString();
+  private handleData(socket: BunSocket<ClientData>, data: Buffer | Uint8Array): void {
+    const clientData = socket.data;
+    clientData.buffer += Buffer.from(data).toString();
 
     // Process complete lines
     let newlineIndex: number;
-    while ((newlineIndex = client.buffer.indexOf('\n')) !== -1) {
-      const line = client.buffer.slice(0, newlineIndex);
-      client.buffer = client.buffer.slice(newlineIndex + 1);
+    while ((newlineIndex = clientData.buffer.indexOf('\n')) !== -1) {
+      const line = clientData.buffer.slice(0, newlineIndex);
+      clientData.buffer = clientData.buffer.slice(newlineIndex + 1);
 
       if (!line.trim()) continue;
 
@@ -226,18 +275,18 @@ export class SocketServer extends EventEmitter {
 
         // Handle initialize specially to track client version
         if (message.type === 'initialize') {
-          client.version = message.version;
+          clientData.version = message.version;
           // Send initialized response
-          this.send(client.id, {
+          this.send(clientData.id, {
             type: 'initialized',
-            client_id: client.id,
+            client_id: clientData.id,
             daemon_version: DAEMON_VERSION,
           });
         }
 
-        this.emit('client_message', client.id, message);
+        this.emit('client_message', clientData.id, message);
       } catch (err) {
-        this.send(client.id, {
+        this.send(clientData.id, {
           type: 'error',
           code: 'INTERNAL_ERROR',
           message: `Invalid message: ${(err as Error).message}`,

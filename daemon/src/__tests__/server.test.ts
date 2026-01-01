@@ -74,31 +74,35 @@ describe('SocketServer', () => {
   });
 
   describe('listen', () => {
-    it('creates socket file', () => {
+    it('creates socket file', async () => {
       server.listen({ socketPath });
+      await server.ready;
       expect(fs.existsSync(socketPath)).toBe(true);
     });
 
-    it('sets correct socket permissions', () => {
+    it('sets correct socket permissions', async () => {
       server.listen({ socketPath });
+      await server.ready;
       const stats = fs.statSync(socketPath);
       // Check owner-only permissions (0600)
       expect(stats.mode & 0o777).toBe(0o600);
     });
 
-    it('removes stale socket file', () => {
+    it('removes stale socket file', async () => {
       // Create a stale socket file
       fs.writeFileSync(socketPath, '');
 
       // Server should remove it and start successfully
       server.listen({ socketPath });
+      await server.ready;
       expect(fs.existsSync(socketPath)).toBe(true);
     });
   });
 
   describe('close', () => {
-    it('removes socket file', () => {
+    it('removes socket file', async () => {
       server.listen({ socketPath });
+      await server.ready;
       expect(fs.existsSync(socketPath)).toBe(true);
 
       server.close();
@@ -107,6 +111,7 @@ describe('SocketServer', () => {
 
     it('disconnects all clients', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const client1 = await createClient();
       const client2 = await createClient();
@@ -130,6 +135,7 @@ describe('SocketServer', () => {
   describe('client connections', () => {
     it('emits client_connected on new connection', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const connectedHandler = mock((_clientId: string) => {});
       server.on('client_connected', connectedHandler);
@@ -145,6 +151,7 @@ describe('SocketServer', () => {
 
     it('emits client_disconnected when client closes', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const disconnectedHandler = mock((_clientId: string) => {});
       server.on('client_disconnected', disconnectedHandler);
@@ -161,6 +168,7 @@ describe('SocketServer', () => {
 
     it('handles multiple clients', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const client1 = await createClient();
       const client2 = await createClient();
@@ -178,6 +186,7 @@ describe('SocketServer', () => {
 
     it('assigns unique client IDs', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const clientIds: string[] = [];
       server.on('client_connected', (id) => clientIds.push(id));
@@ -198,6 +207,7 @@ describe('SocketServer', () => {
   describe('message handling', () => {
     it('parses valid JSONL messages', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const messageHandler = mock((_clientId: string, _msg: ClientMessage) => {});
       server.on('client_message', messageHandler);
@@ -215,6 +225,7 @@ describe('SocketServer', () => {
 
     it('handles initialize message', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const client = await createClient();
       await new Promise((r) => setTimeout(r, 50));
@@ -234,6 +245,7 @@ describe('SocketServer', () => {
 
     it('sends error for invalid messages', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const client = await createClient();
       await new Promise((r) => setTimeout(r, 50));
@@ -253,6 +265,7 @@ describe('SocketServer', () => {
 
     it('handles multiple messages in one data chunk', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const messages: ClientMessage[] = [];
       server.on('client_message', (_id, msg) => messages.push(msg));
@@ -273,6 +286,7 @@ describe('SocketServer', () => {
 
     it('handles split messages across data chunks', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const messages: ClientMessage[] = [];
       server.on('client_message', (_id, msg) => messages.push(msg));
@@ -296,6 +310,7 @@ describe('SocketServer', () => {
   describe('send/broadcast', () => {
     it('sends message to specific client', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       let targetClientId = '';
       server.on('client_connected', (id) => (targetClientId = id));
@@ -319,6 +334,7 @@ describe('SocketServer', () => {
 
     it('broadcasts message to all clients', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       const client1 = await createClient();
       const client2 = await createClient();
@@ -344,8 +360,9 @@ describe('SocketServer', () => {
       client2.destroy();
     });
 
-    it('does not crash on send to invalid client', () => {
+    it('does not crash on send to invalid client', async () => {
       server.listen({ socketPath });
+      await server.ready;
 
       // Should not throw
       server.send('invalid_client', {
