@@ -245,12 +245,10 @@ server.on('client_message', (clientId: string, msg) => {
       break;
 
     case 'start_listening':
-    case 'start': // Legacy support
       handleStartListening();
       break;
 
     case 'stop_listening':
-    case 'stop': // Legacy support
       handleStopListening();
       break;
 
@@ -261,11 +259,6 @@ server.on('client_message', (clientId: string, msg) => {
 
     case 'disconnect':
       // Client is disconnecting gracefully - nothing to do
-      break;
-
-    case 'config':
-      // Legacy: runtime config updates not supported
-      debug('Runtime config updates not supported');
       break;
   }
 });

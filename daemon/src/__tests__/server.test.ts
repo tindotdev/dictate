@@ -215,7 +215,7 @@ describe('SocketServer', () => {
       const client = await createClient();
       await new Promise((r) => setTimeout(r, 50));
 
-      sendMessage(client, { type: 'start' });
+      sendMessage(client, { type: 'start_listening' });
       await new Promise((r) => setTimeout(r, 50));
 
       expect(messageHandler).toHaveBeenCalled();
@@ -274,12 +274,12 @@ describe('SocketServer', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Send multiple messages in one write
-      client.write('{"type":"start"}\n{"type":"stop"}\n');
+      client.write('{"type":"start_listening"}\n{"type":"stop_listening"}\n');
       await new Promise((r) => setTimeout(r, 50));
 
       expect(messages.length).toBe(2);
-      expect(messages[0].type).toBe('start');
-      expect(messages[1].type).toBe('stop');
+      expect(messages[0].type).toBe('start_listening');
+      expect(messages[1].type).toBe('stop_listening');
 
       client.destroy();
     });
@@ -297,11 +297,11 @@ describe('SocketServer', () => {
       // Split a message across two writes
       client.write('{"type":');
       await new Promise((r) => setTimeout(r, 10));
-      client.write('"start"}\n');
+      client.write('"start_listening"}\n');
       await new Promise((r) => setTimeout(r, 50));
 
       expect(messages.length).toBe(1);
-      expect(messages[0].type).toBe('start');
+      expect(messages[0].type).toBe('start_listening');
 
       client.destroy();
     });

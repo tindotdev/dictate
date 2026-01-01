@@ -153,18 +153,6 @@ local function validate_config(opts)
     end
   end
 
-  -- Backward compatibility: support old _add names
-  if opts.disabled_filetypes_add ~= nil then
-    if type(opts.disabled_filetypes_add) ~= 'table' then
-      table.insert(errors, { field = 'disabled_filetypes_add', message = 'expected string[] (array of strings)', got = type(opts.disabled_filetypes_add) })
-    end
-  end
-  if opts.disabled_buftypes_add ~= nil then
-    if type(opts.disabled_buftypes_add) ~= 'table' then
-      table.insert(errors, { field = 'disabled_buftypes_add', message = 'expected string[] (array of strings)', got = type(opts.disabled_buftypes_add) })
-    end
-  end
-
   -- notify_backend: 'native' | 'nvim-notify' | 'auto'
   if opts.notify_backend ~= nil then
     local valid_backends = { native = true, ['nvim-notify'] = true, auto = true }
@@ -206,23 +194,13 @@ local function find_daemon_cmd()
   local source = debug.getinfo(1, 'S').source:sub(2)
   local plugin_root = vim.fn.fnamemodify(source, ':h:h:h:h')
 
-  -- New architecture: use dictatectl (stdio bridge to daemon socket)
   local dist_dictatectl = plugin_root .. '/daemon/dist/cli/dictatectl.js'
   local dev_dictatectl = plugin_root .. '/daemon/src/cli/dictatectl.ts'
-
-  -- Fallback to old main.js/main.ts for backwards compatibility
-  local dist_main = plugin_root .. '/daemon/dist/main.js'
-  local dev_main = plugin_root .. '/daemon/src/main.ts'
 
   if vim.fn.filereadable(dist_dictatectl) == 1 then
     return { 'bun', dist_dictatectl }
   elseif vim.fn.filereadable(dev_dictatectl) == 1 then
     return { 'bun', dev_dictatectl }
-  elseif vim.fn.filereadable(dist_main) == 1 then
-    -- Fallback to old daemon (pre-socket architecture)
-    return { 'bun', dist_main }
-  elseif vim.fn.filereadable(dev_main) == 1 then
-    return { 'bun', dev_main }
   else
     error('dictate: dictatectl not found. Run `bun run build` in daemon/')
   end
@@ -241,15 +219,13 @@ function M.setup(opts)
     return false
   end
 
-  -- Get extra items (new name: extra_*, old name: *_add for backward compat)
-  local extra_filetypes = opts.extra_disabled_filetypes or opts.disabled_filetypes_add
-  local extra_buftypes = opts.extra_disabled_buftypes or opts.disabled_buftypes_add
+  local extra_filetypes = opts.extra_disabled_filetypes
+  local extra_buftypes = opts.extra_disabled_buftypes
 
   -- Create clean opts for merge (without extra_* fields)
   local merge_opts = {}
   for k, v in pairs(opts) do
-    if k ~= 'extra_disabled_filetypes' and k ~= 'extra_disabled_buftypes'
-       and k ~= 'disabled_filetypes_add' and k ~= 'disabled_buftypes_add' then
+    if k ~= 'extra_disabled_filetypes' and k ~= 'extra_disabled_buftypes' then
       merge_opts[k] = v
     end
   end

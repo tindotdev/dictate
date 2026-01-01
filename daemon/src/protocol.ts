@@ -58,15 +58,6 @@ export const ClientMessageSchema = z.discriminatedUnion('type', [
 
   // Graceful disconnect
   z.object({ type: z.literal('disconnect') }),
-
-  // DEPRECATED: Legacy message types (remove after main.ts refactor)
-  z.object({ type: z.literal('start') }),
-  z.object({ type: z.literal('stop') }),
-  z.object({
-    type: z.literal('config'),
-    model: z.string().optional(),
-    prompt: z.string().optional(),
-  }),
 ]);
 
 export type ClientMessage = z.infer<typeof ClientMessageSchema>;
@@ -217,35 +208,4 @@ export function emitSpeechStopped(itemId: string): void {
 
 export function emitInitialized(clientId: string): void {
   emit({ type: 'initialized', client_id: clientId, daemon_version: DAEMON_VERSION });
-}
-
-// ============================================================================
-// Backwards-compatible shims (DEPRECATED - remove after main.ts refactor)
-// ============================================================================
-
-/** @deprecated Use emitPartialTranscript */
-export function emitDelta(itemId: string, text: string): void {
-  emitPartialTranscript(itemId, text);
-}
-
-/** @deprecated Use emitFinalTranscript */
-export function emitFinal(itemId: string, text: string): void {
-  emitFinalTranscript(itemId, text);
-}
-
-// Old status emit for backwards compat (uses 'stopped' instead of 'idle', etc.)
-type OldStatusState = 'connecting' | 'ready' | 'recording' | 'stopped' | 'error';
-
-/** @deprecated Will be removed after main.ts refactor */
-export function emitStatusCompat(state: OldStatusState, message?: string): void {
-  // Map old states to new states
-  const stateMap: Record<OldStatusState, DaemonState> = {
-    connecting: 'audio_starting',
-    ready: 'idle',
-    recording: 'listening',
-    stopped: 'idle',
-    error: 'error',
-  };
-  const newState = stateMap[state] ?? 'idle';
-  emit({ type: 'status', state: newState, audio_ok: true, ws_ok: true, message });
 }

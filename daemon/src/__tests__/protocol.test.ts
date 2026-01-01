@@ -50,32 +50,6 @@ describe('ClientMessageSchema', () => {
     });
   });
 
-  describe('legacy protocol messages (deprecated)', () => {
-    it('validates start command', () => {
-      const result = ClientMessageSchema.safeParse({ type: 'start' });
-      expect(result.success).toBe(true);
-    });
-
-    it('validates stop command', () => {
-      const result = ClientMessageSchema.safeParse({ type: 'stop' });
-      expect(result.success).toBe(true);
-    });
-
-    it('validates config command with options', () => {
-      const result = ClientMessageSchema.safeParse({
-        type: 'config',
-        model: 'gpt-4o-transcribe',
-        prompt: 'technical terms',
-      });
-      expect(result.success).toBe(true);
-    });
-
-    it('validates config command without options', () => {
-      const result = ClientMessageSchema.safeParse({ type: 'config' });
-      expect(result.success).toBe(true);
-    });
-  });
-
   it('rejects invalid command type', () => {
     const result = ClientMessageSchema.safeParse({ type: 'invalid' });
     expect(result.success).toBe(false);

@@ -115,16 +115,6 @@ describe('dictate.config', function()
     assert.is_true(vim.tbl_contains(cfg.disabled_filetypes, 'python')) -- added
   end)
 
-  it('backward compat: appends with disabled_filetypes_add', function()
-    config.setup({
-      daemon_cmd = { 'echo', 'test' },
-      disabled_filetypes_add = { 'markdown' },
-    })
-    local cfg = config.get()
-    assert.is_true(vim.tbl_contains(cfg.disabled_filetypes, 'help')) -- default
-    assert.is_true(vim.tbl_contains(cfg.disabled_filetypes, 'markdown')) -- added
-  end)
-
   it('replaces with disabled_filetypes (not extra_)', function()
     config.setup({
       daemon_cmd = { 'echo', 'test' },
