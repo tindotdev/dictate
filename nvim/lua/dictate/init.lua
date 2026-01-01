@@ -71,19 +71,21 @@ end
 function M.statusline(opts)
   opts = opts or {}
 
-  local icons = opts.icons or {
-    connecting = '󰍰',
-    ready = '󰍬',
-    recording = '󰍮',
-    error = '󰍭',
-  }
+  local icons = opts.icons
+    or {
+      connecting = '󰍰',
+      ready = '󰍬',
+      recording = '󰍮',
+      error = '󰍭',
+    }
 
-  local labels = opts.labels or {
-    connecting = 'Connecting...',
-    ready = 'Ready',
-    recording = 'Recording',
-    error = 'Error',
-  }
+  local labels = opts.labels
+    or {
+      connecting = 'Connecting...',
+      ready = 'Ready',
+      recording = 'Recording',
+      error = 'Error',
+    }
 
   local state = M.get_state()
 

@@ -1,7 +1,7 @@
 local M = {}
 local config = require('dictate.config')
-local ui = require('dictate.ui')
 local notify = require('dictate.notify')
+local ui = require('dictate.ui')
 
 ---@type integer|nil
 local job_id = nil
@@ -105,8 +105,12 @@ function M.handle_message(msg)
 
   if t == 'status' then
     -- Update subsystem health if provided (daemon messages)
-    if msg.audio_ok ~= nil then audio_ok = msg.audio_ok end
-    if msg.ws_ok ~= nil then ws_ok = msg.ws_ok end
+    if msg.audio_ok ~= nil then
+      audio_ok = msg.audio_ok
+    end
+    if msg.ws_ok ~= nil then
+      ws_ok = msg.ws_ok
+    end
 
     set_state(msg.state)
 
@@ -133,32 +137,25 @@ function M.handle_message(msg)
     elseif state == 'flushing' then
       notify.debug('waiting for final transcript...')
     end
-
   elseif t == 'initialized' then
     -- Handshake response from daemon
     notify.debug('daemon v' .. (msg.daemon_version or '?') .. ' ready')
-
   elseif t == 'speech_started' then
     ui.on_speech_started(msg.item_id)
     notify.debug('speech detected')
-
   elseif t == 'speech_stopped' then
     ui.on_speech_stopped(msg.item_id)
     notify.debug('speech ended')
-
   elseif t == 'partial_transcript' or t == 'delta' then
     -- Support both new (partial_transcript) and legacy (delta) names
     ui.on_delta(msg.item_id, msg.text)
-
   elseif t == 'final_transcript' or t == 'final' then
     -- Support both new (final_transcript) and legacy (final) names
     ui.on_final(msg.item_id, msg.text)
     notify.debug('transcription: ' .. (msg.text or ''))
-
   elseif t == 'error' then
     local hint = msg.hint and (' (' .. msg.hint .. ')') or ''
     notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown') .. hint)
-
   elseif t == 'debug' then
     notify.debug(msg.message or '')
   end

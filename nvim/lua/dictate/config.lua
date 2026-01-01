@@ -61,7 +61,10 @@ local function validate_config(opts)
   -- daemon_cmd: string[] or nil
   if opts.daemon_cmd ~= nil then
     if type(opts.daemon_cmd) ~= 'table' then
-      table.insert(errors, { field = 'daemon_cmd', message = 'expected string[] (array of strings)', got = type(opts.daemon_cmd) })
+      table.insert(
+        errors,
+        { field = 'daemon_cmd', message = 'expected string[] (array of strings)', got = type(opts.daemon_cmd) }
+      )
     else
       for i, v in ipairs(opts.daemon_cmd) do
         if type(v) ~= 'string' then
@@ -74,41 +77,58 @@ local function validate_config(opts)
   -- keymap: string or nil
   if opts.keymap ~= nil then
     local err = validate_type('keymap', opts.keymap, 'string', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   -- ghost_hl: string
   if opts.ghost_hl ~= nil then
     local err = validate_type('ghost_hl', opts.ghost_hl, 'string', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   -- insert_trailing_space: boolean
   if opts.insert_trailing_space ~= nil then
     local err = validate_type('insert_trailing_space', opts.insert_trailing_space, 'boolean', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   -- on_start: function or nil
   if opts.on_start ~= nil then
     local err = validate_type('on_start', opts.on_start, 'function', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   -- on_stop: function or nil
   if opts.on_stop ~= nil then
     local err = validate_type('on_stop', opts.on_stop, 'function', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   -- disabled_filetypes: string[]
   if opts.disabled_filetypes ~= nil then
     if type(opts.disabled_filetypes) ~= 'table' then
-      table.insert(errors, { field = 'disabled_filetypes', message = 'expected string[] (array of strings)', got = type(opts.disabled_filetypes) })
+      table.insert(errors, {
+        field = 'disabled_filetypes',
+        message = 'expected string[] (array of strings)',
+        got = type(opts.disabled_filetypes),
+      })
     else
       for i, v in ipairs(opts.disabled_filetypes) do
         if type(v) ~= 'string' then
-          table.insert(errors, { field = 'disabled_filetypes[' .. i .. ']', message = 'expected string', got = type(v) })
+          table.insert(
+            errors,
+            { field = 'disabled_filetypes[' .. i .. ']', message = 'expected string', got = type(v) }
+          )
         end
       end
     end
@@ -117,7 +137,11 @@ local function validate_config(opts)
   -- disabled_buftypes: string[]
   if opts.disabled_buftypes ~= nil then
     if type(opts.disabled_buftypes) ~= 'table' then
-      table.insert(errors, { field = 'disabled_buftypes', message = 'expected string[] (array of strings)', got = type(opts.disabled_buftypes) })
+      table.insert(errors, {
+        field = 'disabled_buftypes',
+        message = 'expected string[] (array of strings)',
+        got = type(opts.disabled_buftypes),
+      })
     else
       for i, v in ipairs(opts.disabled_buftypes) do
         if type(v) ~= 'string' then
@@ -130,11 +154,18 @@ local function validate_config(opts)
   -- extra_disabled_filetypes: string[] (optional, appends to defaults)
   if opts.extra_disabled_filetypes ~= nil then
     if type(opts.extra_disabled_filetypes) ~= 'table' then
-      table.insert(errors, { field = 'extra_disabled_filetypes', message = 'expected string[] (array of strings)', got = type(opts.extra_disabled_filetypes) })
+      table.insert(errors, {
+        field = 'extra_disabled_filetypes',
+        message = 'expected string[] (array of strings)',
+        got = type(opts.extra_disabled_filetypes),
+      })
     else
       for i, v in ipairs(opts.extra_disabled_filetypes) do
         if type(v) ~= 'string' then
-          table.insert(errors, { field = 'extra_disabled_filetypes[' .. i .. ']', message = 'expected string', got = type(v) })
+          table.insert(
+            errors,
+            { field = 'extra_disabled_filetypes[' .. i .. ']', message = 'expected string', got = type(v) }
+          )
         end
       end
     end
@@ -143,11 +174,18 @@ local function validate_config(opts)
   -- extra_disabled_buftypes: string[] (optional, appends to defaults)
   if opts.extra_disabled_buftypes ~= nil then
     if type(opts.extra_disabled_buftypes) ~= 'table' then
-      table.insert(errors, { field = 'extra_disabled_buftypes', message = 'expected string[] (array of strings)', got = type(opts.extra_disabled_buftypes) })
+      table.insert(errors, {
+        field = 'extra_disabled_buftypes',
+        message = 'expected string[] (array of strings)',
+        got = type(opts.extra_disabled_buftypes),
+      })
     else
       for i, v in ipairs(opts.extra_disabled_buftypes) do
         if type(v) ~= 'string' then
-          table.insert(errors, { field = 'extra_disabled_buftypes[' .. i .. ']', message = 'expected string', got = type(v) })
+          table.insert(
+            errors,
+            { field = 'extra_disabled_buftypes[' .. i .. ']', message = 'expected string', got = type(v) }
+          )
         end
       end
     end
@@ -157,16 +195,25 @@ local function validate_config(opts)
   if opts.notify_backend ~= nil then
     local valid_backends = { native = true, ['nvim-notify'] = true, auto = true }
     if type(opts.notify_backend) ~= 'string' then
-      table.insert(errors, { field = 'notify_backend', message = "expected 'native', 'nvim-notify', or 'auto'", got = type(opts.notify_backend) })
+      table.insert(errors, {
+        field = 'notify_backend',
+        message = "expected 'native', 'nvim-notify', or 'auto'",
+        got = type(opts.notify_backend),
+      })
     elseif not valid_backends[opts.notify_backend] then
-      table.insert(errors, { field = 'notify_backend', message = "expected 'native', 'nvim-notify', or 'auto'", got = opts.notify_backend })
+      table.insert(
+        errors,
+        { field = 'notify_backend', message = "expected 'native', 'nvim-notify', or 'auto'", got = opts.notify_backend }
+      )
     end
   end
 
   -- debug: boolean
   if opts.debug ~= nil then
     local err = validate_type('debug', opts.debug, 'boolean', true)
-    if err then table.insert(errors, err) end
+    if err then
+      table.insert(errors, err)
+    end
   end
 
   return errors

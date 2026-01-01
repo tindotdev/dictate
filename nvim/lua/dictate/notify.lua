@@ -28,7 +28,7 @@ local function get_notify_fn()
   local cfg = config.get()
   local backend = cfg.notify_backend
 
-  if backend == 'nvim-notify' then
+  if backend == 'nvim-notify' or backend == 'auto' then
     local notify = get_nvim_notify()
     if notify then
       return function(msg, level, opts)
@@ -38,15 +38,6 @@ local function get_notify_fn()
       end
     end
     -- Fall back to native if nvim-notify not available
-  elseif backend == 'auto' then
-    local notify = get_nvim_notify()
-    if notify then
-      return function(msg, level, opts)
-        opts = opts or {}
-        opts.title = opts.title or 'dictate.nvim'
-        notify(msg, level, opts)
-      end
-    end
   end
 
   -- Native vim.notify

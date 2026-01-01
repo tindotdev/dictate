@@ -1,0 +1,8 @@
+std = "lua51+vim"
+
+[lints]
+shadowing = "allow"
+mixed_table = "allow"
+
+[config]
+unused_variable = { ignore_pattern = "^_" }

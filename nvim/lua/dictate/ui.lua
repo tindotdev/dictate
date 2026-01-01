@@ -114,7 +114,7 @@ end
 ---Clear all ghost text and reset state
 function M.clear_all()
   -- Clear all extmarks
-  for item_id, mark_id in pairs(ghost_marks) do
+  for _item_id, mark_id in pairs(ghost_marks) do
     if cursor_pos and vim.api.nvim_buf_is_valid(cursor_pos.bufnr) then
       pcall(vim.api.nvim_buf_del_extmark, cursor_pos.bufnr, ns_id, mark_id)
     end
