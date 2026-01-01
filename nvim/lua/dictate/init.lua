@@ -76,6 +76,7 @@ function M.statusline(opts)
       connecting = '󰍰',
       ready = '󰍬',
       recording = '󰍮',
+      busy = '󰍯',
       error = '󰍭',
     }
 
@@ -84,6 +85,7 @@ function M.statusline(opts)
       connecting = 'Connecting...',
       ready = 'Ready',
       recording = 'Recording',
+      busy = 'Busy (other)',
       error = 'Error',
     }
 
@@ -95,6 +97,13 @@ function M.statusline(opts)
   end
 
   local display_state = map_state(state)
+
+  -- Show "busy" state when another instance is recording
+  local job = require('dictate.job')
+  if display_state == 'recording' and not job.is_started_by_me() then
+    display_state = 'busy'
+  end
+
   local icon = icons[display_state] or ''
   local label = labels[display_state] or display_state
 
@@ -118,8 +127,15 @@ function M.lualine(opts)
     end,
     color = function()
       local display_state = map_state(M.get_state())
+      -- Check if another instance is recording
+      local job = require('dictate.job')
+      if display_state == 'recording' and not job.is_started_by_me() then
+        display_state = 'busy'
+      end
       if display_state == 'recording' then
         return { fg = '#f38ba8' } -- Red for recording
+      elseif display_state == 'busy' then
+        return { fg = '#cba6f7' } -- Purple for busy (other instance)
       elseif display_state == 'connecting' then
         return { fg = '#f9e2af' } -- Yellow for connecting
       elseif display_state == 'ready' then

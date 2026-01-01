@@ -42,7 +42,8 @@ Socket-based daemon architecture with fault tolerance.
 - [x] WebSocket reconnection with exponential backoff
 - [x] Audio supervisor with auto-restart on pw-cat crash
 - [x] Graceful degradation when API key missing or invalid
-- [x] 142 unit tests covering all components
+- [x] Multi-client session ownership (only initiating client receives transcripts)
+- [x] 194 unit/integration tests covering all components
 
 ## Milestone 4: Distribution & Packaging (Complete)
 

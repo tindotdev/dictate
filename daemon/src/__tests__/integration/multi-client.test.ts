@@ -5,9 +5,10 @@
  * client connections, corresponding to TEST_CHECKLIST.md Section 4:
  *
  * 4.1 Multiple dictatectl Instances - Multiple clients can connect simultaneously
- * 4.2 Broadcast to All Clients - Status/transcription events reach all clients
+ * 4.2 Broadcast to All Clients - Status events reach all clients
  * 4.3 Client Disconnect - Daemon handles disconnections gracefully
  * 4.4 Multiple Neovim Instances - Duplicate commands handled safely
+ * 5. Session Ownership - Only session owner receives transcription events
  *
  * Architecture:
  * - Real SocketServer with temp socket files
@@ -91,6 +92,7 @@ interface TestDaemon {
 	mockWsServer: WebSocketServer;
 	socketPath: string;
 	cleanup: () => void;
+	getSessionOwner: () => string | null;
 }
 
 const mockConfig: Config = {
@@ -124,10 +126,25 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 		backoff: { maxRetries: 1, baseDelayMs: 10, jitterFactor: 0 },
 	});
 
+	// Session ownership tracking
+	let sessionOwner: string | null = null;
+
+	// Helper: send only to session owner
+	function sendToOwner(msg: DaemonMessage): void {
+		if (sessionOwner) {
+			server.send(sessionOwner, msg);
+		}
+	}
+
 	// Wire up event handlers (replicating main.ts logic)
 
-	// State machine -> broadcast status
-	stateMachine.on("transition", () => {
+	// State machine -> broadcast status + clear ownership on idle
+	stateMachine.on("transition", (_from, to) => {
+		// Clear session ownership when returning to idle
+		if (to === "idle" && sessionOwner !== null) {
+			sessionOwner = null;
+		}
+
 		server.broadcast({
 			type: "status",
 			state: stateMachine.getState(),
@@ -153,17 +170,17 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 		}
 	});
 
-	// Network events -> broadcast to clients
+	// Network events -> send only to session owner
 	network.on("speech_started", (itemId) => {
-		server.broadcast({ type: "speech_started", item_id: itemId });
+		sendToOwner({ type: "speech_started", item_id: itemId });
 	});
 
 	network.on("delta", (itemId, text) => {
-		server.broadcast({ type: "partial_transcript", item_id: itemId, text });
+		sendToOwner({ type: "partial_transcript", item_id: itemId, text });
 	});
 
 	network.on("completed", (itemId, transcript) => {
-		server.broadcast({
+		sendToOwner({
 			type: "final_transcript",
 			item_id: itemId,
 			text: transcript,
@@ -184,16 +201,53 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 		});
 	});
 
-	server.on("client_message", (_clientId, msg) => {
+	server.on("client_disconnected", (clientId) => {
+		// If the disconnected client was the session owner, force-stop the session
+		if (sessionOwner === clientId) {
+			// Note: sessionOwner is cleared by the transition callback when state becomes idle
+			const state = stateMachine.getState();
+			if (state !== "idle" && state !== "error") {
+				audio.stop();
+				network.disconnect();
+				// Use RESET to force-return to idle from any state
+				stateMachine.transition({ type: "RESET" });
+			}
+		}
+	});
+
+	server.on("client_message", (clientId, msg) => {
 		switch (msg.type) {
 			case "start_listening":
 			case "start": {
-				const state = stateMachine.getState();
-				if (state === "listening" || state === "error") {
-					return; // Already listening or in error state
+				// Check session ownership
+				if (sessionOwner !== null && sessionOwner !== clientId) {
+					// Reject: session already active
+					server.send(clientId, {
+						type: "error",
+						code: "SESSION_BUSY",
+						message: "Another client is already dictating",
+						recoverable: true,
+						hint: "Wait for the other session to end",
+					});
+					return;
 				}
+
+				// Idempotent: if this client already owns and we're listening
+				if (
+					sessionOwner === clientId &&
+					stateMachine.getState() === "listening"
+				) {
+					return;
+				}
+
+				const state = stateMachine.getState();
+				if (state === "error") {
+					return;
+				}
+
 				const started = stateMachine.transition({ type: "START_LISTENING" });
 				if (started) {
+					sessionOwner = clientId;
 					network.connect();
 					audio.start();
 				}
@@ -202,6 +256,11 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 
 			case "stop_listening":
 			case "stop": {
+				// Only the session owner can stop listening
+				if (sessionOwner !== null && sessionOwner !== clientId) {
+					return; // Silently ignore non-owner stop
+				}
+
 				const state = stateMachine.getState();
 				if (state === "idle") {
 					return; // Already idle
@@ -238,6 +297,7 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 		mockWsServer,
 		socketPath,
 		cleanup,
+		getSessionOwner: () => sessionOwner,
 	};
 }
 
@@ -524,7 +584,7 @@ describe("Multi-Client Integration", () => {
 			expect(listening2.ws_ok).toBe(true);
 		});
 
-		it("broadcasts transcription events to all clients", async () => {
+		it("sends transcription events only to session owner", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
@@ -542,19 +602,20 @@ describe("Multi-Client Integration", () => {
 				);
 			});
 
-			// Both clients should receive speech_started
-			const [speech1, speech2] = await Promise.all([
-				client1.waitForMessage((m) => m.type === "speech_started"),
-				client2.waitForMessage((m) => m.type === "speech_started"),
-			]);
-
+			// Only owner (client1) should receive speech_started
+			const speech1 = await client1.waitForMessage(
+				(m) => m.type === "speech_started",
+			);
 			expect(speech1.type).toBe("speech_started");
 			expect((speech1 as { item_id: string }).item_id).toBe("test_item_123");
-			expect(speech2.type).toBe("speech_started");
-			expect((speech2 as { item_id: string }).item_id).toBe("test_item_123");
+
+			// Client2 should NOT have received speech_started
+			await new Promise((r) => setTimeout(r, 100));
+			const speech2 = client2.messages.find((m) => m.type === "speech_started");
+			expect(speech2).toBeUndefined();
 		});
 
-		it("broadcasts partial transcripts to all clients", async () => {
+		it("sends partial transcripts only to session owner", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
@@ -573,16 +634,21 @@ describe("Multi-Client Integration", () => {
 				);
 			});
 
-			const [delta1, delta2] = await Promise.all([
-				client1.waitForMessage((m) => m.type === "partial_transcript"),
-				client2.waitForMessage((m) => m.type === "partial_transcript"),
-			]);
-
+			// Only owner (client1) should receive partial_transcript
+			const delta1 = await client1.waitForMessage(
+				(m) => m.type === "partial_transcript",
+			);
 			expect((delta1 as { text: string }).text).toBe("hello world");
-			expect((delta2 as { text: string }).text).toBe("hello world");
+
+			// Client2 should NOT have received partial_transcript
+			await new Promise((r) => setTimeout(r, 100));
+			const delta2 = client2.messages.find(
+				(m) => m.type === "partial_transcript",
+			);
+			expect(delta2).toBeUndefined();
 		});
 
-		it("broadcasts final transcripts to all clients", async () => {
+		it("sends final transcripts only to session owner", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
@@ -601,13 +667,18 @@ describe("Multi-Client Integration", () => {
 				);
 			});
 
-			const [final1, final2] = await Promise.all([
-				client1.waitForMessage((m) => m.type === "final_transcript"),
-				client2.waitForMessage((m) => m.type === "final_transcript"),
-			]);
-
+			// Only owner (client1) should receive final_transcript
+			const final1 = await client1.waitForMessage(
+				(m) => m.type === "final_transcript",
+			);
 			expect((final1 as { text: string }).text).toBe("Hello, world!");
-			expect((final2 as { text: string }).text).toBe("Hello, world!");
+
+			// Client2 should NOT have received final_transcript
+			await new Promise((r) => setTimeout(r, 100));
+			const final2 = client2.messages.find(
+				(m) => m.type === "final_transcript",
+			);
+			expect(final2).toBeUndefined();
 		});
 	});
 
@@ -616,72 +687,73 @@ describe("Multi-Client Integration", () => {
 	// ==========================================================================
 
 	describe("4.3 Client disconnect handling", () => {
-		it("continues operating when one client disconnects", async () => {
+		it("stops session when owner disconnects and notifies remaining clients", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
 			await client1.waitForState("idle");
 			await client2.waitForState("idle");
 
-			// Start listening
+			// Client1 starts listening (becomes owner)
 			client1.send({ type: "start_listening" });
 			await client1.waitForState("listening");
 			await client2.waitForState("listening");
 
-			// Disconnect client 1
+			// Owner disconnects
 			client1.destroy();
 
 			await waitFor(() => daemon.server.getClientCount() === 1);
 
-			// Client 2 should still be able to receive events
-			const msgCountBefore = client2.messages.length;
+			// Session should be stopped (owner disconnected)
+			await waitFor(() => daemon.stateMachine.getState() === "idle", 2000);
 
-			daemon.mockWsServer.clients.forEach((ws) => {
-				ws.send(
-					JSON.stringify({
-						type: "input_audio_buffer.speech_started",
-						item_id: "after_disconnect",
-					}),
-				);
-			});
-
-			// Wait for the new message
-			await waitFor(() => client2.messages.length > msgCountBefore, 2000);
-
-			const speech = client2.messages.find(
-				(m) =>
-					m.type === "speech_started" &&
-					(m as { item_id: string }).item_id === "after_disconnect",
+			// Client 2 should receive idle status
+			const hasIdle = client2.messages.some(
+				(m) => m.type === "status" && m.state === "idle",
 			);
-			expect(speech).toBeDefined();
+			expect(hasIdle).toBe(true);
+
+			// Owner should be cleared
+			expect(daemon.getSessionOwner()).toBeNull();
 		});
 
-		it("remaining client can send commands after other disconnects", async () => {
+		it("remaining client can start new session after owner disconnects", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
 			await client1.waitForState("idle");
 			await client2.waitForState("idle");
 
-			// Start listening from client 1
+			// Client 1 starts listening (becomes owner)
 			client1.send({ type: "start_listening" });
 			await client2.waitForState("listening");
 
-			// Disconnect client 1
+			// Owner disconnects
 			client1.destroy();
 			await waitFor(() => daemon.server.getClientCount() === 1);
 
-			// Client 2 should be able to stop listening
-			client2.send({ type: "stop_listening" });
-
-			// Wait for idle state
+			// Wait for session to be stopped
 			await waitFor(() => daemon.stateMachine.getState() === "idle", 2000);
+			await client2.waitForState("idle"); // Ensure client2 received idle status
 
-			// Verify client2 received idle status
-			const hasIdle = client2.messages.some(
-				(m) => m.type === "status" && m.state === "idle",
+			// Record message count before starting new session
+			const msgCountBefore = client2.messages.length;
+
+			// Client 2 should now be able to start a new session
+			client2.send({ type: "start_listening" });
+
+			// Wait for a NEW listening status (not the old one)
+			await waitFor(
+				() =>
+					client2.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "listening"),
+				2000,
 			);
-			expect(hasIdle).toBe(true);
+
+			// Client 2 is now the owner
+			expect(daemon.getSessionOwner()).not.toBeNull();
+			expect(daemon.stateMachine.getState()).toBe("listening");
 		});
 
 		it("daemon accepts new connections after all clients disconnect", async () => {
@@ -722,35 +794,36 @@ describe("Multi-Client Integration", () => {
 	// ==========================================================================
 
 	describe("4.4 Duplicate start_listening handling", () => {
-		it("handles duplicate start_listening from multiple clients", async () => {
+		it("rejects start_listening from non-owner when session active", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
 			await client1.waitForState("idle");
 			await client2.waitForState("idle");
 
-			// Both clients send start_listening nearly simultaneously
+			// Client 1 sends start_listening first
 			client1.send({ type: "start_listening" });
+			await client1.waitForState("listening");
+
+			// Client 2 tries to start - should get SESSION_BUSY error
 			client2.send({ type: "start_listening" });
 
-			// Both should eventually reach listening state
-			await Promise.all([
-				client1.waitForState("listening"),
-				client2.waitForState("listening"),
-			]);
+			// Client 2 should receive error
+			const error = await client2.waitForMessage((m) => m.type === "error");
+			expect((error as { code: string }).code).toBe("SESSION_BUSY");
 
-			// State machine should be in listening state (not errored)
+			// State machine should still be in listening state
 			expect(daemon.stateMachine.getState()).toBe("listening");
 		});
 
-		it("ignores start_listening when already listening", async () => {
+		it("ignores start_listening when already listening (same owner)", async () => {
 			const client1 = await connectClient();
 			await client1.waitForState("idle");
 
 			client1.send({ type: "start_listening" });
 			await client1.waitForState("listening");
 
-			// Send another start_listening
+			// Send another start_listening from same client
 			const messageCountBefore = client1.messages.length;
 			client1.send({ type: "start_listening" });
 
@@ -765,7 +838,7 @@ describe("Multi-Client Integration", () => {
 			);
 		});
 
-		it("handles stop_listening from any client", async () => {
+		it("ignores stop_listening from non-owner", async () => {
 			const client1 = await connectClient();
 			const client2 = await connectClient();
 
@@ -777,8 +850,30 @@ describe("Multi-Client Integration", () => {
 			await client1.waitForState("listening");
 			await client2.waitForState("listening");
 
-			// Client 2 stops listening (not the one who started)
+			// Client 2 tries to stop (not the owner) - should be ignored
 			client2.send({ type: "stop_listening" });
+
+			// Wait a bit
+			await new Promise((r) => setTimeout(r, 100));
+
+			// Should still be listening
+			expect(daemon.stateMachine.getState()).toBe("listening");
+		});
+
+		it("allows owner to stop listening", async () => {
+			const client1 = await connectClient();
+			const client2 = await connectClient();
+
+			await client1.waitForState("idle");
+			await client2.waitForState("idle");
+
+			// Client 1 starts listening
+			client1.send({ type: "start_listening" });
+			await client1.waitForState("listening");
+			await client2.waitForState("listening");
+
+			// Client 1 (owner) stops listening
+			client1.send({ type: "stop_listening" });
 
 			// Wait for state machine to reach idle
 			await waitFor(() => daemon.stateMachine.getState() === "idle", 2000);
@@ -796,7 +891,7 @@ describe("Multi-Client Integration", () => {
 			expect(daemon.stateMachine.getState()).toBe("idle");
 		});
 
-		it("handles rapid start/stop commands", async () => {
+		it("handles rapid start/stop commands from same client", async () => {
 			const client1 = await connectClient();
 			await client1.waitForState("idle");
 
@@ -854,6 +949,168 @@ describe("Multi-Client Integration", () => {
 			const listeningStatus = await client1.waitForState("listening", 2000);
 			expect(listeningStatus.audio_ok).toBe(true);
 			expect(listeningStatus.ws_ok).toBe(true);
+		});
+	});
+
+	// ==========================================================================
+	// Test 5: Session Ownership
+	// ==========================================================================
+
+	describe("5. Session ownership", () => {
+		it("tracks session owner correctly", async () => {
+			const client1 = await connectClient();
+			await client1.waitForState("idle");
+
+			// No owner initially
+			expect(daemon.getSessionOwner()).toBeNull();
+
+			// Client 1 starts listening
+			client1.send({ type: "start_listening" });
+			await client1.waitForState("listening");
+
+			// Client 1 should be owner
+			expect(daemon.getSessionOwner()).not.toBeNull();
+		});
+
+		it("clears ownership when owner stops and returns to idle", async () => {
+			const client1 = await connectClient();
+			await client1.waitForState("idle");
+
+			// Record message count before starting
+			let msgCountBefore = client1.messages.length;
+			client1.send({ type: "start_listening" });
+			await waitFor(
+				() =>
+					client1.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "listening"),
+				2000,
+			);
+
+			// Owner is set
+			expect(daemon.getSessionOwner()).not.toBeNull();
+
+			// Record message count before stopping
+			msgCountBefore = client1.messages.length;
+			client1.send({ type: "stop_listening" });
+			await waitFor(
+				() =>
+					client1.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "idle"),
+				2000,
+			);
+
+			// Owner should be cleared
+			expect(daemon.getSessionOwner()).toBeNull();
+		});
+
+		it("clears ownership and stops session when owner disconnects", async () => {
+			const client1 = await connectClient();
+			const client2 = await connectClient();
+
+			await client1.waitForState("idle");
+			await client2.waitForState("idle");
+
+			// Client 1 starts listening
+			client1.send({ type: "start_listening" });
+			await client1.waitForState("listening");
+
+			expect(daemon.getSessionOwner()).not.toBeNull();
+
+			// Owner disconnects
+			client1.destroy();
+
+			// Wait for cleanup
+			await waitFor(() => daemon.stateMachine.getState() === "idle", 2000);
+
+			// Owner should be cleared
+			expect(daemon.getSessionOwner()).toBeNull();
+
+			// Client 2 should receive idle status
+			const hasIdle = client2.messages.some(
+				(m) => m.type === "status" && m.state === "idle",
+			);
+			expect(hasIdle).toBe(true);
+		});
+
+		it("allows new session after owner disconnect", async () => {
+			const client1 = await connectClient();
+			const client2 = await connectClient();
+
+			await client1.waitForState("idle");
+			await client2.waitForState("idle");
+
+			// Client 1 starts and becomes owner
+			client1.send({ type: "start_listening" });
+			await client1.waitForState("listening");
+
+			// Client 1 disconnects
+			client1.destroy();
+			await waitFor(() => daemon.stateMachine.getState() === "idle", 2000);
+			await client2.waitForState("idle"); // Ensure client2 received idle
+
+			// Record message count before starting new session
+			const msgCountBefore = client2.messages.length;
+
+			// Client 2 should now be able to start
+			client2.send({ type: "start_listening" });
+
+			// Wait for NEW listening status
+			await waitFor(
+				() =>
+					client2.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "listening"),
+				2000,
+			);
+
+			// Client 2 is now owner
+			expect(daemon.getSessionOwner()).not.toBeNull();
+			expect(daemon.stateMachine.getState()).toBe("listening");
+		});
+
+		it("allows same client to start new session after stopping", async () => {
+			const client1 = await connectClient();
+			await client1.waitForState("idle");
+
+			// First session
+			let msgCountBefore = client1.messages.length;
+			client1.send({ type: "start_listening" });
+			await waitFor(
+				() =>
+					client1.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "listening"),
+				2000,
+			);
+
+			// Record message count before stopping
+			msgCountBefore = client1.messages.length;
+			client1.send({ type: "stop_listening" });
+			await waitFor(
+				() =>
+					client1.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "idle"),
+				2000,
+			);
+
+			expect(daemon.getSessionOwner()).toBeNull();
+
+			// Second session
+			msgCountBefore = client1.messages.length;
+			client1.send({ type: "start_listening" });
+			await waitFor(
+				() =>
+					client1.messages
+						.slice(msgCountBefore)
+						.some((m) => m.type === "status" && m.state === "listening"),
+				2000,
+			);
+
+			expect(daemon.getSessionOwner()).not.toBeNull();
+			expect(daemon.stateMachine.getState()).toBe("listening");
 		});
 	});
 });

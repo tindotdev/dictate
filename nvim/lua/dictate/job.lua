@@ -22,6 +22,9 @@ local ws_ok = false
 -- Flag to send start_listening after dictatectl connects
 local pending_start_listening = false
 
+-- Track whether this client initiated the current session
+local started_by_me = false
+
 -- Buffer for incomplete JSONL lines
 local line_buffer = ''
 
@@ -128,6 +131,7 @@ function M.handle_message(msg)
       -- Send pending start_listening now that dictatectl is connected
       if pending_start_listening then
         pending_start_listening = false
+        started_by_me = true
         M.send({ type = 'start_listening' })
       end
     elseif state == 'reconnecting' then
@@ -154,8 +158,14 @@ function M.handle_message(msg)
     ui.on_final(msg.item_id, msg.text)
     notify.debug('transcription: ' .. (msg.text or ''))
   elseif t == 'error' then
-    local hint = msg.hint and (' (' .. msg.hint .. ')') or ''
-    notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown') .. hint)
+    if msg.code == 'SESSION_BUSY' then
+      -- Another client owns the session - reset our flag and show warning
+      started_by_me = false
+      notify.warn('Another Neovim instance is already dictating')
+    else
+      local hint = msg.hint and (' (' .. msg.hint .. ')') or ''
+      notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown') .. hint)
+    end
   elseif t == 'debug' then
     notify.debug(msg.message or '')
   end
@@ -181,6 +191,7 @@ function M.start()
 
   if job_id then
     -- Already running, just send start_listening
+    started_by_me = true
     M.send({ type = 'start_listening' })
     return
   end
@@ -221,6 +232,7 @@ function M.start()
         audio_ok = false
         ws_ok = false
         pending_start_listening = false
+        started_by_me = false
         ui.clear_all()
         if code ~= 0 then
           notify.warn('dictatectl exited with code ' .. code .. '. Run :checkhealth dictate for troubleshooting.')
@@ -261,6 +273,7 @@ function M.stop()
   audio_ok = false
   ws_ok = false
   pending_start_listening = false
+  started_by_me = false
   ui.clear_all()
 end
 
@@ -301,6 +314,12 @@ end
 ---@return boolean
 function M.is_active()
   return is_active_state(state)
+end
+
+---Check if this client started the current session
+---@return boolean
+function M.is_started_by_me()
+  return started_by_me
 end
 
 return M

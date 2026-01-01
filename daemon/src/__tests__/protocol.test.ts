@@ -211,6 +211,7 @@ describe("DaemonMessageSchema", () => {
 				"NETWORK_ERROR",
 				"RATE_LIMITED",
 				"INTERNAL_ERROR",
+				"SESSION_BUSY",
 			];
 			for (const code of codes) {
 				const result = DaemonMessageSchema.safeParse({
@@ -316,6 +317,7 @@ describe("ErrorCodeSchema", () => {
 			"NETWORK_ERROR",
 			"RATE_LIMITED",
 			"INTERNAL_ERROR",
+			"SESSION_BUSY",
 		];
 		for (const code of codes) {
 			const result = ErrorCodeSchema.safeParse(code);
@@ -456,6 +458,7 @@ describe("Emit Functions", () => {
 				"NETWORK_ERROR",
 				"RATE_LIMITED",
 				"INTERNAL_ERROR",
+				"SESSION_BUSY",
 			] as const;
 
 			for (const code of codes) {

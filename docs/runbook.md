@@ -27,7 +27,7 @@ bun run build
 
 ```bash
 cd daemon
-bun test              # Run all 160 tests
+bun test              # Run all 194 tests
 bun test --watch      # Watch mode
 bun test backoff      # Run specific test file
 ```
@@ -42,11 +42,12 @@ cd daemon
 bun test src/__tests__/integration/    # Run integration tests only
 ```
 
-**Test coverage (18 tests):**
+**Test coverage (24 tests):**
 - 4.1: Multiple clients connecting simultaneously
-- 4.2: Broadcast status/transcription to all clients
-- 4.3: Client disconnect handling
+- 4.2: Status broadcast to all clients, transcripts to owner only
+- 4.3: Client disconnect handling (owner disconnect stops session)
 - 4.4: Duplicate command handling
+- 4.5: Session ownership (SESSION_BUSY errors, ownership lifecycle)
 
 **Architecture:**
 ```

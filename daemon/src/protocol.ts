@@ -30,6 +30,7 @@ export const ErrorCodeSchema = z.enum([
 	"NETWORK_ERROR", // WebSocket issues
 	"RATE_LIMITED", // API quota exceeded
 	"INTERNAL_ERROR", // Unexpected daemon error
+	"SESSION_BUSY", // Another client already owns the session
 ]);
 
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;

@@ -85,6 +85,9 @@ const stateMachine: DaemonStateMachine = createStateMachine();
 // Track accumulated text per item_id (for delta -> full text conversion)
 const itemTexts = new Map<string, string>();
 
+// Session ownership: only the client that started listening receives transcripts
+let sessionOwner: string | null = null;
+
 // ============================================================================
 // Helper: Broadcast status to all clients
 // ============================================================================
@@ -118,8 +121,20 @@ function broadcastError(
 	});
 }
 
-function broadcastMessage(msg: DaemonMessage): void {
-	server.broadcast(msg);
+function sendToOwner(msg: DaemonMessage): void {
+	if (sessionOwner) {
+		server.send(sessionOwner, msg);
+	}
+}
+
+function sendErrorToClient(
+	clientId: string,
+	code: ErrorCode,
+	message: string,
+	recoverable: boolean,
+	hint?: string,
+): void {
+	server.send(clientId, { type: "error", code, message, recoverable, hint });
 }
 
 // ============================================================================
@@ -128,6 +143,14 @@ function broadcastMessage(msg: DaemonMessage): void {
 
 stateMachine.on("transition", (from: DaemonState, to: DaemonState) => {
 	debug(`State: ${from} -> ${to}`);
+
+	// Clear session ownership when returning to idle or entering error state
+	// (Error state clears ownership to avoid stale SESSION_BUSY rejections)
+	if ((to === "idle" || to === "error") && sessionOwner !== null) {
+		debug(`Clearing session owner: ${sessionOwner}`);
+		sessionOwner = null;
+	}
+
 	broadcastStatus();
 });
 
@@ -216,12 +239,12 @@ network.on("error", (err: Error) => {
 network.on("speech_started", (itemId: string) => {
 	debug(`Speech started: ${itemId}`);
 	itemTexts.set(itemId, "");
-	broadcastMessage({ type: "speech_started", item_id: itemId });
+	sendToOwner({ type: "speech_started", item_id: itemId });
 });
 
 network.on("speech_stopped", (itemId: string) => {
 	debug(`Speech stopped: ${itemId}`);
-	broadcastMessage({ type: "speech_stopped", item_id: itemId });
+	sendToOwner({ type: "speech_stopped", item_id: itemId });
 });
 
 network.on("delta", (itemId: string, delta: string) => {
@@ -230,7 +253,7 @@ network.on("delta", (itemId: string, delta: string) => {
 	const newText = current + delta;
 	itemTexts.set(itemId, newText);
 	// Emit accumulated text (not just delta) for easier UI rendering
-	broadcastMessage({
+	sendToOwner({
 		type: "partial_transcript",
 		item_id: itemId,
 		text: newText,
@@ -240,7 +263,7 @@ network.on("delta", (itemId: string, delta: string) => {
 network.on("completed", (itemId: string, transcript: string) => {
 	debug(`Transcription completed: ${itemId}`);
 	itemTexts.delete(itemId);
-	broadcastMessage({
+	sendToOwner({
 		type: "final_transcript",
 		item_id: itemId,
 		text: transcript,
@@ -269,6 +292,22 @@ server.on("client_connected", (clientId: string) => {
 
 server.on("client_disconnected", (clientId: string) => {
 	debug(`Client disconnected: ${clientId}`);
+
+	// If the disconnected client was the session owner, force-stop the session
+	if (sessionOwner === clientId) {
+		debug(`Session owner disconnected, stopping session`);
+		// Note: sessionOwner is cleared by the transition callback when state becomes idle
+
+		// Force stop if we're in an active state
+		const state = stateMachine.getState();
+		if (state !== "idle" && state !== "error") {
+			audio.stop();
+			network.disconnect();
+			itemTexts.clear();
+			// Use RESET to force-return to idle from any state
+			stateMachine.transition({ type: "RESET" });
+		}
+	}
 });
 
 server.on("client_message", (clientId: string, msg) => {
@@ -280,11 +319,11 @@ server.on("client_message", (clientId: string, msg) => {
 			break;
 
 		case "start_listening":
-			handleStartListening();
+			handleStartListening(clientId);
 			break;
 
 		case "stop_listening":
-			handleStopListening();
+			handleStopListening(clientId);
 			break;
 
 		case "set_mode":
@@ -306,11 +345,27 @@ server.on("error", (err: Error) => {
 // Command handlers
 // ============================================================================
 
-function handleStartListening(): void {
+function handleStartListening(clientId: string): void {
 	const state = stateMachine.getState();
 
-	if (state === "listening") {
-		debug("Already listening");
+	// Check session ownership
+	if (sessionOwner !== null && sessionOwner !== clientId) {
+		debug(
+			`Session busy: ${sessionOwner} owns the session, rejecting ${clientId}`,
+		);
+		sendErrorToClient(
+			clientId,
+			"SESSION_BUSY",
+			"Another client is already dictating",
+			true,
+			"Wait for the other session to end",
+		);
+		return;
+	}
+
+	// Idempotent: if this client already owns the session and we're listening
+	if (sessionOwner === clientId && state === "listening") {
+		debug("Already listening (same owner)");
 		return;
 	}
 
@@ -326,13 +381,23 @@ function handleStartListening(): void {
 		return;
 	}
 
+	// Claim ownership
+	sessionOwner = clientId;
+	debug(`Session owner set: ${clientId}`);
+
 	// Start both supervisors - state machine handles the transitions
 	network.connect();
 	audio.start();
 }
 
-function handleStopListening(): void {
+function handleStopListening(clientId: string): void {
 	const state = stateMachine.getState();
+
+	// Only the session owner can stop listening
+	if (sessionOwner !== null && sessionOwner !== clientId) {
+		debug(`Stop rejected: ${clientId} is not the owner (${sessionOwner})`);
+		return;
+	}
 
 	if (state === "idle") {
 		debug("Already idle");
@@ -340,6 +405,8 @@ function handleStopListening(): void {
 	}
 
 	// Transition to flushing (waiting for final transcripts)
+	// Note: ownership is NOT cleared here - it persists through flushing
+	// and is only cleared when the state machine transitions to idle
 	stateMachine.transition({ type: "STOP_LISTENING" });
 
 	// Stop audio capture
