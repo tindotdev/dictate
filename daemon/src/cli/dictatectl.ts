@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
-import * as net from 'net';
-import * as fs from 'fs';
 import * as path from 'path';
-import * as readline from 'readline';
+import { stat } from 'node:fs/promises';
+import type { Socket as BunSocket } from 'bun';
 import {
   createBackoffState,
   nextBackoff,
@@ -58,14 +57,18 @@ function emitDaemonUnavailable(hint?: string): void {
 // Connection handling
 // ============================================================================
 
+/** Socket data for Bun.connect */
+interface SocketData {
+  buffer: string;
+}
+
 class DictatectlBridge {
-  private socket: net.Socket | null = null;
+  private socket: BunSocket<SocketData> | null = null;
   private backoffState: BackoffState;
   private socketPath: string;
   private intentionalDisconnect = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private stdinReader: readline.Interface | null = null;
-  private socketBuffer = '';
+  private stdinAbort: AbortController | null = null;
 
   constructor() {
     this.socketPath = getSocketPath();
@@ -78,12 +81,15 @@ class DictatectlBridge {
 
   async start(): Promise<void> {
     // Check if socket file exists first
-    if (!fs.existsSync(this.socketPath)) {
+    try {
+      await stat(this.socketPath);
+    } catch {
       const dir = path.dirname(this.socketPath);
-      if (!fs.existsSync(dir)) {
-        emitDaemonUnavailable('Socket directory does not exist. Run: systemctl --user enable --now dictate.service');
-      } else {
+      try {
+        await stat(dir);
         emitDaemonUnavailable('Socket file does not exist. Run: systemctl --user enable --now dictate.service');
+      } catch {
+        emitDaemonUnavailable('Socket directory does not exist. Run: systemctl --user enable --now dictate.service');
       }
       process.exit(1);
     }
@@ -100,79 +106,106 @@ class DictatectlBridge {
   }
 
   private setupStdin(): void {
-    this.stdinReader = readline.createInterface({
-      input: process.stdin,
-      terminal: false,
-    });
-
-    this.stdinReader.on('line', (line) => {
-      if (!line.trim()) return;
-
-      // Forward to socket if connected
-      if (this.socket && !this.socket.destroyed) {
-        this.socket.write(line + '\n');
-      }
-    });
-
-    this.stdinReader.on('close', () => {
-      // stdin closed (e.g., parent process died)
-      this.shutdown();
-    });
+    this.stdinAbort = new AbortController();
+    this.readStdin(this.stdinAbort.signal);
   }
 
-  private connect(): Promise<void> {
+  private async readStdin(signal: AbortSignal): Promise<void> {
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      for await (const chunk of Bun.stdin.stream()) {
+        if (signal.aborted) break;
+
+        buffer += decoder.decode(chunk, { stream: true });
+
+        // Process complete lines
+        let newlineIndex: number;
+        while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+
+          if (line.trim()) {
+            // Forward to socket if connected
+            if (this.socket) {
+              this.socket.write(line + '\n');
+            }
+          }
+        }
+      }
+    } catch {
+      // Stream error or aborted - ignore
+    }
+
+    // stdin closed (e.g., parent process died)
+    if (!signal.aborted) {
+      this.shutdown();
+    }
+  }
+
+  private async connect(): Promise<void> {
+    emitStatus('connecting');
+
     return new Promise((resolve) => {
-      emitStatus('connecting');
-
-      this.socket = new net.Socket();
-      let connected = false;
-
       // Connection timeout
       const timeoutId = setTimeout(() => {
-        if (!connected) {
-          this.socket?.destroy();
+        if (!this.socket) {
           this.handleConnectionFailed('Connection timeout');
         }
       }, CONNECT_TIMEOUT_MS);
 
-      this.socket.on('connect', () => {
-        connected = true;
+      Bun.connect<SocketData>({
+        unix: this.socketPath,
+        socket: {
+          open: (socket) => {
+            clearTimeout(timeoutId);
+            this.socket = socket;
+            socket.data = { buffer: '' };
+            resetBackoff(this.backoffState);
+            emitStatus('connected');
+            resolve();
+          },
+
+          data: (socket, data) => {
+            this.handleSocketData(socket, data);
+          },
+
+          close: () => {
+            this.socket = null;
+            if (!this.intentionalDisconnect) {
+              this.handleDisconnect();
+            }
+          },
+
+          connectError: (_socket, error) => {
+            clearTimeout(timeoutId);
+            this.handleConnectionFailed(error.message);
+          },
+
+          error: (_socket, error) => {
+            // Socket error after connection - will be followed by close
+          },
+
+          end: () => {
+            // Server closed connection - will be followed by close
+          },
+        },
+      }).catch((err) => {
         clearTimeout(timeoutId);
-        resetBackoff(this.backoffState);
-        emitStatus('connected');
-        resolve();
+        this.handleConnectionFailed(err.message);
       });
-
-      this.socket.on('data', (data: Buffer) => {
-        this.handleSocketData(data);
-      });
-
-      this.socket.on('close', () => {
-        if (!this.intentionalDisconnect) {
-          this.handleDisconnect();
-        }
-      });
-
-      this.socket.on('error', (err) => {
-        if (!connected) {
-          clearTimeout(timeoutId);
-          this.handleConnectionFailed(err.message);
-        }
-        // If already connected, error is followed by close event
-      });
-
-      this.socket.connect(this.socketPath);
     });
   }
 
-  private handleSocketData(data: Buffer): void {
-    this.socketBuffer += data.toString();
+  private handleSocketData(socket: BunSocket<SocketData>, data: Buffer | Uint8Array): void {
+    socket.data.buffer += Buffer.from(data).toString();
 
     // Process complete lines (JSONL)
     let newlineIndex: number;
-    while ((newlineIndex = this.socketBuffer.indexOf('\n')) !== -1) {
-      const line = this.socketBuffer.slice(0, newlineIndex);
-      this.socketBuffer = this.socketBuffer.slice(newlineIndex + 1);
+    while ((newlineIndex = socket.data.buffer.indexOf('\n')) !== -1) {
+      const line = socket.data.buffer.slice(0, newlineIndex);
+      socket.data.buffer = socket.data.buffer.slice(newlineIndex + 1);
 
       if (line.trim()) {
         // Forward to stdout
@@ -224,13 +257,13 @@ class DictatectlBridge {
       this.reconnectTimer = null;
     }
 
-    if (this.stdinReader) {
-      this.stdinReader.close();
-      this.stdinReader = null;
+    if (this.stdinAbort) {
+      this.stdinAbort.abort();
+      this.stdinAbort = null;
     }
 
     if (this.socket) {
-      this.socket.destroy();
+      this.socket.end();
       this.socket = null;
     }
 
