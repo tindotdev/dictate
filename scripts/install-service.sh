@@ -57,21 +57,57 @@ BUN_DIR=$(dirname "$BUN_PATH")
 echo "  Found: $BUN_PATH"
 
 # -----------------------------------------------------------------------------
-# Build daemon if needed
+# Find daemon (local build, global npm, or global bun)
 # -----------------------------------------------------------------------------
-DAEMON_PATH="$PROJECT_ROOT/daemon/dist/main.js"
+DAEMON_PATH=""
+EXEC_START=""
 
-if [[ ! -f "$DAEMON_PATH" ]]; then
+# Priority 1: Local build
+LOCAL_DAEMON="$PROJECT_ROOT/daemon/dist/main.js"
+if [[ -f "$LOCAL_DAEMON" ]]; then
+  DAEMON_PATH="$LOCAL_DAEMON"
+  EXEC_START="/usr/bin/env bun run $DAEMON_PATH"
+  echo "  Found local daemon: $DAEMON_PATH"
+fi
+
+# Priority 2: Global npm install
+if [[ -z "$DAEMON_PATH" ]]; then
+  NPM_GLOBAL_ROOT=$(npm root -g 2>/dev/null || true)
+  if [[ -n "$NPM_GLOBAL_ROOT" ]]; then
+    NPM_DAEMON="$NPM_GLOBAL_ROOT/@tindotdev/dictate/dist/main.js"
+    if [[ -f "$NPM_DAEMON" ]]; then
+      DAEMON_PATH="$NPM_DAEMON"
+      EXEC_START="/usr/bin/env bun run $DAEMON_PATH"
+      echo "  Found npm global daemon: $DAEMON_PATH"
+    fi
+  fi
+fi
+
+# Priority 3: Global binary in PATH (from npm bin or bun install -g)
+if [[ -z "$DAEMON_PATH" ]]; then
+  DICTATED_BIN=$(which dictated 2>/dev/null || true)
+  if [[ -n "$DICTATED_BIN" ]]; then
+    DAEMON_PATH="$DICTATED_BIN"
+    EXEC_START="$DICTATED_BIN"
+    echo "  Found global dictated: $DAEMON_PATH"
+  fi
+fi
+
+# Priority 4: Build local daemon if nothing found
+if [[ -z "$DAEMON_PATH" ]]; then
   echo ""
   echo "Building daemon..."
-  (cd "$PROJECT_ROOT/daemon" && bun run build)
-fi
+  (cd "$PROJECT_ROOT/daemon" && bun install && bun run build)
 
-if [[ ! -f "$DAEMON_PATH" ]]; then
-  echo "Error: Failed to build daemon. Check for errors above."
-  exit 1
+  if [[ -f "$LOCAL_DAEMON" ]]; then
+    DAEMON_PATH="$LOCAL_DAEMON"
+    EXEC_START="/usr/bin/env bun run $DAEMON_PATH"
+    echo "  Built daemon: $DAEMON_PATH"
+  else
+    echo "Error: Failed to build daemon. Check for errors above."
+    exit 1
+  fi
 fi
-echo "  Daemon: $DAEMON_PATH"
 
 # -----------------------------------------------------------------------------
 # Create directories
@@ -89,14 +125,14 @@ echo "Installing systemd service..."
 # Copy service file
 cp "$PROJECT_ROOT/systemd/dictate.service" ~/.config/systemd/user/
 
-# Update ExecStart path to use actual daemon location
-ESCAPED_PATH=$(printf '%s\n' "$DAEMON_PATH" | sed 's/[\/&]/\\&/g')
-sed -i "s|%h/.local/share/nvim/lazy/dictate/daemon/dist/main.js|$ESCAPED_PATH|g" \
+# Substitute placeholders in service file
+# __EXEC_START__ -> actual daemon command
+ESCAPED_EXEC=$(printf '%s\n' "$EXEC_START" | sed 's/[\/&]/\\&/g')
+sed -i "s|__EXEC_START__|$ESCAPED_EXEC|g" \
   ~/.config/systemd/user/dictate.service
 
-# Update PATH to include bun's directory
-# The service file has a default PATH, we prepend bun's location
-sed -i "s|Environment=PATH=|Environment=PATH=$BUN_DIR:|g" \
+# __BUN_PATH__ -> bun's directory
+sed -i "s|__BUN_PATH__|$BUN_DIR|g" \
   ~/.config/systemd/user/dictate.service
 
 echo "  Installed: ~/.config/systemd/user/dictate.service"

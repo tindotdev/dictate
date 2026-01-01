@@ -8,4 +8,8 @@ export default defineConfig({
 	clean: true,
 	sourcemap: true,
 	dts: true,
+	// Add shebang to output files for npm bin executables
+	banner: {
+		js: "#!/usr/bin/env bun",
+	},
 });

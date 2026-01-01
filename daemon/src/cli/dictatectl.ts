@@ -1,4 +1,3 @@
-#!/usr/bin/env bun
 import { stat } from "node:fs/promises";
 import * as path from "node:path";
 import type { Socket as BunSocket } from "bun";

@@ -1,14 +1,38 @@
 {
-	"name": "dictate-daemon",
+	"name": "@tindotdev/dictate",
 	"version": "0.1.0",
+	"description": "Speech-to-text daemon for Neovim using OpenAI Realtime API",
 	"type": "module",
 	"main": "dist/main.js",
+	"bin": {
+		"dictated": "dist/main.js",
+		"dictatectl": "dist/cli/dictatectl.js"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"dev": "tsx watch src/main.ts",
 		"build": "tsup",
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"check": "bunx biome check --write --unsafe"
+	},
+	"keywords": [
+		"neovim",
+		"speech-to-text",
+		"dictation",
+		"openai",
+		"realtime-api"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/tindotdev/dictate.git",
+		"directory": "daemon"
 	},
 	"dependencies": {
 		"zod": "^4.2.1"

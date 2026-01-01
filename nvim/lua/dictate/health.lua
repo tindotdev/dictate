@@ -88,13 +88,18 @@ local function run_checks(h)
   local dist_daemon = plugin_root .. '/daemon/dist/main.js'
   local dev_daemon = plugin_root .. '/daemon/src/main.ts'
 
-  -- Check dictatectl (new architecture)
+  -- Check dictatectl (local build, dev, or global install)
   if vim.fn.filereadable(dist_dictatectl) == 1 then
-    h.ok('dictatectl found at ' .. dist_dictatectl)
+    h.ok('dictatectl (local) found at ' .. dist_dictatectl)
   elseif vim.fn.filereadable(dev_dictatectl) == 1 then
     h.ok('dictatectl (dev) found at ' .. dev_dictatectl)
+  elseif command_exists('dictatectl') then
+    h.ok('dictatectl (global) found in PATH')
   else
-    h.warn('dictatectl not found (new architecture not built)')
+    h.warn('dictatectl not found', {
+      'Option 1: Build locally - run `cd ' .. plugin_root .. '/daemon && bun run build`',
+      'Option 2: Install globally - run `npm install -g @tindotdev/dictate`',
+    })
   end
 
   -- Check daemon
@@ -216,6 +221,8 @@ local function run_checks(h)
     daemon_cmd = { 'bun', dist_dictatectl }
   elseif vim.fn.filereadable(dev_dictatectl) == 1 then
     daemon_cmd = { 'bun', dev_dictatectl }
+  elseif command_exists('dictatectl') then
+    daemon_cmd = { 'dictatectl' }
   elseif vim.fn.filereadable(dist_daemon) == 1 then
     daemon_cmd = { 'bun', dist_daemon }
   elseif vim.fn.filereadable(dev_daemon) == 1 then
@@ -225,7 +232,10 @@ local function run_checks(h)
   if daemon_cmd then
     h.ok('daemon command: ' .. table.concat(daemon_cmd, ' '))
   else
-    h.error('cannot determine daemon command')
+    h.error('cannot determine daemon command', {
+      'Option 1: Build locally - run `cd ' .. plugin_root .. '/daemon && bun run build`',
+      'Option 2: Install globally - run `npm install -g @tindotdev/dictate`',
+    })
   end
 end
 

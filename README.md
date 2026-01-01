@@ -26,26 +26,89 @@ sudo dnf install pipewire-utils
 
 # Ubuntu/Debian
 sudo apt install pipewire
+
+# Install Bun (required for daemon)
+curl -fsSL https://bun.sh/install | bash
 ```
 
-### Build the Daemon
+### Method A: lazy.nvim with Build Step (Recommended)
+
+This clones the repo and builds the daemon automatically:
+
+```lua
+{
+  "tindotdev/dictate",
+  build = "cd daemon && bun install && bun run build",
+  keys = {
+    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
+  },
+  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
+  config = function()
+    require("dictate").setup()
+  end,
+}
+```
+
+After installation, set up the systemd service:
 
 ```bash
+~/.local/share/nvim/lazy/dictate/scripts/install-service.sh
+```
+
+### Method B: Global Daemon + Plugin
+
+Install the daemon globally via npm:
+
+```bash
+npm install -g @tindotdev/dictate
+# or: bun install -g @tindotdev/dictate
+```
+
+Then add the Neovim plugin (it will find the global daemon automatically):
+
+```lua
+{
+  "tindotdev/dictate",
+  keys = {
+    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
+  },
+  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
+  config = function()
+    require("dictate").setup()
+  end,
+}
+```
+
+Start the daemon manually or via systemd:
+
+```bash
+# Manual
+dictated &
+
+# Or set up systemd service
+./scripts/install-service.sh
+```
+
+### Method C: Local Development
+
+```bash
+git clone https://github.com/tindotdev/dictate.git
 cd dictate/daemon
 bun install
 bun run build
 ```
 
-### Neovim Plugin (lazy.nvim)
+Then add to lazy.nvim pointing to local path:
 
 ```lua
 {
-  dir = "~/path/to/dictate/nvim",
+  dir = "~/path/to/dictate",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },
-  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
-  opts = {},
+  config = function()
+    require("dictate").setup()
+  end,
 }
 ```
 

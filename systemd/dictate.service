@@ -4,8 +4,10 @@ After=pipewire.service
 
 [Service]
 Type=simple
-Environment=PATH=%h/.local/bin:%h/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bun run %h/.local/share/nvim/lazy/dictate/daemon/dist/main.js
+# __BUN_PATH__ is replaced by install-service.sh with the actual bun directory
+Environment=PATH=__BUN_PATH__:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+# __EXEC_START__ is replaced by install-service.sh with the actual daemon command
+ExecStart=__EXEC_START__
 Restart=on-failure
 RestartSec=5
 EnvironmentFile=-%h/.config/dictate/env
