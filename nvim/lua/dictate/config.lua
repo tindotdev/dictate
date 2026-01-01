@@ -2,6 +2,7 @@ local M = {}
 
 ---@class DictateConfig
 ---@field daemon_cmd string[]|nil Command to run the daemon
+---@field use_global_daemon boolean Use globally installed daemon (npm/bun) instead of local build
 ---@field keymap string|nil Keymap to toggle dictation
 ---@field ghost_hl string Highlight group for ghost text
 ---@field insert_trailing_space boolean Add space after inserted text
@@ -17,6 +18,7 @@ local M = {}
 ---@type DictateConfig
 local defaults = {
   daemon_cmd = nil, -- Auto-detect
+  use_global_daemon = false, -- Prefer local build; set true to use npm/bun global install
   keymap = nil, -- No default keymap; set in lazy.nvim keys or opts.keymap
   ghost_hl = 'Comment',
   insert_trailing_space = true,
@@ -216,6 +218,14 @@ local function validate_config(opts)
     end
   end
 
+  -- use_global_daemon: boolean
+  if opts.use_global_daemon ~= nil then
+    local err = validate_type('use_global_daemon', opts.use_global_daemon, 'boolean', true)
+    if err then
+      table.insert(errors, err)
+    end
+  end
+
   return errors
 end
 
@@ -235,39 +245,46 @@ end
 local config = vim.deepcopy(defaults)
 
 ---Find the dictatectl command using fallback chain:
----1. Relative path from plugin root (local build or dev)
+---1. Relative path from plugin root (local build or dev) - skipped if use_global is true
 ---2. System PATH lookup (global npm/bun install)
+---@param use_global boolean Skip local paths and use global install
 ---@return string[]
-local function find_daemon_cmd()
+local function find_daemon_cmd(use_global)
   -- Get the plugin root directory
   local source = debug.getinfo(1, 'S').source:sub(2)
   local plugin_root = vim.fn.fnamemodify(source, ':h:h:h:h')
 
-  -- Priority 1: Local build (dist)
-  local dist_dictatectl = plugin_root .. '/daemon/dist/cli/dictatectl.js'
-  if vim.fn.filereadable(dist_dictatectl) == 1 then
-    return { 'bun', dist_dictatectl }
+  if not use_global then
+    -- Priority 1: Local build (dist)
+    local dist_dictatectl = plugin_root .. '/daemon/dist/cli/dictatectl.js'
+    if vim.fn.filereadable(dist_dictatectl) == 1 then
+      return { 'bun', dist_dictatectl }
+    end
+
+    -- Priority 2: Local dev (src)
+    local dev_dictatectl = plugin_root .. '/daemon/src/cli/dictatectl.ts'
+    if vim.fn.filereadable(dev_dictatectl) == 1 then
+      return { 'bun', dev_dictatectl }
+    end
   end
 
-  -- Priority 2: Local dev (src)
-  local dev_dictatectl = plugin_root .. '/daemon/src/cli/dictatectl.ts'
-  if vim.fn.filereadable(dev_dictatectl) == 1 then
-    return { 'bun', dev_dictatectl }
-  end
-
-  -- Priority 3: Global install (dictatectl in PATH)
+  -- Priority 3 (or 1 if use_global): Global install (dictatectl in PATH)
   if vim.fn.executable('dictatectl') == 1 then
     return { 'dictatectl' }
   end
 
   -- Not found - provide helpful error
-  error(
-    'dictate: dictatectl not found.\n'
-      .. '  Option 1: Build locally - run `cd '
-      .. plugin_root
-      .. '/daemon && bun run build`\n'
-      .. '  Option 2: Install globally - run `npm install -g @tindotdev/dictate`'
-  )
+  if use_global then
+    error('dictate: dictatectl not found in PATH.\n  Run `npm install -g @tindotdev/dictate` to install globally.')
+  else
+    error(
+      'dictate: dictatectl not found.\n'
+        .. '  Option 1: Build locally - run `cd '
+        .. plugin_root
+        .. '/daemon && bun run build`\n'
+        .. '  Option 2: Install globally - run `npm install -g @tindotdev/dictate`'
+    )
+  end
 end
 
 ---Setup the plugin configuration
@@ -316,7 +333,7 @@ function M.setup(opts)
 
   -- Auto-detect daemon path if not specified
   if not config.daemon_cmd then
-    local ok, cmd = pcall(find_daemon_cmd)
+    local ok, cmd = pcall(find_daemon_cmd, config.use_global_daemon)
     if ok then
       config.daemon_cmd = cmd
     else

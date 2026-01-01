@@ -1,6 +1,6 @@
 {
 	"name": "@tindotdev/dictate",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Speech-to-text daemon for Neovim using OpenAI Realtime API",
 	"type": "module",
 	"main": "dist/main.js",

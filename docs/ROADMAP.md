@@ -44,7 +44,20 @@ Socket-based daemon architecture with fault tolerance.
 - [x] Graceful degradation when API key missing or invalid
 - [x] 142 unit tests covering all components
 
-## Milestone 4: Advanced Features
+## Milestone 4: Distribution & Packaging (Complete)
+
+Make the project installable and usable from published sources.
+
+- [x] Migrate from sandbox to production directory (`/github`)
+- [x] Remove hardcoded paths from systemd service and scripts
+- [x] Multi-source daemon discovery (local build → npm global → PATH → dev)
+- [x] Publish daemon to npm as `@tindotdev/dictate`
+- [x] Add `use_global_daemon` config option for daily-driving published package
+- [x] Fix duplicate shebang issue in published binaries
+- [x] Verified installation and testing with Linuxbrew Node
+- [x] Health check reports global vs local daemon usage
+
+## Milestone 5: Advanced Features
 
 Power-user features for specific workflows.
 
@@ -54,7 +67,7 @@ Power-user features for specific workflows.
 - [ ] Transcription history/log
 - [ ] Insert-as-you-speak mode (live text insertion)
 
-## Milestone 5: Ecosystem
+## Milestone 6: Ecosystem
 
 Integration with the broader Neovim ecosystem.
 
@@ -67,6 +80,17 @@ Integration with the broader Neovim ecosystem.
 
 General open-source readiness tasks before announcing broadly.
 
+### Infrastructure & Publishing
+
+- [x] Published daemon to npm as `@tindotdev/dictate`
+- [x] Tested installation from npm registry
+- [x] Added `use_global_daemon` option for published package
+- [ ] Make GitHub repository public
+- [ ] Add CI/CD pipeline (GitHub Actions)
+- [ ] Set up automated npm publishing on release
+
+### Documentation
+
 - [ ] Add CONTRIBUTING guide
 - [ ] Add Code of Conduct
 - [ ] Add SECURITY policy / vulnerability reporting guidance
@@ -74,7 +98,15 @@ General open-source readiness tasks before announcing broadly.
 - [ ] Add CHANGELOG / release notes
 - [ ] Add Privacy & costs note in README (audio sent to OpenAI; usage is billable)
 - [ ] Clarify platform support (Linux + PipeWire) in README
-- [ ] Ensure lazy.nvim install instructions include `rtp = "nvim"` (or move runtime to repo root)
+- [ ] Update README with npm installation instructions
+- [ ] Add troubleshooting section to README
+- [ ] Ensure lazy.nvim install instructions use `subdir = "nvim"`
+
+### Quality Assurance
+
+- [ ] Review and clean up all TODOs in codebase
+- [ ] Verify all tests pass in CI
+- [ ] Test installation flow on fresh Linux system
 
 ---
 

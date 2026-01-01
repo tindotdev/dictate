@@ -31,46 +31,20 @@ sudo apt install pipewire
 curl -fsSL https://bun.sh/install | bash
 ```
 
-### Method A: lazy.nvim with Build Step (Recommended)
+### Method A: Global npm Install (Recommended)
 
-This clones the repo and builds the daemon automatically:
-
-```lua
-{
-  "tindotdev/dictate",
-  rtp = "nvim",
-  build = "cd daemon && bun install && bun run build",
-  keys = {
-    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
-  },
-  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
-  config = function()
-    require("dictate").setup()
-  end,
-}
-```
-
-After installation, set up the systemd service:
-
-```bash
-~/.local/share/nvim/lazy/dictate/scripts/install-service.sh
-```
-
-### Method B: Global Daemon + Plugin
-
-Install the daemon globally via npm:
+Install the daemon globally and add the plugin:
 
 ```bash
 npm install -g @tindotdev/dictate
-# or: bun install -g @tindotdev/dictate
 ```
 
-Then add the Neovim plugin (it will find the global daemon automatically):
+Then add to your lazy.nvim config:
 
 ```lua
 {
   "tindotdev/dictate",
-  rtp = "nvim",
+  subdir = "nvim",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },
@@ -81,17 +55,19 @@ Then add the Neovim plugin (it will find the global daemon automatically):
 }
 ```
 
-Start the daemon manually or via systemd:
+The plugin will automatically find `dictatectl` in your PATH. Start the daemon:
 
 ```bash
-# Manual
+# Run manually
 dictated &
 
-# Or set up systemd service
-./scripts/install-service.sh
+# Or set up systemd service (optional)
+curl -fsSL https://raw.githubusercontent.com/tindotdev/dictate/main/scripts/install-service.sh | bash
 ```
 
-### Method C: Local Development
+### Method B: Clone and Build (For Development)
+
+Clone the repository and build locally:
 
 ```bash
 git clone https://github.com/tindotdev/dictate.git
@@ -100,12 +76,12 @@ bun install
 bun run build
 ```
 
-Then add to lazy.nvim pointing to local path:
+Add to lazy.nvim pointing to your local clone:
 
 ```lua
 {
   dir = "~/path/to/dictate",
-  rtp = "nvim",
+  subdir = "nvim",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },
@@ -113,6 +89,13 @@ Then add to lazy.nvim pointing to local path:
     require("dictate").setup()
   end,
 }
+```
+
+The plugin will automatically use your local build. Set up the systemd service:
+
+```bash
+cd ~/path/to/dictate
+./scripts/install-service.sh
 ```
 
 ## Configuration
@@ -139,8 +122,15 @@ require("dictate").setup({
   keymap = nil,                 -- Optional: set a keymap (prefer lazy.nvim keys)
   ghost_hl = 'Comment',         -- Highlight group for ghost text
   insert_trailing_space = true, -- Add space after inserted text
+
+  -- Advanced: Force using global daemon (for developers with local builds)
+  use_global_daemon = false,    -- Skip local paths, use only npm-installed daemon
 })
 ```
+
+**Advanced Options:**
+
+- `use_global_daemon`: Set to `true` to force using the globally installed daemon even if a local build exists. Useful for testing the published npm package during development.
 
 ## Usage
 

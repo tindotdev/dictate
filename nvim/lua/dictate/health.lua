@@ -164,6 +164,10 @@ local function run_checks(h)
       h.warn('daemon_cmd not configured (will auto-detect)')
     end
 
+    if cfg.use_global_daemon then
+      h.info('use_global_daemon is enabled (using npm/bun global install)')
+    end
+
     if cfg.debug then
       h.info('debug mode is enabled')
     end
