@@ -230,6 +230,32 @@ describe("DaemonStateMachine", () => {
 			expect(sm.isAudioReady()).toBe(false);
 			expect(sm.isWsReady()).toBe(false);
 		});
+
+		it("handles multiple consecutive RESET calls", () => {
+			sm.transition({ type: "START_LISTENING" });
+			sm.transition({ type: "AUDIO_READY" });
+			sm.transition({ type: "WS_READY" });
+
+			sm.transition({ type: "RESET" });
+			expect(sm.getState()).toBe("idle");
+
+			// Second reset from idle returns false (no state change)
+			const result = sm.transition({ type: "RESET" });
+			expect(result).toBe(false);
+			expect(sm.getState()).toBe("idle");
+			expect(sm.isAudioReady()).toBe(false);
+			expect(sm.isWsReady()).toBe(false);
+		});
+
+		it("can reset from error state", () => {
+			sm.on("error", () => {}); // Attach error listener
+			sm.transition({ type: "FATAL_ERROR", message: "test error" });
+			expect(sm.getState()).toBe("error");
+
+			const result = sm.transition({ type: "RESET" });
+			expect(result).toBe(true);
+			expect(sm.getState()).toBe("idle");
+		});
 	});
 
 	describe("invalid transitions", () => {
@@ -262,6 +288,35 @@ describe("DaemonStateMachine", () => {
 			// Still idle because we need to START_LISTENING first
 			expect(sm.getState()).toBe("idle");
 		});
+
+		it("cannot transition on WS_DISCONNECTED from audio_starting", () => {
+			sm.transition({ type: "START_LISTENING" });
+			expect(sm.getState()).toBe("audio_starting");
+
+			const result = sm.transition({ type: "WS_DISCONNECTED" });
+			expect(result).toBe(false);
+			expect(sm.getState()).toBe("audio_starting");
+		});
+
+		it("cannot transition on AUDIO_READY after fatal error", () => {
+			sm.on("error", () => {}); // Attach error listener
+			sm.transition({ type: "FATAL_ERROR", message: "test error" });
+			expect(sm.getState()).toBe("error");
+
+			const result = sm.transition({ type: "AUDIO_READY" });
+			expect(result).toBe(false);
+			expect(sm.getState()).toBe("error");
+		});
+
+		it("cannot transition on WS_READY after fatal error", () => {
+			sm.on("error", () => {}); // Attach error listener
+			sm.transition({ type: "FATAL_ERROR", message: "test error" });
+			expect(sm.getState()).toBe("error");
+
+			const result = sm.transition({ type: "WS_READY" });
+			expect(result).toBe(false);
+			expect(sm.getState()).toBe("error");
+		});
 	});
 
 	describe("canTransition", () => {
@@ -276,6 +331,48 @@ describe("DaemonStateMachine", () => {
 		it("does not modify actual state", () => {
 			sm.canTransition({ type: "START_LISTENING" });
 			expect(sm.getState()).toBe("idle");
+		});
+
+		it("returns false for WS_DISCONNECTED from audio_starting", () => {
+			sm.transition({ type: "START_LISTENING" });
+			expect(sm.getState()).toBe("audio_starting");
+			expect(sm.canTransition({ type: "WS_DISCONNECTED" })).toBe(false);
+		});
+
+		it("returns true for RESET from non-idle states", () => {
+			// RESET from idle returns false (no state change)
+			expect(sm.canTransition({ type: "RESET" })).toBe(false);
+
+			sm.transition({ type: "START_LISTENING" });
+			expect(sm.canTransition({ type: "RESET" })).toBe(true);
+
+			sm.transition({ type: "AUDIO_READY" });
+			sm.transition({ type: "WS_READY" });
+			expect(sm.canTransition({ type: "RESET" })).toBe(true);
+
+			sm.transition({ type: "STOP_LISTENING" });
+			expect(sm.canTransition({ type: "RESET" })).toBe(true);
+		});
+
+		it("canTransition works without modifying state", () => {
+			// Test that canTransition doesn't change the actual state
+			const initialState = sm.getState();
+			const canStart = sm.canTransition({ type: "START_LISTENING" });
+			expect(canStart).toBe(true);
+			expect(sm.getState()).toBe(initialState);
+
+			// Test invalid transition
+			const canStop = sm.canTransition({ type: "STOP_LISTENING" });
+			expect(canStop).toBe(false);
+			expect(sm.getState()).toBe(initialState);
+		});
+
+		it("does not modify flags when checking transition", () => {
+			sm.transition({ type: "START_LISTENING" });
+			expect(sm.isAudioReady()).toBe(false);
+
+			sm.canTransition({ type: "AUDIO_READY" });
+			expect(sm.isAudioReady()).toBe(false);
 		});
 	});
 

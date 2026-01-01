@@ -74,6 +74,25 @@ describe("AudioSupervisor", () => {
 			expect(handler).toHaveBeenCalled();
 		});
 
+		it("stop when already stopped does not emit duplicate stopped events", () => {
+			supervisor = createAudioSupervisor({
+				pwCatPath: "/bin/true",
+				backoff: { maxRetries: 0 },
+			});
+
+			const stoppedHandler = mock(() => {});
+			supervisor.on("stopped", stoppedHandler);
+
+			// Should already be stopped initially
+			expect(supervisor.getState()).toBe("stopped");
+
+			supervisor.stop();
+			supervisor.stop();
+
+			// No stopped events should be emitted when already stopped
+			expect(stoppedHandler).not.toHaveBeenCalled();
+		});
+
 		it("multiple starts are no-op when already starting", () => {
 			supervisor = createAudioSupervisor({
 				pwCatPath: "/bin/true",
@@ -90,6 +109,40 @@ describe("AudioSupervisor", () => {
 			supervisor.start();
 
 			expect(startingCount).toBe(1);
+		});
+
+		it("handles rapid start/stop cycles", async () => {
+			supervisor = createAudioSupervisor({
+				pwCatPath: "/bin/true",
+				backoff: { maxRetries: 0 },
+			});
+
+			// Rapid cycling
+			supervisor.start();
+			supervisor.stop();
+			supervisor.start();
+			supervisor.stop();
+			supervisor.start();
+
+			await new Promise((r) => setTimeout(r, 50));
+
+			// Verify we can still control the state
+			supervisor.stop();
+			expect(supervisor.getState()).toBe("stopped");
+		});
+
+		it("isRunning returns false when stopped", () => {
+			supervisor = createAudioSupervisor({
+				pwCatPath: "/bin/true",
+				backoff: { maxRetries: 0 },
+			});
+
+			expect(supervisor.isRunning()).toBe(false);
+
+			supervisor.start();
+			supervisor.stop();
+
+			expect(supervisor.isRunning()).toBe(false);
 		});
 	});
 
