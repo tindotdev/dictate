@@ -1,12 +1,12 @@
-import { EventEmitter } from 'events';
-import type { Subprocess } from 'bun';
+import { EventEmitter } from "node:events";
+import type { Subprocess } from "bun";
 import {
-  type BackoffConfig,
-  createBackoffState,
-  nextBackoff,
-  resetBackoff,
-  type BackoffState,
-} from '../backoff.js';
+	type BackoffConfig,
+	type BackoffState,
+	createBackoffState,
+	nextBackoff,
+	resetBackoff,
+} from "../backoff.js";
 
 // ============================================================================
 // Audio Constants (OpenAI Realtime API requirements)
@@ -16,44 +16,53 @@ const SAMPLE_RATE = 24000;
 const CHANNELS = 1;
 const BYTES_PER_SAMPLE = 2; // s16 = 16-bit = 2 bytes
 const FRAME_MS = 20; // 20ms frames
-const FRAME_BYTES = (SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * FRAME_MS) / 1000; // 960 bytes
+const FRAME_BYTES =
+	(SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS * FRAME_MS) / 1000; // 960 bytes
 
 export const AUDIO_CONSTANTS = {
-  SAMPLE_RATE,
-  CHANNELS,
-  BYTES_PER_SAMPLE,
-  FRAME_MS,
-  FRAME_BYTES,
+	SAMPLE_RATE,
+	CHANNELS,
+	BYTES_PER_SAMPLE,
+	FRAME_MS,
+	FRAME_BYTES,
 } as const;
 
 // ============================================================================
 // Supervisor Types
 // ============================================================================
 
-export type AudioSupervisorState = 'stopped' | 'starting' | 'running' | 'restarting' | 'failed';
+export type AudioSupervisorState =
+	| "stopped"
+	| "starting"
+	| "running"
+	| "restarting"
+	| "failed";
 
 export interface AudioSupervisorEvents {
-  chunk: (chunk: Buffer) => void;
-  started: () => void;
-  stopped: () => void;
-  error: (error: Error) => void;
-  restarting: (attempt: number, delayMs: number) => void;
-  failed: (error: Error) => void;
-  state_change: (from: AudioSupervisorState, to: AudioSupervisorState) => void;
+	chunk: (chunk: Buffer) => void;
+	started: () => void;
+	stopped: () => void;
+	error: (error: Error) => void;
+	restarting: (attempt: number, delayMs: number) => void;
+	failed: (error: Error) => void;
+	state_change: (from: AudioSupervisorState, to: AudioSupervisorState) => void;
 }
 
 export declare interface AudioSupervisor {
-  on<K extends keyof AudioSupervisorEvents>(event: K, listener: AudioSupervisorEvents[K]): this;
-  emit<K extends keyof AudioSupervisorEvents>(
-    event: K,
-    ...args: Parameters<AudioSupervisorEvents[K]>
-  ): boolean;
+	on<K extends keyof AudioSupervisorEvents>(
+		event: K,
+		listener: AudioSupervisorEvents[K],
+	): this;
+	emit<K extends keyof AudioSupervisorEvents>(
+		event: K,
+		...args: Parameters<AudioSupervisorEvents[K]>
+	): boolean;
 }
 
 export interface AudioSupervisorOptions {
-  backoff?: Partial<BackoffConfig>;
-  /** Path to pw-cat binary (default: 'pw-cat') */
-  pwCatPath?: string;
+	backoff?: Partial<BackoffConfig>;
+	/** Path to pw-cat binary (default: 'pw-cat') */
+	pwCatPath?: string;
 }
 
 // ============================================================================
@@ -61,199 +70,207 @@ export interface AudioSupervisorOptions {
 // ============================================================================
 
 export class AudioSupervisor extends EventEmitter {
-  private process: Subprocess | null = null;
-  private buffer: Buffer = Buffer.alloc(0);
-  private stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-  private state: AudioSupervisorState = 'stopped';
-  private intentionalStop = false;
-  private backoffState: BackoffState;
-  private restartTimer: ReturnType<typeof setTimeout> | null = null;
-  private pwCatPath: string;
+	private process: Subprocess | null = null;
+	private buffer: Buffer = Buffer.alloc(0);
+	private stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+	private state: AudioSupervisorState = "stopped";
+	private intentionalStop = false;
+	private backoffState: BackoffState;
+	private restartTimer: ReturnType<typeof setTimeout> | null = null;
+	private pwCatPath: string;
 
-  constructor(options: AudioSupervisorOptions = {}) {
-    super();
-    this.backoffState = createBackoffState(options.backoff);
-    this.pwCatPath = options.pwCatPath ?? 'pw-cat';
-  }
+	constructor(options: AudioSupervisorOptions = {}) {
+		super();
+		this.backoffState = createBackoffState(options.backoff);
+		this.pwCatPath = options.pwCatPath ?? "pw-cat";
+	}
 
-  private setState(newState: AudioSupervisorState): void {
-    if (this.state !== newState) {
-      const from = this.state;
-      this.state = newState;
-      this.emit('state_change', from, newState);
-    }
-  }
+	private setState(newState: AudioSupervisorState): void {
+		if (this.state !== newState) {
+			const from = this.state;
+			this.state = newState;
+			this.emit("state_change", from, newState);
+		}
+	}
 
-  getState(): AudioSupervisorState {
-    return this.state;
-  }
+	getState(): AudioSupervisorState {
+		return this.state;
+	}
 
-  isRunning(): boolean {
-    return this.state === 'running';
-  }
+	isRunning(): boolean {
+		return this.state === "running";
+	}
 
-  /**
-   * Start audio capture. If already running, this is a no-op.
-   */
-  start(): void {
-    if (this.state === 'running' || this.state === 'starting') {
-      return;
-    }
+	/**
+	 * Start audio capture. If already running, this is a no-op.
+	 */
+	start(): void {
+		if (this.state === "running" || this.state === "starting") {
+			return;
+		}
 
-    this.intentionalStop = false;
-    this.cancelRestart();
-    this.spawnProcess();
-  }
+		this.intentionalStop = false;
+		this.cancelRestart();
+		this.spawnProcess();
+	}
 
-  /**
-   * Stop audio capture. Prevents automatic restart.
-   */
-  stop(): void {
-    // Set intentionalStop FIRST before any other operations
-    // to prevent race conditions with process exit handlers
-    this.intentionalStop = true;
-    this.cancelRestart();
-    this.killProcess();
-    resetBackoff(this.backoffState);
+	/**
+	 * Stop audio capture. Prevents automatic restart.
+	 */
+	stop(): void {
+		// Set intentionalStop FIRST before any other operations
+		// to prevent race conditions with process exit handlers
+		this.intentionalStop = true;
+		this.cancelRestart();
+		this.killProcess();
+		resetBackoff(this.backoffState);
 
-    // Only transition to stopped if not already stopped
-    if (this.state !== 'stopped') {
-      this.setState('stopped');
-      this.emit('stopped');
-    }
-  }
+		// Only transition to stopped if not already stopped
+		if (this.state !== "stopped") {
+			this.setState("stopped");
+			this.emit("stopped");
+		}
+	}
 
-  private spawnProcess(): void {
-    this.setState('starting');
+	private spawnProcess(): void {
+		this.setState("starting");
 
-    try {
-      this.process = Bun.spawn([
-        this.pwCatPath,
-        '--record',
-        '--raw',
-        `--rate=${SAMPLE_RATE}`,
-        `--channels=${CHANNELS}`,
-        '--format=s16',
-        '-',
-      ], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-        onExit: (proc, exitCode, signalCode, error) => {
-          // Clean up reader reference
-          this.stdoutReader = null;
+		try {
+			this.process = Bun.spawn(
+				[
+					this.pwCatPath,
+					"--record",
+					"--raw",
+					`--rate=${SAMPLE_RATE}`,
+					`--channels=${CHANNELS}`,
+					"--format=s16",
+					"-",
+				],
+				{
+					stdout: "pipe",
+					stderr: "pipe",
+					onExit: (_proc, exitCode, _signalCode, error) => {
+						// Clean up reader reference
+						this.stdoutReader = null;
 
-          if (error) {
-            this.emit('error', error);
-            this.handleExit(-1, error);
-          } else {
-            this.handleExit(exitCode ?? 0);
-          }
-        },
-      });
-    } catch (err) {
-      // Spawn failed synchronously (e.g., ENOENT)
-      this.emit('error', err as Error);
-      this.handleExit(-1, err as Error);
-      return;
-    }
+						if (error) {
+							this.emit("error", error);
+							this.handleExit(-1, error);
+						} else {
+							this.handleExit(exitCode ?? 0);
+						}
+					},
+				},
+			);
+		} catch (err) {
+			// Spawn failed synchronously (e.g., ENOENT)
+			this.emit("error", err as Error);
+			this.handleExit(-1, err as Error);
+			return;
+		}
 
-    // Check if process has a valid pid (spawned successfully)
-    if (this.process.pid !== undefined) {
-      this.setState('running');
-      this.emit('started');
-    }
+		// Check if process has a valid pid (spawned successfully)
+		if (this.process.pid !== undefined) {
+			this.setState("running");
+			this.emit("started");
+		}
 
-    // Start reading stdout asynchronously
-    this.readStdout();
-  }
+		// Start reading stdout asynchronously
+		this.readStdout();
+	}
 
-  private async readStdout(): Promise<void> {
-    if (!this.process?.stdout) return;
+	private async readStdout(): Promise<void> {
+		if (!this.process?.stdout) return;
 
-    try {
-      this.stdoutReader = this.process.stdout.getReader();
+		try {
+			this.stdoutReader = this.process.stdout.getReader();
 
-      while (true) {
-        const { done, value } = await this.stdoutReader.read();
-        if (done) break;
+			while (true) {
+				const { done, value } = await this.stdoutReader.read();
+				if (done) break;
 
-        // Handle the chunk
-        this.buffer = Buffer.concat([this.buffer, Buffer.from(value)]);
+				// Handle the chunk
+				this.buffer = Buffer.concat([this.buffer, Buffer.from(value)]);
 
-        // Emit complete frames
-        while (this.buffer.length >= FRAME_BYTES) {
-          const frame = this.buffer.subarray(0, FRAME_BYTES);
-          this.buffer = this.buffer.subarray(FRAME_BYTES);
-          this.emit('chunk', frame);
-        }
-      }
-    } catch (err) {
-      // Reader cancelled or error - ignore if intentional stop
-      if (!this.intentionalStop && err instanceof Error) {
-        this.emit('error', err);
-      }
-    }
-  }
+				// Emit complete frames
+				while (this.buffer.length >= FRAME_BYTES) {
+					const frame = this.buffer.subarray(0, FRAME_BYTES);
+					this.buffer = this.buffer.subarray(FRAME_BYTES);
+					this.emit("chunk", frame);
+				}
+			}
+		} catch (err) {
+			// Reader cancelled or error - ignore if intentional stop
+			if (!this.intentionalStop && err instanceof Error) {
+				this.emit("error", err);
+			}
+		}
+	}
 
-  private handleExit(code: number, error?: Error): void {
-    this.process = null;
-    this.buffer = Buffer.alloc(0);
+	private handleExit(_code: number, error?: Error): void {
+		this.process = null;
+		this.buffer = Buffer.alloc(0);
 
-    // If intentionally stopped, don't restart
-    if (this.intentionalStop) {
-      return;
-    }
+		// If intentionally stopped, don't restart
+		if (this.intentionalStop) {
+			return;
+		}
 
-    // Unexpected exit - attempt restart with backoff
-    const delayMs = nextBackoff(this.backoffState);
+		// Unexpected exit - attempt restart with backoff
+		const delayMs = nextBackoff(this.backoffState);
 
-    if (delayMs === null) {
-      // Max retries exceeded
-      this.setState('failed');
-      this.emit(
-        'failed',
-        error ?? new Error(`pw-cat failed after ${this.backoffState.config.maxRetries} retries`)
-      );
-      return;
-    }
+		if (delayMs === null) {
+			// Max retries exceeded
+			this.setState("failed");
+			this.emit(
+				"failed",
+				error ??
+					new Error(
+						`pw-cat failed after ${this.backoffState.config.maxRetries} retries`,
+					),
+			);
+			return;
+		}
 
-    this.setState('restarting');
-    this.emit('restarting', this.backoffState.attempt, delayMs);
+		this.setState("restarting");
+		this.emit("restarting", this.backoffState.attempt, delayMs);
 
-    this.restartTimer = setTimeout(() => {
-      this.restartTimer = null;
-      if (!this.intentionalStop) {
-        this.spawnProcess();
-      }
-    }, delayMs);
-  }
+		this.restartTimer = setTimeout(() => {
+			this.restartTimer = null;
+			if (!this.intentionalStop) {
+				this.spawnProcess();
+			}
+		}, delayMs);
+	}
 
-  private killProcess(): void {
-    // Cancel the stdout reader first
-    if (this.stdoutReader) {
-      this.stdoutReader.cancel().catch(() => {});
-      this.stdoutReader = null;
-    }
+	private killProcess(): void {
+		// Cancel the stdout reader first
+		if (this.stdoutReader) {
+			this.stdoutReader.cancel().catch(() => {});
+			this.stdoutReader = null;
+		}
 
-    if (this.process) {
-      this.process.kill();
-      this.process = null;
-      this.buffer = Buffer.alloc(0);
-    }
-  }
+		if (this.process) {
+			this.process.kill();
+			this.process = null;
+			this.buffer = Buffer.alloc(0);
+		}
+	}
 
-  private cancelRestart(): void {
-    if (this.restartTimer) {
-      clearTimeout(this.restartTimer);
-      this.restartTimer = null;
-    }
-  }
+	private cancelRestart(): void {
+		if (this.restartTimer) {
+			clearTimeout(this.restartTimer);
+			this.restartTimer = null;
+		}
+	}
 }
 
 // ============================================================================
 // Factory function
 // ============================================================================
 
-export function createAudioSupervisor(options?: AudioSupervisorOptions): AudioSupervisor {
-  return new AudioSupervisor(options);
+export function createAudioSupervisor(
+	options?: AudioSupervisorOptions,
+): AudioSupervisor {
+	return new AudioSupervisor(options);
 }
