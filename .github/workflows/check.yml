@@ -26,6 +26,19 @@ jobs:
       - name: Check nvim (selene + stylua)
         run: bun run check:nvim
 
+  test-daemon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run daemon tests with coverage
+        run: cd daemon && bun test --coverage
+
   test-lua:
     runs-on: ubuntu-latest
     steps:
