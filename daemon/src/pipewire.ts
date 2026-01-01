@@ -1,5 +1,5 @@
-import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
+import type { Subprocess } from 'bun';
 import { emitDebug } from './protocol.js';
 
 // Audio constants for OpenAI Realtime API
@@ -15,10 +15,14 @@ export interface AudioCaptureEvents {
   close: [code: number | null];
 }
 
+/**
+ * @deprecated Use AudioSupervisor from './supervisors/audio.ts' instead
+ */
 export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
-  private process: ChildProcessWithoutNullStreams | null = null;
+  private process: Subprocess | null = null;
   private buffer: Buffer = Buffer.alloc(0);
   private intentionalStop: boolean = false;
+  private stdoutReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   start(): void {
     if (this.process) {
@@ -30,52 +34,98 @@ export class AudioCapture extends EventEmitter<AudioCaptureEvents> {
     emitDebug(`Starting pw-cat with ${SAMPLE_RATE}Hz, ${CHANNELS}ch, s16`);
 
     // pw-cat --record --raw --rate=24000 --channels=1 --format=s16 -
-    this.process = spawn('pw-cat', [
+    this.process = Bun.spawn([
+      'pw-cat',
       '--record',
       '--raw',
       `--rate=${SAMPLE_RATE}`,
       `--channels=${CHANNELS}`,
       '--format=s16',
       '-',
-    ]);
+    ], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+      onExit: (proc, exitCode, signalCode, error) => {
+        emitDebug(`pw-cat closed with code ${exitCode}`);
+        this.stdoutReader = null;
+        this.process = null;
+        this.buffer = Buffer.alloc(0);
 
-    this.process.stdout.on('data', (data: Buffer) => {
-      this.buffer = Buffer.concat([this.buffer, data]);
+        if (error) {
+          emitDebug(`pw-cat error: ${error.message}`);
+          this.emit('error', error);
+        }
 
-      // Emit complete frames
-      while (this.buffer.length >= FRAME_BYTES) {
-        const frame = this.buffer.subarray(0, FRAME_BYTES);
-        this.buffer = this.buffer.subarray(FRAME_BYTES);
-        this.emit('chunk', frame);
+        this.emit('close', exitCode);
+      },
+    });
+
+    // Start reading stdout asynchronously
+    this.readStdout();
+
+    // Read stderr for debug logging
+    this.readStderr();
+  }
+
+  private async readStdout(): Promise<void> {
+    if (!this.process?.stdout) return;
+
+    try {
+      this.stdoutReader = this.process.stdout.getReader();
+
+      while (true) {
+        const { done, value } = await this.stdoutReader.read();
+        if (done) break;
+
+        this.buffer = Buffer.concat([this.buffer, Buffer.from(value)]);
+
+        // Emit complete frames
+        while (this.buffer.length >= FRAME_BYTES) {
+          const frame = this.buffer.subarray(0, FRAME_BYTES);
+          this.buffer = this.buffer.subarray(FRAME_BYTES);
+          this.emit('chunk', frame);
+        }
       }
-    });
-
-    this.process.stderr.on('data', (data: Buffer) => {
-      // pw-cat outputs info to stderr, log but don't fail
-      const msg = data.toString().trim();
-      if (msg) {
-        emitDebug(`pw-cat stderr: ${msg}`);
+    } catch (err) {
+      // Reader cancelled or error - ignore if intentional stop
+      if (!this.intentionalStop && err instanceof Error) {
+        this.emit('error', err);
       }
-    });
+    }
+  }
 
-    this.process.on('error', (err) => {
-      emitDebug(`pw-cat error: ${err.message}`);
-      this.emit('error', err);
-    });
+  private async readStderr(): Promise<void> {
+    if (!this.process?.stderr) return;
 
-    this.process.on('close', (code) => {
-      emitDebug(`pw-cat closed with code ${code}`);
-      this.process = null;
-      this.buffer = Buffer.alloc(0);
-      this.emit('close', code);
-    });
+    try {
+      const reader = this.process.stderr.getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const msg = Buffer.from(value).toString().trim();
+        if (msg) {
+          emitDebug(`pw-cat stderr: ${msg}`);
+        }
+      }
+    } catch {
+      // Ignore stderr read errors
+    }
   }
 
   stop(): void {
     if (this.process) {
       emitDebug('Stopping pw-cat');
       this.intentionalStop = true;
-      this.process.kill('SIGTERM');
+
+      // Cancel the stdout reader first
+      if (this.stdoutReader) {
+        this.stdoutReader.cancel().catch(() => {});
+        this.stdoutReader = null;
+      }
+
+      this.process.kill();
       this.process = null;
       this.buffer = Buffer.alloc(0);
     }
