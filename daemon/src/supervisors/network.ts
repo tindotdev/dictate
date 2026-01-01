@@ -227,7 +227,8 @@ export class NetworkSupervisor extends EventEmitter {
         input_audio_format: 'pcm16',
         input_audio_transcription: {
           model: this.config.model,
-          ...(this.config.prompt && { prompt: this.config.prompt }),
+          language: this.config.language,
+          prompt: this.config.prompt,
         },
         turn_detection: {
           type: 'server_vad',
