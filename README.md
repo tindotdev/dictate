@@ -38,6 +38,7 @@ This clones the repo and builds the daemon automatically:
 ```lua
 {
   "tindotdev/dictate",
+  rtp = "nvim",
   build = "cd daemon && bun install && bun run build",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
@@ -69,6 +70,7 @@ Then add the Neovim plugin (it will find the global daemon automatically):
 ```lua
 {
   "tindotdev/dictate",
+  rtp = "nvim",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },
@@ -103,6 +105,7 @@ Then add to lazy.nvim pointing to local path:
 ```lua
 {
   dir = "~/path/to/dictate",
+  rtp = "nvim",
   keys = {
     { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
   },

@@ -63,6 +63,21 @@ Integration with the broader Neovim ecosystem.
 
 ---
 
+## Public-ready checklist
+
+General open-source readiness tasks before announcing broadly.
+
+- [ ] Add CONTRIBUTING guide
+- [ ] Add Code of Conduct
+- [ ] Add SECURITY policy / vulnerability reporting guidance
+- [ ] Add support/contact or issue triage guidance
+- [ ] Add CHANGELOG / release notes
+- [ ] Add Privacy & costs note in README (audio sent to OpenAI; usage is billable)
+- [ ] Clarify platform support (Linux + PipeWire) in README
+- [ ] Ensure lazy.nvim install instructions include `rtp = "nvim"` (or move runtime to repo root)
+
+---
+
 ## Ideas Backlog
 
 Features that may be explored in the future:
