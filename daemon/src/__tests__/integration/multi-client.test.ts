@@ -203,6 +203,7 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 
   // Start server
   server.listen({ socketPath });
+  await server.ready;
 
   const cleanup = () => {
     audio.stop();
