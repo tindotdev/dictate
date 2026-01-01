@@ -123,14 +123,18 @@ require("dictate").setup({
   ghost_hl = 'Comment',         -- Highlight group for ghost text
   insert_trailing_space = true, -- Add space after inserted text
 
-  -- Advanced: Force using global daemon (for developers with local builds)
-  use_global_daemon = false,    -- Skip local paths, use only npm-installed daemon
+  -- Advanced: Force using global npm daemon instead of local build
+  use_global_daemon = false,    -- false=prefer local build, true=use npm package
 })
 ```
 
 **Advanced Options:**
 
-- `use_global_daemon`: Set to `true` to force using the globally installed daemon even if a local build exists. Useful for testing the published npm package during development.
+- `use_global_daemon`: Controls which daemon binary is used:
+  - `false` (default): Auto-detect, preferring local build at `plugin_dir/../daemon/dist`
+  - `true`: Force using globally installed `@tindotdev/dictate` from npm
+
+  Note: This only affects the daemon binary. The Neovim plugin Lua code always uses whatever is loaded by lazy.nvim (local `dir` or GitHub repo).
 
 ## Usage
 
