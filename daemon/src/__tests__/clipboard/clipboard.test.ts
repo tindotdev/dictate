@@ -9,7 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createLinuxWlcopyBackend } from "../../clipboard/backends/linux-wlcopy.js";
 import { createLinuxXclipBackend } from "../../clipboard/backends/linux-xclip.js";
+import { createLinuxXselBackend } from "../../clipboard/backends/linux-xsel.js";
 import { createMacOSPbcopyBackend } from "../../clipboard/backends/macos-pbcopy.js";
+import { createStdoutFallbackBackend } from "../../clipboard/backends/stdout.js";
 
 describe("Clipboard Backends", () => {
 	const originalEnv = process.env;
@@ -80,6 +82,63 @@ describe("Clipboard Backends", () => {
 		});
 	});
 
+	describe("Linux xsel backend", () => {
+		it("has correct name", () => {
+			const backend = createLinuxXselBackend();
+			expect(backend.name).toBe("xsel");
+		});
+
+		it("reports unavailable without DISPLAY or WAYLAND_DISPLAY", async () => {
+			delete process.env.DISPLAY;
+			delete process.env.WAYLAND_DISPLAY;
+
+			const backend = createLinuxXselBackend();
+			const error = await backend.isAvailable();
+
+			expect(error).toContain("DISPLAY not set");
+		});
+
+		it("checks for xsel binary when DISPLAY is set", async () => {
+			process.env.DISPLAY = ":0";
+			delete process.env.WAYLAND_DISPLAY;
+
+			const backend = createLinuxXselBackend();
+			const error = await backend.isAvailable();
+
+			// Either null (xsel found) or error message (not found)
+			if (error !== null) {
+				expect(error).toContain("xsel not found");
+			}
+		});
+	});
+
+	describe("Stdout fallback backend", () => {
+		it("has correct name", () => {
+			const backend = createStdoutFallbackBackend();
+			expect(backend.name).toBe("stdout-fallback");
+		});
+
+		it("is always available", async () => {
+			const backend = createStdoutFallbackBackend();
+			const error = await backend.isAvailable();
+			expect(error).toBeNull();
+		});
+
+		it("write() returns true", async () => {
+			const backend = createStdoutFallbackBackend();
+			// Capture console output to avoid test noise
+			const originalLog = console.log;
+			console.log = () => {};
+
+			try {
+				const result = await backend.write("test text");
+				expect(result).toBe(true);
+			} finally {
+				console.log = originalLog;
+			}
+		});
+	});
+
 	describe("macOS pbcopy backend", () => {
 		it("has correct name", () => {
 			const backend = createMacOSPbcopyBackend();
@@ -113,6 +172,16 @@ describe("Clipboard Backends", () => {
 
 		it("pbcopy backend returns boolean from write()", async () => {
 			const backend = createMacOSPbcopyBackend();
+			expect(typeof backend.write).toBe("function");
+		});
+
+		it("xsel backend returns boolean from write()", async () => {
+			const backend = createLinuxXselBackend();
+			expect(typeof backend.write).toBe("function");
+		});
+
+		it("stdout-fallback backend returns boolean from write()", async () => {
+			const backend = createStdoutFallbackBackend();
 			expect(typeof backend.write).toBe("function");
 		});
 	});

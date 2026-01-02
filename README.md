@@ -1,6 +1,20 @@
 # dictate
 
-Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcription API (OpenAI-only).
+Real-time speech-to-text dictation for Neovim and desktop using OpenAI's Realtime transcription API.
+
+## Quick Start (bunx)
+
+The fastest way to try dictate without installing:
+
+```bash
+# Set your OpenAI API key
+export OPENAI_API_KEY="sk-..."
+
+# Run dictate (auto-starts daemon)
+bunx -p @tindotdev/dictate dictate
+```
+
+Speak into your microphone, press Ctrl+C when done, and the transcript is copied to your clipboard.
 
 ## Features
 
@@ -11,17 +25,32 @@ Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcript
 
 ## Requirements
 
-- Neovim 0.10+
-- Bun (required; Node-only runtime is not supported today)
-- PipeWire with `pw-cat` (`pipewire-utils` package on Fedora)
+### All Platforms
+
+- Bun runtime (required; Node.js is not supported)
 - OpenAI API key with Realtime API access
 
-## Platform support
+### Linux
 
-- Linux (PipeWire): supported/tested
-- macOS: planned (see `docs/ROADMAP.md`)
+- PipeWire with `pw-cat` (`pipewire-utils` package on Fedora)
+- Clipboard: `wl-copy` (Wayland) or `xclip`/`xsel` (X11)
+- Neovim 0.10+ (for Neovim integration)
 
-## Backend support
+### macOS
+
+- ffmpeg (`brew install ffmpeg`)
+- pbcopy (built-in)
+- Neovim 0.10+ (for Neovim integration)
+
+## Platform Support
+
+| Platform | Desktop CLI | Neovim Plugin |
+|----------|-------------|---------------|
+| Linux (Wayland) | Supported | Supported |
+| Linux (X11) | Supported | Supported |
+| macOS | In Progress | In Progress |
+
+## Backend Support
 
 - OpenAI only (Google Cloud is out of scope)
 
@@ -29,18 +58,46 @@ Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcript
 
 ### System Dependencies
 
+**Linux (Fedora):**
+
 ```bash
-# Fedora
-sudo dnf install pipewire-utils
+sudo dnf install pipewire-utils wl-clipboard  # Wayland
+# OR
+sudo dnf install pipewire-utils xclip         # X11
+```
 
-# Ubuntu/Debian
-sudo apt install pipewire
+**Linux (Ubuntu/Debian):**
 
-# Install Bun (required for daemon)
+```bash
+sudo apt install pipewire wl-clipboard  # Wayland
+# OR
+sudo apt install pipewire xclip         # X11
+```
+
+**macOS:**
+
+```bash
+brew install ffmpeg
+```
+
+**All Platforms - Install Bun:**
+
+```bash
 curl -fsSL https://bun.sh/install | bash
 ```
 
-### Method A: Global npm Install (Recommended)
+### Desktop CLI (standalone usage)
+
+```bash
+# Option A: Run without installing (recommended for trying it out)
+bunx -p @tindotdev/dictate dictate
+
+# Option B: Install globally
+npm install -g @tindotdev/dictate
+dictate  # run directly
+```
+
+### Neovim Plugin - Method A: Global npm Install (Recommended)
 
 Install the daemon globally and add the plugin:
 
@@ -74,7 +131,7 @@ dictated &
 curl -fsSL https://raw.githubusercontent.com/tindotdev/dictate/main/scripts/install-service.sh | bash
 ```
 
-### Method B: Clone and Build (For Development)
+### Neovim Plugin - Method B: Clone and Build (For Development)
 
 Clone the repository and build locally:
 

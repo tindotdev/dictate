@@ -15,6 +15,57 @@ bun --version
 export OPENAI_API_KEY="sk-..."
 ```
 
+## Desktop CLI Usage
+
+The `dictate` CLI is a one-shot dictation tool that copies transcripts to clipboard.
+
+### Basic Usage
+
+```bash
+# Start dictation, copy to clipboard when done
+dictate
+
+# Print to stdout instead of clipboard
+dictate --stdout
+
+# Both clipboard and stdout
+dictate --stdout
+
+# JSONL output for scripting
+dictate --json
+
+# Verbose mode (debug output)
+dictate --verbose
+```
+
+### Using bunx (no install)
+
+```bash
+# Run without installing
+bunx -p @tindotdev/dictate dictate
+
+# With options
+bunx -p @tindotdev/dictate dictate --stdout --verbose
+```
+
+### Integration Examples
+
+```bash
+# Append to a file
+dictate --stdout --no-clipboard >> notes.txt
+
+# Pipe to another command
+dictate --stdout --no-clipboard | tr '[:lower:]' '[:upper:]'
+
+# Use in a script with JSON
+dictate --json | jq '.text' -r
+```
+
+### Stopping Dictation
+
+- Press `Ctrl+C` once: Stops listening, waits for final transcript
+- Press `Ctrl+C` twice: Force quit immediately
+
 ## Build
 
 ```bash
@@ -132,7 +183,7 @@ rm $XDG_RUNTIME_DIR/dictate/dictate.sock
 pkill -f "bun.*main"
 ```
 
-### Audio Issues
+### Audio Issues (Linux)
 
 ```bash
 # Test PipeWire directly
@@ -140,6 +191,20 @@ pw-cat --record --rate=24000 --channels=1 --format=s16 - | head -c 1000
 
 # Check audio devices
 pw-cli list-objects | grep -i node
+```
+
+### Audio Issues (macOS)
+
+```bash
+# List available audio devices
+ffmpeg -f avfoundation -list_devices true -i ""
+
+# Test audio capture (5 seconds)
+ffmpeg -f avfoundation -i ":0" -t 5 test.wav
+
+# Common issues:
+# - "Permission denied": Grant microphone access in System Preferences > Privacy
+# - "No such device": Check device index with list_devices command
 ```
 
 ### Debug Logging

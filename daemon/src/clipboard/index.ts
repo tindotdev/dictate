@@ -49,11 +49,15 @@ function detectPlatform(): Platform {
 
 import { createLinuxWlcopyBackend } from "./backends/linux-wlcopy.js";
 import { createLinuxXclipBackend } from "./backends/linux-xclip.js";
+import { createLinuxXselBackend } from "./backends/linux-xsel.js";
 import { createMacOSPbcopyBackend } from "./backends/macos-pbcopy.js";
+import { createStdoutFallbackBackend } from "./backends/stdout.js";
 
 export { createLinuxWlcopyBackend } from "./backends/linux-wlcopy.js";
 export { createLinuxXclipBackend } from "./backends/linux-xclip.js";
+export { createLinuxXselBackend } from "./backends/linux-xsel.js";
 export { createMacOSPbcopyBackend } from "./backends/macos-pbcopy.js";
+export { createStdoutFallbackBackend } from "./backends/stdout.js";
 
 // ============================================================================
 // Auto-detecting Clipboard Function
@@ -80,8 +84,12 @@ async function getClipboardBackend(): Promise<ClipboardBackend | null> {
 				cachedBackend = backend;
 				return backend;
 			}
+			// pbcopy should always be available on macOS, but fall back to stdout just in case
 			console.warn(`[clipboard] macOS pbcopy unavailable: ${error}`);
-			return null;
+			console.warn("[clipboard] Falling back to stdout");
+			const stdoutBackend = createStdoutFallbackBackend();
+			cachedBackend = stdoutBackend;
+			return stdoutBackend;
 		}
 
 		case "linux-wayland": {
@@ -101,10 +109,22 @@ async function getClipboardBackend(): Promise<ClipboardBackend | null> {
 				return xclipBackend;
 			}
 
+			// Fall back to xsel (might work under XWayland)
+			const xselBackend = createLinuxXselBackend();
+			const xselError = await xselBackend.isAvailable();
+			if (!xselError) {
+				cachedBackend = xselBackend;
+				return xselBackend;
+			}
+
+			// Final fallback: stdout
 			console.warn(
 				`[clipboard] Wayland clipboard unavailable. Install wl-clipboard:\n  ${wlError}`,
 			);
-			return null;
+			console.warn("[clipboard] Falling back to stdout");
+			const stdoutBackend = createStdoutFallbackBackend();
+			cachedBackend = stdoutBackend;
+			return stdoutBackend;
 		}
 
 		case "linux-x11": {
@@ -116,15 +136,31 @@ async function getClipboardBackend(): Promise<ClipboardBackend | null> {
 				return xclipBackend;
 			}
 
+			// Fall back to xsel
+			const xselBackend = createLinuxXselBackend();
+			const xselError = await xselBackend.isAvailable();
+			if (!xselError) {
+				cachedBackend = xselBackend;
+				return xselBackend;
+			}
+
+			// Final fallback: stdout
 			console.warn(
-				`[clipboard] X11 clipboard unavailable. Install xclip:\n  ${xclipError}`,
+				`[clipboard] X11 clipboard unavailable. Install xclip or xsel:\n  ${xclipError}`,
 			);
-			return null;
+			console.warn("[clipboard] Falling back to stdout");
+			const stdoutBackend = createStdoutFallbackBackend();
+			cachedBackend = stdoutBackend;
+			return stdoutBackend;
 		}
 
-		default:
+		default: {
 			console.warn(`[clipboard] Unsupported platform: ${process.platform}`);
-			return null;
+			console.warn("[clipboard] Falling back to stdout");
+			const stdoutBackend = createStdoutFallbackBackend();
+			cachedBackend = stdoutBackend;
+			return stdoutBackend;
+		}
 	}
 }
 
@@ -153,22 +189,29 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
 /**
  * Check if clipboard functionality is available on this system.
- * Returns null if available, or an error message if not.
+ * Returns null if a real clipboard backend is available.
+ * Returns an error message if only the stdout fallback is available.
  */
 export async function isClipboardAvailable(): Promise<string | null> {
 	const backend = await getClipboardBackend();
 
+	// This should not happen now since we always return at least stdout fallback
 	if (!backend) {
+		return `Clipboard not supported on ${process.platform}`;
+	}
+
+	// If we got the stdout fallback, report it as "unavailable" but functional
+	if (backend.name === "stdout-fallback") {
 		const platform = detectPlatform();
 		switch (platform) {
 			case "darwin":
-				return "pbcopy not found (should be built-in on macOS)";
+				return "pbcopy not found (should be built-in on macOS). Using stdout fallback.";
 			case "linux-wayland":
-				return "wl-copy not found. Install: sudo apt install wl-clipboard";
+				return "wl-copy/xclip/xsel not found. Using stdout fallback. Install: sudo apt install wl-clipboard";
 			case "linux-x11":
-				return "xclip not found. Install: sudo apt install xclip";
+				return "xclip/xsel not found. Using stdout fallback. Install: sudo apt install xclip";
 			default:
-				return `Clipboard not supported on ${process.platform}`;
+				return `Clipboard not supported on ${process.platform}. Using stdout fallback.`;
 		}
 	}
 

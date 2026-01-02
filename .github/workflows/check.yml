@@ -39,6 +39,22 @@ jobs:
       - name: Run daemon tests with coverage
         run: cd daemon && bun test --coverage
 
+  test-daemon-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Check daemon (biome)
+        run: bun run check:daemon
+
+      - name: Run daemon tests
+        run: cd daemon && bun test
+
   test-lua:
     runs-on: ubuntu-latest
     steps:
