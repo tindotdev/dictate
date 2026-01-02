@@ -1,10 +1,20 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
+import type { AudioBackend } from "../../audio/index.js";
 import {
 	AUDIO_CONSTANTS,
 	AudioSupervisor,
 	type AudioSupervisorState,
 	createAudioSupervisor,
 } from "../../supervisors/audio.js";
+
+// Helper to create a test backend with a custom command
+function createTestBackend(command: string, args: string[] = []): AudioBackend {
+	return {
+		name: `test-backend (${command})`,
+		getCommand: () => ({ command, args }),
+		validate: async () => null,
+	};
+}
 
 describe("AudioSupervisor", () => {
 	describe("initial state", () => {
@@ -35,7 +45,7 @@ describe("AudioSupervisor", () => {
 		it("transitions to starting on start", () => {
 			// Use /bin/true which exits immediately with success
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -49,7 +59,7 @@ describe("AudioSupervisor", () => {
 
 		it("stop transitions to stopped regardless of current state", () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -61,7 +71,7 @@ describe("AudioSupervisor", () => {
 
 		it("emits stopped event on stop", () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -76,7 +86,7 @@ describe("AudioSupervisor", () => {
 
 		it("stop when already stopped does not emit duplicate stopped events", () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -95,7 +105,7 @@ describe("AudioSupervisor", () => {
 
 		it("multiple starts are no-op when already starting", () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -113,7 +123,7 @@ describe("AudioSupervisor", () => {
 
 		it("handles rapid start/stop cycles", async () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -133,7 +143,7 @@ describe("AudioSupervisor", () => {
 
 		it("isRunning returns false when stopped", () => {
 			supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -150,7 +160,7 @@ describe("AudioSupervisor", () => {
 		it("emits restarting event when process exits unexpectedly", async () => {
 			// /bin/false exits immediately with code 1 (failure)
 			const supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/false",
+				backend: createTestBackend("/bin/false"),
 				backoff: {
 					baseDelayMs: 10,
 					maxRetries: 3,
@@ -173,7 +183,7 @@ describe("AudioSupervisor", () => {
 
 		it("transitions to failed after max retries exhausted", async () => {
 			const supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/false",
+				backend: createTestBackend("/bin/false"),
 				backoff: {
 					baseDelayMs: 5,
 					maxDelayMs: 100,
@@ -205,7 +215,7 @@ describe("AudioSupervisor", () => {
 
 		it("intentional stop prevents restart", async () => {
 			const supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/false",
+				backend: createTestBackend("/bin/false"),
 				backoff: {
 					baseDelayMs: 100, // Long delay to ensure we can stop before restart
 					maxRetries: 5,
@@ -239,7 +249,7 @@ describe("AudioSupervisor", () => {
 		it("emits started when process spawns successfully", async () => {
 			// Use a command that runs briefly - head will exit cleanly
 			const supervisor = createAudioSupervisor({
-				pwCatPath: "/bin/true",
+				backend: createTestBackend("/bin/true"),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -260,7 +270,7 @@ describe("AudioSupervisor", () => {
 	describe("factory function", () => {
 		it("creates supervisor with custom options", () => {
 			const supervisor = createAudioSupervisor({
-				pwCatPath: "/custom/path",
+				backend: createTestBackend("/custom/path"),
 				backoff: { maxRetries: 10 },
 			});
 

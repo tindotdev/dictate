@@ -1,7 +1,7 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-	entry: ["src/main.ts", "src/cli/dictatectl.ts"],
+	entry: ["src/main.ts", "src/cli/dictatectl.ts", "src/cli/dictate.ts"],
 	format: ["esm"],
 	target: "node20",
 	outDir: "dist",

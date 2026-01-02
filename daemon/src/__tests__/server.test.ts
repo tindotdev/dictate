@@ -3,12 +3,9 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getSocketPath } from "../cli/lib/socket-path.js";
 import type { ClientMessage, DaemonMessage } from "../protocol.js";
-import {
-	createSocketServer,
-	getDefaultSocketPath,
-	SocketServer,
-} from "../server.js";
+import { createSocketServer, SocketServer } from "../server.js";
 
 describe("SocketServer", () => {
 	let server: SocketServer;
@@ -57,12 +54,12 @@ describe("SocketServer", () => {
 		});
 	}
 
-	describe("getDefaultSocketPath", () => {
+	describe("getSocketPath", () => {
 		it("uses XDG_RUNTIME_DIR when available", () => {
 			const original = process.env.XDG_RUNTIME_DIR;
 			process.env.XDG_RUNTIME_DIR = "/run/user/1000";
 
-			const result = getDefaultSocketPath();
+			const result = getSocketPath();
 			expect(result).toBe("/run/user/1000/dictate/dictate.sock");
 
 			if (original) {

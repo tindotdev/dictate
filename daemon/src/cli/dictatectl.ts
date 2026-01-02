@@ -1,5 +1,3 @@
-import { stat } from "node:fs/promises";
-import * as path from "node:path";
 import type { Socket as BunSocket } from "bun";
 import {
 	type BackoffState,
@@ -8,6 +6,8 @@ import {
 	resetBackoff,
 } from "../backoff.js";
 import type { DictatectlMessage } from "../protocol.js";
+import { ensureDaemonRunning } from "./lib/daemon-autostart.js";
+import { getSocketPath } from "./lib/socket-path.js";
 
 // ============================================================================
 // Constants
@@ -15,25 +15,6 @@ import type { DictatectlMessage } from "../protocol.js";
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const CONNECT_TIMEOUT_MS = 2000;
-
-// ============================================================================
-// Socket path discovery
-// ============================================================================
-
-function getSocketPath(): string {
-	const xdgRuntime = process.env.XDG_RUNTIME_DIR;
-	if (xdgRuntime) {
-		return path.join(xdgRuntime, "dictate", "dictate.sock");
-	}
-	// Fallback
-	return path.join(
-		process.env.HOME ?? "/tmp",
-		".local",
-		"state",
-		"dictate",
-		"dictate.sock",
-	);
-}
 
 // ============================================================================
 // Output helpers
@@ -54,7 +35,9 @@ function emitDaemonUnavailable(hint?: string): void {
 		code: "DAEMON_UNAVAILABLE",
 		message: "Cannot connect to dictate daemon",
 		recoverable: false,
-		hint: hint ?? "Run: systemctl --user enable --now dictate.service",
+		hint:
+			hint ??
+			"Failed to auto-start daemon. Check logs or run manually: dictated",
 	});
 }
 
@@ -85,21 +68,10 @@ class DictatectlBridge {
 	}
 
 	async start(): Promise<void> {
-		// Check if socket file exists first
-		try {
-			await stat(this.socketPath);
-		} catch {
-			const dir = path.dirname(this.socketPath);
-			try {
-				await stat(dir);
-				emitDaemonUnavailable(
-					"Socket file does not exist. Run: systemctl --user enable --now dictate.service",
-				);
-			} catch {
-				emitDaemonUnavailable(
-					"Socket directory does not exist. Run: systemctl --user enable --now dictate.service",
-				);
-			}
+		// Ensure daemon is running (auto-start if needed)
+		const result = await ensureDaemonRunning({ socketPath: this.socketPath });
+		if (!result.success) {
+			emitDaemonUnavailable(result.hint ?? result.error);
 			process.exit(1);
 		}
 
@@ -238,7 +210,7 @@ class DictatectlBridge {
 		if (delayMs === null) {
 			// Max retries exceeded
 			emitDaemonUnavailable(
-				`Connection failed after ${MAX_RECONNECT_ATTEMPTS} attempts: ${reason}`,
+				`Connection failed after ${MAX_RECONNECT_ATTEMPTS} attempts: ${reason}. Daemon may have crashed.`,
 			);
 			process.exit(1);
 		}
@@ -252,7 +224,7 @@ class DictatectlBridge {
 		if (delayMs === null) {
 			// Max retries exceeded
 			emitDaemonUnavailable(
-				`Lost connection after ${MAX_RECONNECT_ATTEMPTS} reconnection attempts`,
+				`Lost connection after ${MAX_RECONNECT_ATTEMPTS} reconnection attempts. Daemon may have exited.`,
 			);
 			process.exit(1);
 		}

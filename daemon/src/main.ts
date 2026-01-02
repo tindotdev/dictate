@@ -1,6 +1,11 @@
 import * as path from "node:path";
 import { type Config, loadConfig } from "./config.js";
 import {
+	createIdleExitPolicy,
+	type IdleExitPolicy,
+	loadIdleTimeoutFromEnv,
+} from "./lifecycle/idle-exit.js";
+import {
 	DAEMON_VERSION,
 	type DaemonMessage,
 	type DaemonState,
@@ -88,6 +93,24 @@ const itemTexts = new Map<string, string>();
 // Session ownership: only the client that started listening receives transcripts
 let sessionOwner: string | null = null;
 
+// Idle exit policy: exit daemon after timeout when no clients and not listening
+const idleTimeoutMs = loadIdleTimeoutFromEnv();
+const idleExitPolicy: IdleExitPolicy = createIdleExitPolicy({
+	timeoutMs: idleTimeoutMs,
+	isIdle: () =>
+		server.getClientCount() === 0 && stateMachine.getState() === "idle",
+	onExit: () => {
+		debug(`Idle timeout (${idleTimeoutMs}ms) - shutting down`);
+		shutdown();
+	},
+});
+
+if (idleTimeoutMs > 0) {
+	debug(`Idle exit enabled: ${idleTimeoutMs}ms`);
+} else {
+	debug("Idle exit disabled");
+}
+
 // ============================================================================
 // Helper: Broadcast status to all clients
 // ============================================================================
@@ -151,6 +174,13 @@ stateMachine.on("transition", (from: DaemonState, to: DaemonState) => {
 		sessionOwner = null;
 	}
 
+	// Idle exit policy: track dictation start/stop
+	if (to === "listening" || to === "audio_starting") {
+		idleExitPolicy.onDictationStart();
+	} else if (to === "idle" || to === "error") {
+		idleExitPolicy.onDictationStop();
+	}
+
 	broadcastStatus();
 });
 
@@ -192,7 +222,7 @@ audio.on("failed", (err: Error) => {
 		"AUDIO_UNAVAILABLE",
 		err.message,
 		false,
-		"Check PipeWire is running: pw-cli info",
+		`Audio backend (${audio.getBackendName()}) failed. Check audio device availability.`,
 	);
 	stateMachine.transition({ type: "FATAL_ERROR", message: err.message });
 });
@@ -281,6 +311,7 @@ network.on("completed", (itemId: string, transcript: string) => {
 
 server.on("client_connected", (clientId: string) => {
 	debug(`Client connected: ${clientId}`);
+	idleExitPolicy.onClientConnect();
 	// Send current status to the new client
 	server.send(clientId, {
 		type: "status",
@@ -292,6 +323,7 @@ server.on("client_connected", (clientId: string) => {
 
 server.on("client_disconnected", (clientId: string) => {
 	debug(`Client disconnected: ${clientId}`);
+	idleExitPolicy.onClientDisconnect();
 
 	// If the disconnected client was the session owner, force-stop the session
 	if (sessionOwner === clientId) {
@@ -437,6 +469,7 @@ function handleStopListening(clientId: string): void {
 
 function shutdown(): void {
 	debug("Shutting down...");
+	idleExitPolicy.cancel();
 	audio.stop();
 	network.disconnect();
 	server.close();

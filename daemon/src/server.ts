@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { chmod, mkdir, stat, unlink } from "node:fs/promises";
 import * as path from "node:path";
 import type { Socket as BunSocket, SocketHandler } from "bun";
+import { getSocketPath } from "./cli/lib/socket-path.js";
 import {
 	type ClientMessage,
 	ClientMessageSchema,
@@ -53,21 +54,6 @@ export interface SocketServerOptions {
 // ============================================================================
 // Socket Path Helpers
 // ============================================================================
-
-export function getDefaultSocketPath(): string {
-	const xdgRuntime = process.env.XDG_RUNTIME_DIR;
-	if (xdgRuntime) {
-		return path.join(xdgRuntime, "dictate", "dictate.sock");
-	}
-	// Fallback
-	return path.join(
-		process.env.HOME ?? "/tmp",
-		".local",
-		"state",
-		"dictate",
-		"dictate.sock",
-	);
-}
 
 async function ensureSocketDir(socketPath: string): Promise<void> {
 	const dir = path.dirname(socketPath);
@@ -140,7 +126,7 @@ export class SocketServer extends EventEmitter {
 		}
 
 		// Standalone mode: create socket ourselves
-		this.socketPath = options.socketPath ?? getDefaultSocketPath();
+		this.socketPath = options.socketPath ?? getSocketPath();
 
 		// Setup socket directory and cleanup, then start listening
 		this._ready = this.setupAndListen();

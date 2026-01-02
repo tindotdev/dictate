@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { Subprocess } from "bun";
+import type { AudioBackend } from "../audio/index.js";
+import { createAudioBackend } from "../audio/index.js";
 import {
 	type BackoffConfig,
 	type BackoffState,
@@ -61,8 +63,8 @@ export declare interface AudioSupervisor {
 
 export interface AudioSupervisorOptions {
 	backoff?: Partial<BackoffConfig>;
-	/** Path to pw-cat binary (default: 'pw-cat') */
-	pwCatPath?: string;
+	/** Audio backend to use (default: auto-detect based on platform) */
+	backend?: AudioBackend;
 }
 
 // ============================================================================
@@ -77,12 +79,12 @@ export class AudioSupervisor extends EventEmitter {
 	private intentionalStop = false;
 	private backoffState: BackoffState;
 	private restartTimer: ReturnType<typeof setTimeout> | null = null;
-	private pwCatPath: string;
+	private backend: AudioBackend;
 
 	constructor(options: AudioSupervisorOptions = {}) {
 		super();
 		this.backoffState = createBackoffState(options.backoff);
-		this.pwCatPath = options.pwCatPath ?? "pw-cat";
+		this.backend = options.backend ?? createAudioBackend();
 	}
 
 	private setState(newState: AudioSupervisorState): void {
@@ -99,6 +101,18 @@ export class AudioSupervisor extends EventEmitter {
 
 	isRunning(): boolean {
 		return this.state === "running";
+	}
+
+	getBackendName(): string {
+		return this.backend.name;
+	}
+
+	/**
+	 * Validate that the audio backend is available.
+	 * Returns null if valid, or an error message if not.
+	 */
+	async validate(): Promise<string | null> {
+		return this.backend.validate();
 	}
 
 	/**
@@ -135,33 +149,25 @@ export class AudioSupervisor extends EventEmitter {
 	private spawnProcess(): void {
 		this.setState("starting");
 
-		try {
-			this.process = Bun.spawn(
-				[
-					this.pwCatPath,
-					"--record",
-					"--raw",
-					`--rate=${SAMPLE_RATE}`,
-					`--channels=${CHANNELS}`,
-					"--format=s16",
-					"-",
-				],
-				{
-					stdout: "pipe",
-					stderr: "pipe",
-					onExit: (_proc, exitCode, _signalCode, error) => {
-						// Clean up reader reference
-						this.stdoutReader = null;
+		const { command, args, env } = this.backend.getCommand();
 
-						if (error) {
-							this.emit("error", error);
-							this.handleExit(-1, error);
-						} else {
-							this.handleExit(exitCode ?? 0);
-						}
-					},
+		try {
+			this.process = Bun.spawn([command, ...args], {
+				stdout: "pipe",
+				stderr: "pipe",
+				env: env ? { ...process.env, ...env } : undefined,
+				onExit: (_proc, exitCode, _signalCode, error) => {
+					// Clean up reader reference
+					this.stdoutReader = null;
+
+					if (error) {
+						this.emit("error", error);
+						this.handleExit(-1, error);
+					} else {
+						this.handleExit(exitCode ?? 0);
+					}
 				},
-			);
+			});
 		} catch (err) {
 			// Spawn failed synchronously (e.g., ENOENT)
 			this.emit("error", err as Error);
@@ -226,7 +232,7 @@ export class AudioSupervisor extends EventEmitter {
 				"failed",
 				error ??
 					new Error(
-						`pw-cat failed after ${this.backoffState.config.maxRetries} retries`,
+						`${this.backend.name} failed after ${this.backoffState.config.maxRetries} retries`,
 					),
 			);
 			return;
