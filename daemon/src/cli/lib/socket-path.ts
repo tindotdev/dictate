@@ -15,7 +15,12 @@ export function getSocketDir(): string {
 /**
  * Get the full socket path.
  * Single source of truth for socket location.
+ * Can be overridden via DICTATE_SOCKET_PATH for testing.
  */
 export function getSocketPath(): string {
+	// Allow override for testing
+	if (process.env.DICTATE_SOCKET_PATH) {
+		return process.env.DICTATE_SOCKET_PATH;
+	}
 	return path.join(getSocketDir(), "dictate.sock");
 }
