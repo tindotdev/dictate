@@ -1,6 +1,6 @@
 # dictate
 
-Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcription API.
+Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcription API (OpenAI-only).
 
 ## Features
 
@@ -12,9 +12,18 @@ Real-time speech-to-text dictation for Neovim using OpenAI's Realtime transcript
 ## Requirements
 
 - Neovim 0.10+
-- Node.js 20+ or Bun
+- Bun (required; Node-only runtime is not supported today)
 - PipeWire with `pw-cat` (`pipewire-utils` package on Fedora)
 - OpenAI API key with Realtime API access
+
+## Platform support
+
+- Linux (PipeWire): supported/tested
+- macOS: planned (see `docs/ROADMAP.md`)
+
+## Backend support
+
+- OpenAI only (Google Cloud is out of scope)
 
 ## Installation
 

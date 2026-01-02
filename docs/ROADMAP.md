@@ -1,5 +1,36 @@
 # Roadmap
 
+## Definition of Done (v1)
+
+This project is considered **complete** when the items below are true (not when every nice-to-have is built):
+
+### End-to-end (Neovim)
+
+- [x] Linux: Live partial transcript (ghost text) works while speaking
+- [x] Linux: Final transcript is inserted at cursor on completion
+- [ ] macOS: Live partial transcript (ghost text) works while speaking
+- [ ] macOS: Final transcript is inserted at cursor on completion
+
+### End-to-end (Desktop)
+
+- [ ] Linux: One command can capture mic audio and produce text without Neovim (CLI)
+- [ ] Linux: Desktop mode can write the final transcript to the **system clipboard** (Wayland/X11) and/or stdout
+- [ ] macOS: One command can capture mic audio and produce text without Neovim (CLI)
+- [ ] macOS: Desktop mode can write the final transcript to the **system clipboard** and/or stdout
+
+### Providers
+
+- [x] OpenAI-only backend is supported (no provider swapping required for v1)
+- [ ] Partial + final transcripts are reliable (and match Neovim + desktop UX)
+
+### Installation / “One Command”
+
+- [ ] No `sudo` required for install/run (OS mic permission prompts are expected on macOS)
+- [ ] Systemd is **optional** (Linux). The project works without a background service on both platforms.
+- [ ] Bun is the supported runtime (document `bunx` as the canonical install/run path)
+
+---
+
 ## Milestone 1: Core Implementation (Complete)
 
 Initial working implementation of real-time dictation.
@@ -58,24 +89,43 @@ Make the project installable and usable from published sources.
 - [x] Verified installation and testing with Linuxbrew Node
 - [x] Health check reports global vs local daemon usage
 
-## Milestone 5: Advanced Features
+## Milestone 5: Cross‑Platform v1 (In Progress)
 
-Power-user features for specific workflows.
+Deliver the v1 “done line”: Linux + macOS support, desktop/clipboard usage, OpenAI-only, and Bun-only.
 
-- [ ] Push-to-talk mode (hold key to dictate)
-- [ ] Confidence indicators (show logprobs/uncertainty)
-- [ ] Markdown-aware transcription prompts
-- [ ] Transcription history/log
-- [ ] Insert-as-you-speak mode (live text insertion)
+### Desktop (not just Neovim)
 
-## Milestone 6: Ecosystem
+- [ ] Add a first-party user CLI (e.g. `dictate`) for “dictate once → clipboard/stdout”
+- [ ] Implement clipboard backends with clear fallback: `pbcopy` (macOS) → `wl-copy` (Wayland) → `xclip`/`xsel` (X11) → stdout
+- [ ] Add CLI flags: `--clipboard` (default), `--stdout`, `--no-clipboard`
+- [ ] Document desktop usage for Linux + macOS (examples + troubleshooting)
 
-Integration with the broader Neovim ecosystem.
+### macOS Support
 
-- [ ] `noice.nvim` integration for loading spinner while recording
-- [ ] Documentation in vimdoc format (`:help dictate`)
+- [ ] Add macOS audio capture using an external dependency (`ffmpeg` via Homebrew)
+- [ ] Default to the system microphone (no config required)
+- [ ] Support selecting the macOS input device (and document how to list devices)
+- [ ] Document mic permission prompts + common failure modes
+- [ ] Add macOS CI job (at minimum: lint + unit tests)
 
----
+### Provider (OpenAI)
+
+- [x] OpenAI Realtime transcription integration works (partial + final transcripts)
+- [x] Handles reconnect/backoff and basic auth errors
+- [x] Document required env vars and recommended models
+
+### No‑Systemd “Single Command” Path
+
+- [ ] Make `dictatectl` auto-start `dictated` when the socket is missing, then connect
+- [ ] Add daemon idle-exit (e.g. exit after N seconds with 0 clients and not listening)
+- [ ] Update Neovim health/docs to treat systemd as optional (not required)
+
+### Packaging / Distribution (Bun-only)
+
+- [ ] Provide a “single command” happy path that does not require systemd (daemon can be started automatically)
+- [ ] Support a no-sudo install/run flow using `bunx` (e.g. `bunx -p @tindotdev/dictate dictate`)
+- [ ] Keep Linux systemd installer as an optional convenience (not required for v1)
+- [x] Keep `dictatectl` bundled with the daemon package for v1 (no split)
 
 ## Public-ready checklist
 
@@ -87,7 +137,7 @@ General open-source readiness tasks before announcing broadly.
 - [x] Tested installation from npm registry
 - [x] Added `use_global_daemon` option for published package
 - [ ] Make GitHub repository public
-- [ ] Add CI/CD pipeline (GitHub Actions)
+- [x] Add CI/CD pipeline (GitHub Actions)
 - [ ] Set up automated npm publishing on release
 
 ### Documentation
@@ -98,23 +148,14 @@ General open-source readiness tasks before announcing broadly.
 - [ ] Add support/contact or issue triage guidance
 - [ ] Add CHANGELOG / release notes
 - [ ] Add Privacy & costs note in README (audio sent to OpenAI; usage is billable)
-- [ ] Clarify platform support (Linux + PipeWire) in README
-- [ ] Update README with npm installation instructions
+- [ ] Clarify platform support (Linux + macOS) in README
+- [x] Update README with npm installation instructions
 - [ ] Add troubleshooting section to README
-- [ ] Ensure lazy.nvim install instructions use `subdir = "nvim"`
+- [x] Ensure lazy.nvim install instructions use `subdir = "nvim"`
 
 ### Quality Assurance
 
 - [ ] Review and clean up all TODOs in codebase
 - [ ] Verify all tests pass in CI
 - [ ] Test installation flow on fresh Linux system
-
----
-
-## Ideas Backlog
-
-Features that may be explored in the future:
-
-- Voice commands (e.g., "new line", "delete that")
-- Explore system-level programming language for the daemon (Rust, Go, Zig) **after everything is stable (no premature optimization)\***
-- Custom vocabulary/terminology training
+- [ ] Test installation flow on fresh macOS system
