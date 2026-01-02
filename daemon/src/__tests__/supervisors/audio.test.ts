@@ -7,6 +7,10 @@ import {
 	createAudioSupervisor,
 } from "../../supervisors/audio.js";
 
+// Cross-platform paths for true/false (macOS uses /usr/bin, Linux often has /bin symlinked)
+const TRUE_PATH = Bun.spawnSync(["which", "true"]).stdout.toString().trim();
+const FALSE_PATH = Bun.spawnSync(["which", "false"]).stdout.toString().trim();
+
 // Helper to create a test backend with a custom command
 function createTestBackend(command: string, args: string[] = []): AudioBackend {
 	return {
@@ -43,9 +47,9 @@ describe("AudioSupervisor", () => {
 		});
 
 		it("transitions to starting on start", () => {
-			// Use /bin/true which exits immediately with success
+			// Use true which exits immediately with success
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -59,7 +63,7 @@ describe("AudioSupervisor", () => {
 
 		it("stop transitions to stopped regardless of current state", () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -71,7 +75,7 @@ describe("AudioSupervisor", () => {
 
 		it("emits stopped event on stop", () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -86,7 +90,7 @@ describe("AudioSupervisor", () => {
 
 		it("stop when already stopped does not emit duplicate stopped events", () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -105,7 +109,7 @@ describe("AudioSupervisor", () => {
 
 		it("multiple starts are no-op when already starting", () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -123,7 +127,7 @@ describe("AudioSupervisor", () => {
 
 		it("handles rapid start/stop cycles", async () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -143,7 +147,7 @@ describe("AudioSupervisor", () => {
 
 		it("isRunning returns false when stopped", () => {
 			supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 
@@ -158,9 +162,9 @@ describe("AudioSupervisor", () => {
 
 	describe("restart behavior", () => {
 		it("emits restarting event when process exits unexpectedly", async () => {
-			// /bin/false exits immediately with code 1 (failure)
+			// false exits immediately with code 1 (failure)
 			const supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/false"),
+				backend: createTestBackend(FALSE_PATH),
 				backoff: {
 					baseDelayMs: 10,
 					maxRetries: 3,
@@ -183,7 +187,7 @@ describe("AudioSupervisor", () => {
 
 		it("transitions to failed after max retries exhausted", async () => {
 			const supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/false"),
+				backend: createTestBackend(FALSE_PATH),
 				backoff: {
 					baseDelayMs: 5,
 					maxDelayMs: 100,
@@ -215,7 +219,7 @@ describe("AudioSupervisor", () => {
 
 		it("intentional stop prevents restart", async () => {
 			const supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/false"),
+				backend: createTestBackend(FALSE_PATH),
 				backoff: {
 					baseDelayMs: 100, // Long delay to ensure we can stop before restart
 					maxRetries: 5,
@@ -247,9 +251,9 @@ describe("AudioSupervisor", () => {
 
 	describe("successful process lifecycle", () => {
 		it("emits started when process spawns successfully", async () => {
-			// Use a command that runs briefly - head will exit cleanly
+			// Use a command that runs briefly - true will exit cleanly
 			const supervisor = createAudioSupervisor({
-				backend: createTestBackend("/bin/true"),
+				backend: createTestBackend(TRUE_PATH),
 				backoff: { maxRetries: 0 },
 			});
 

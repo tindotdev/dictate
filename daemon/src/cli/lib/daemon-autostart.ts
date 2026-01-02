@@ -1,4 +1,5 @@
-import { stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { getSocketDir, getSocketPath } from "./socket-path.js";
 
@@ -57,17 +58,16 @@ export function discoverDaemonPath(): string | null {
 		const siblingJs = path.join(scriptDir, "..", "main.js");
 
 		// Check synchronously for simplicity (discovery runs once at startup)
-		const fs = require("node:fs");
-		if (fs.existsSync(siblingTs)) {
+		if (existsSync(siblingTs)) {
 			return siblingTs;
 		}
-		if (fs.existsSync(siblingJs)) {
+		if (existsSync(siblingJs)) {
 			return siblingJs;
 		}
 
 		// Also check for dist/main.js relative to cli/dictatectl.js
 		const distMain = path.join(scriptDir, "..", "main.js");
-		if (fs.existsSync(distMain)) {
+		if (existsSync(distMain)) {
 			return distMain;
 		}
 	}
@@ -152,7 +152,6 @@ export async function autoStartDaemon(
 	try {
 		await stat(socketDir);
 	} catch {
-		const { mkdir } = await import("node:fs/promises");
 		try {
 			await mkdir(socketDir, { recursive: true, mode: 0o700 });
 		} catch (err) {

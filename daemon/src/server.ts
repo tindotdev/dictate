@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { existsSync, unlinkSync } from "node:fs";
 import { chmod, mkdir, stat, unlink } from "node:fs/promises";
 import * as path from "node:path";
 import type { Socket as BunSocket, SocketHandler } from "bun";
@@ -199,11 +200,9 @@ export class SocketServer extends EventEmitter {
 
 		// Clean up socket file (only in standalone mode)
 		if (this.socketPath) {
-			// Note: Using sync to match original behavior in close()
 			try {
-				const fs = require("node:fs");
-				if (fs.existsSync(this.socketPath)) {
-					fs.unlinkSync(this.socketPath);
+				if (existsSync(this.socketPath)) {
+					unlinkSync(this.socketPath);
 				}
 			} catch {
 				// Ignore cleanup errors

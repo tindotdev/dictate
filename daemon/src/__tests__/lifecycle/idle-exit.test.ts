@@ -7,7 +7,15 @@
  * - Timer is cancelled when client connects or dictation starts
  */
 
-import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	jest,
+	spyOn,
+} from "bun:test";
 import {
 	createIdleExitPolicy,
 	DEFAULT_IDLE_TIMEOUT_MS,
@@ -215,13 +223,23 @@ describe("loadIdleTimeoutFromEnv", () => {
 	});
 
 	it("returns default for invalid value (non-numeric)", () => {
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 		process.env.DICTATE_IDLE_TIMEOUT_MS = "invalid";
 		expect(loadIdleTimeoutFromEnv()).toBe(DEFAULT_IDLE_TIMEOUT_MS);
+		expect(warnSpy).toHaveBeenCalledWith(
+			`Invalid DICTATE_IDLE_TIMEOUT_MS value "invalid", using default ${DEFAULT_IDLE_TIMEOUT_MS}ms`,
+		);
+		warnSpy.mockRestore();
 	});
 
 	it("returns default for negative value", () => {
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 		process.env.DICTATE_IDLE_TIMEOUT_MS = "-1000";
 		expect(loadIdleTimeoutFromEnv()).toBe(DEFAULT_IDLE_TIMEOUT_MS);
+		expect(warnSpy).toHaveBeenCalledWith(
+			`Invalid DICTATE_IDLE_TIMEOUT_MS value "-1000", using default ${DEFAULT_IDLE_TIMEOUT_MS}ms`,
+		);
+		warnSpy.mockRestore();
 	});
 
 	it("handles large values", () => {
