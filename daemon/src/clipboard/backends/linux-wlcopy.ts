@@ -19,19 +19,24 @@ export function createLinuxWlcopyBackend(): ClipboardBackend {
 
 		async write(text: string): Promise<boolean> {
 			try {
-				const proc = Bun.spawn(["wl-copy"], {
-					stdin: "pipe",
-					stdout: "pipe",
-					stderr: "pipe",
+				// wl-copy forks into background to serve clipboard requests.
+				// We use a two-step approach:
+				// 1. Spawn wl-copy with --foreground to write synchronously
+				// 2. The forked background process serves paste requests
+				//
+				// Note: We can't use detached mode because we need to wait
+				// for the initial write to complete. wl-copy handles its own
+				// forking internally.
+				const proc = Bun.spawn(["wl-copy", "--", text], {
+					stdin: "ignore",
+					stdout: "ignore",
+					stderr: "ignore",
 				});
 
-				// Write text to stdin (FileSink API in Bun)
-				proc.stdin.write(text);
-				proc.stdin.end();
-
-				// Wait for process to exit
+				// Wait for wl-copy to fork (it exits immediately after forking)
 				await proc.exited;
 
+				// wl-copy exits 0 after successfully forking
 				return proc.exitCode === 0;
 			} catch {
 				return false;
