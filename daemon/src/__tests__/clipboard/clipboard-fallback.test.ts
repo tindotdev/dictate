@@ -95,46 +95,52 @@ describe("Fallback Chain - isClipboardAvailable()", () => {
 		expect(error).toContain("fallback");
 	});
 
-	it("reports Wayland install hint on linux-wayland without tools", async () => {
-		const result = await runClipboardTest(
-			`
+	it.skipIf(process.platform === "darwin")(
+		"reports Wayland install hint on linux-wayland without tools",
+		async () => {
+			const result = await runClipboardTest(
+				`
 			const error = await isClipboardAvailable();
 			console.log(JSON.stringify({ error }));
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: "wayland-1",
-				DISPLAY: undefined,
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: "wayland-1",
+					DISPLAY: undefined,
+				},
+			);
 
-		expect(result.exitCode).toBe(0);
-		const { error } = JSON.parse(result.stdout);
+			expect(result.exitCode).toBe(0);
+			const { error } = JSON.parse(result.stdout);
 
-		expect(error).toContain("wl-copy");
-		expect(error).toContain("xclip");
-		expect(error).toContain("xsel");
-	});
+			expect(error).toContain("wl-copy");
+			expect(error).toContain("xclip");
+			expect(error).toContain("xsel");
+		},
+	);
 
-	it("reports X11 install hint on linux-x11 without tools", async () => {
-		const result = await runClipboardTest(
-			`
+	it.skipIf(process.platform === "darwin")(
+		"reports X11 install hint on linux-x11 without tools",
+		async () => {
+			const result = await runClipboardTest(
+				`
 			const error = await isClipboardAvailable();
 			console.log(JSON.stringify({ error }));
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: undefined,
-				DISPLAY: ":0",
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: undefined,
+					DISPLAY: ":0",
+				},
+			);
 
-		expect(result.exitCode).toBe(0);
-		const { error } = JSON.parse(result.stdout);
+			expect(result.exitCode).toBe(0);
+			const { error } = JSON.parse(result.stdout);
 
-		expect(error).toContain("xclip");
-		expect(error).toContain("xsel");
-	});
+			expect(error).toContain("xclip");
+			expect(error).toContain("xsel");
+		},
+	);
 });
 
 describe("Fallback Chain - copyToClipboard()", () => {
@@ -199,46 +205,52 @@ describe.skipIf(!hasWayland)("Fallback Chain - Wayland Priority", () => {
 describe("Fallback Chain - Backend Selection Order", () => {
 	// These tests verify the fallback order by checking which backend gets selected
 
-	it("linux-wayland: wl-copy > xclip > xsel > stdout", async () => {
-		// Test with all tools missing
-		const result = await runClipboardTest(
-			`
+	it.skipIf(process.platform === "darwin")(
+		"linux-wayland: wl-copy > xclip > xsel > stdout",
+		async () => {
+			// Test with all tools missing
+			const result = await runClipboardTest(
+				`
 			const error = await isClipboardAvailable();
 			// Error message should mention all tools tried
 			console.log(JSON.stringify({ error }));
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: "wayland-1",
-				DISPLAY: undefined,
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: "wayland-1",
+					DISPLAY: undefined,
+				},
+			);
 
-		const { error } = JSON.parse(result.stdout);
+			const { error } = JSON.parse(result.stdout);
 
-		// Should try wl-copy first, then mention alternatives
-		expect(error).toContain("wl-copy");
-	});
+			// Should try wl-copy first, then mention alternatives
+			expect(error).toContain("wl-copy");
+		},
+	);
 
-	it("linux-x11: xclip > xsel > stdout", async () => {
-		const result = await runClipboardTest(
-			`
+	it.skipIf(process.platform === "darwin")(
+		"linux-x11: xclip > xsel > stdout",
+		async () => {
+			const result = await runClipboardTest(
+				`
 			const error = await isClipboardAvailable();
 			console.log(JSON.stringify({ error }));
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: undefined,
-				DISPLAY: ":0",
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: undefined,
+					DISPLAY: ":0",
+				},
+			);
 
-		const { error } = JSON.parse(result.stdout);
+			const { error } = JSON.parse(result.stdout);
 
-		// Should mention xclip and xsel
-		expect(error).toContain("xclip");
-		expect(error).toContain("xsel");
-	});
+			// Should mention xclip and xsel
+			expect(error).toContain("xclip");
+			expect(error).toContain("xsel");
+		},
+	);
 
 	it("darwin: pbcopy > stdout", async () => {
 		// Can only really test this on macOS, but we can at least verify
@@ -279,35 +291,38 @@ describe("Fallback Chain - Backend Selection Order", () => {
 	});
 });
 
-describe("Fallback Chain - Warning Messages", () => {
-	it("warns about missing wl-copy on Wayland", async () => {
-		const result = await runClipboardTest(
-			`
+describe.skipIf(process.platform === "darwin")(
+	"Fallback Chain - Warning Messages",
+	() => {
+		it("warns about missing wl-copy on Wayland", async () => {
+			const result = await runClipboardTest(
+				`
 			await isClipboardAvailable();
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: "wayland-1",
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: "wayland-1",
+				},
+			);
 
-		expect(result.stderr).toContain("Wayland clipboard unavailable");
-		expect(result.stderr).toContain("Falling back to stdout");
-	});
+			expect(result.stderr).toContain("Wayland clipboard unavailable");
+			expect(result.stderr).toContain("Falling back to stdout");
+		});
 
-	it("warns about missing xclip on X11", async () => {
-		const result = await runClipboardTest(
-			`
+		it("warns about missing xclip on X11", async () => {
+			const result = await runClipboardTest(
+				`
 			await isClipboardAvailable();
 		`,
-			{
-				PATH: "/nonexistent",
-				WAYLAND_DISPLAY: undefined,
-				DISPLAY: ":0",
-			},
-		);
+				{
+					PATH: "/nonexistent",
+					WAYLAND_DISPLAY: undefined,
+					DISPLAY: ":0",
+				},
+			);
 
-		expect(result.stderr).toContain("X11 clipboard unavailable");
-		expect(result.stderr).toContain("Falling back to stdout");
-	});
-});
+			expect(result.stderr).toContain("X11 clipboard unavailable");
+			expect(result.stderr).toContain("Falling back to stdout");
+		});
+	},
+);
