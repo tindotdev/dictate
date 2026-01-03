@@ -10,8 +10,10 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createLinuxWlcopyBackend } from "../../clipboard/backends/linux-wlcopy.js";
+import { createMacOSPbcopyBackend } from "../../clipboard/backends/macos-pbcopy.js";
 
 const hasWayland = !!process.env.WAYLAND_DISPLAY;
+const isMacOS = process.platform === "darwin";
 
 describe.skipIf(!hasWayland)("Clipboard Persistence (Wayland)", () => {
 	let originalClipboard: string | null = null;
@@ -171,6 +173,145 @@ describe.skipIf(!hasWayland)("Clipboard Persistence (Wayland)", () => {
 		// Should contain "wl-copy -- <text>"
 		expect(output).toContain("wl-copy");
 		expect(output).toContain(testText);
+	});
+});
+
+describe.skipIf(!isMacOS)("Clipboard Persistence (macOS)", () => {
+	let originalClipboard: string | null = null;
+
+	beforeEach(async () => {
+		// Save original clipboard content to restore later
+		try {
+			const proc = Bun.spawn(["pbpaste"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await proc.exited;
+			if (proc.exitCode === 0) {
+				originalClipboard = await new Response(proc.stdout).text();
+			}
+		} catch {
+			originalClipboard = null;
+		}
+	});
+
+	afterEach(async () => {
+		// Restore original clipboard if we saved it
+		if (originalClipboard !== null) {
+			const proc = Bun.spawn(["pbcopy"], {
+				stdin: "pipe",
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+			proc.stdin.write(originalClipboard);
+			proc.stdin.end();
+			await proc.exited;
+		}
+	});
+
+	it("clipboard content persists after write() returns", async () => {
+		const backend = createMacOSPbcopyBackend();
+		const testText = `persistence-test-${Date.now()}`;
+
+		// Write to clipboard
+		const writeResult = await backend.write(testText);
+		expect(writeResult).toBe(true);
+
+		// Small delay to ensure pbcopy has finished
+		await new Promise((r) => setTimeout(r, 100));
+
+		// Read back with pbpaste
+		const pasteProc = Bun.spawn(["pbpaste"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const pasteOutput = await new Response(pasteProc.stdout).text();
+		await pasteProc.exited;
+
+		expect(pasteProc.exitCode).toBe(0);
+		expect(pasteOutput).toBe(testText);
+	});
+
+	it("clipboard survives multiple sequential writes", async () => {
+		const backend = createMacOSPbcopyBackend();
+		const texts = [
+			`test-1-${Date.now()}`,
+			`test-2-${Date.now()}`,
+			`test-3-${Date.now()}`,
+		];
+
+		for (const text of texts) {
+			const result = await backend.write(text);
+			expect(result).toBe(true);
+
+			// Verify each write
+			await new Promise((r) => setTimeout(r, 50));
+			const pasteProc = Bun.spawn(["pbpaste"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const pasteOutput = await new Response(pasteProc.stdout).text();
+			await pasteProc.exited;
+
+			expect(pasteOutput).toBe(text);
+		}
+	});
+
+	it("handles text with special characters", async () => {
+		const backend = createMacOSPbcopyBackend();
+		const specialTexts = [
+			"Hello, world!",
+			"Line1\nLine2\nLine3",
+			"Tab\there",
+			"Quotes: \"double\" and 'single'",
+			"Unicode: 日本語 emoji 🎉",
+			"Dollars: $100 and backticks: `code`",
+		];
+
+		for (const text of specialTexts) {
+			const result = await backend.write(text);
+			expect(result).toBe(true);
+
+			await new Promise((r) => setTimeout(r, 50));
+			const pasteProc = Bun.spawn(["pbpaste"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const pasteOutput = await new Response(pasteProc.stdout).text();
+			await pasteProc.exited;
+
+			// pbpaste may add a trailing newline, so trim if needed
+			expect(pasteOutput.trim()).toBe(text.trim());
+		}
+	});
+
+	it("handles empty string gracefully", async () => {
+		const backend = createMacOSPbcopyBackend();
+
+		// Empty string should still work (clears clipboard)
+		const result = await backend.write("");
+		expect(result).toBe(true);
+	});
+
+	it("pbcopy uses stdin piping (not command-line args)", async () => {
+		// Note: Unlike wl-copy which can take text as argument,
+		// pbcopy only reads from stdin
+		const backend = createMacOSPbcopyBackend();
+		const testText = "test-stdin-verification";
+
+		const result = await backend.write(testText);
+		expect(result).toBe(true);
+
+		// Verify clipboard has the text
+		await new Promise((r) => setTimeout(r, 50));
+		const pasteProc = Bun.spawn(["pbpaste"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const pasteOutput = await new Response(pasteProc.stdout).text();
+		await pasteProc.exited;
+
+		expect(pasteOutput).toBe(testText);
 	});
 });
 
