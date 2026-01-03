@@ -10,6 +10,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createLinuxWlcopyBackend } from "../../clipboard/backends/linux-wlcopy.js";
+import { createLinuxXselBackend } from "../../clipboard/backends/linux-xsel.js";
 import { createMacOSPbcopyBackend } from "../../clipboard/backends/macos-pbcopy.js";
 
 const hasWayland = !!process.env.WAYLAND_DISPLAY;
@@ -315,8 +316,154 @@ describe.skipIf(!isMacOS)("Clipboard Persistence (macOS)", () => {
 	});
 });
 
+// Check for xsel availability (works under X11 or XWayland)
+async function hasXsel(): Promise<boolean> {
+	if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+		return false;
+	}
+	try {
+		const proc = Bun.spawn(["which", "xsel"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		return proc.exitCode === 0;
+	} catch {
+		return false;
+	}
+}
+
+// Run xsel check synchronously at module load for skipIf
+const xselAvailable = await hasXsel();
+
+describe.skipIf(!xselAvailable)("Clipboard Persistence (xsel)", () => {
+	let originalClipboard: string | null = null;
+
+	beforeEach(async () => {
+		// Save original clipboard content to restore later
+		try {
+			const proc = Bun.spawn(["xsel", "--clipboard", "--output"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			await proc.exited;
+			if (proc.exitCode === 0) {
+				originalClipboard = await new Response(proc.stdout).text();
+			}
+		} catch {
+			originalClipboard = null;
+		}
+	});
+
+	afterEach(async () => {
+		// Restore original clipboard if we saved it
+		if (originalClipboard !== null) {
+			const proc = Bun.spawn(["xsel", "--clipboard", "--input"], {
+				stdin: "pipe",
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+			proc.stdin.write(originalClipboard);
+			proc.stdin.end();
+			await proc.exited;
+		}
+	});
+
+	it("xsel backend writes via stdin", async () => {
+		const backend = createLinuxXselBackend();
+		const testText = `xsel-persistence-test-${Date.now()}`;
+
+		const result = await backend.write(testText);
+		expect(result).toBe(true);
+	});
+
+	it("clipboard content persists after write() returns", async () => {
+		const backend = createLinuxXselBackend();
+		const testText = `xsel-persistence-test-${Date.now()}`;
+
+		// Write to clipboard
+		const writeResult = await backend.write(testText);
+		expect(writeResult).toBe(true);
+
+		// Small delay to ensure xsel has completed
+		await new Promise((r) => setTimeout(r, 100));
+
+		// Read back with xsel
+		const pasteProc = Bun.spawn(["xsel", "--clipboard", "--output"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const pasteOutput = await new Response(pasteProc.stdout).text();
+		await pasteProc.exited;
+
+		expect(pasteProc.exitCode).toBe(0);
+		expect(pasteOutput.trim()).toBe(testText);
+	});
+
+	it("clipboard survives multiple sequential writes", async () => {
+		const backend = createLinuxXselBackend();
+		const texts = [
+			`xsel-test-1-${Date.now()}`,
+			`xsel-test-2-${Date.now()}`,
+			`xsel-test-3-${Date.now()}`,
+		];
+
+		for (const text of texts) {
+			const result = await backend.write(text);
+			expect(result).toBe(true);
+
+			// Verify each write
+			await new Promise((r) => setTimeout(r, 50));
+			const pasteProc = Bun.spawn(["xsel", "--clipboard", "--output"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const pasteOutput = await new Response(pasteProc.stdout).text();
+			await pasteProc.exited;
+
+			expect(pasteOutput.trim()).toBe(text);
+		}
+	});
+
+	it("handles text with special characters", async () => {
+		const backend = createLinuxXselBackend();
+		const specialTexts = [
+			"Hello, world!",
+			"Line1\nLine2\nLine3",
+			"Tab\there",
+			"Quotes: \"double\" and 'single'",
+			"Unicode: 日本語 emoji 🎉",
+			"Dollars: $100 and backticks: `code`",
+		];
+
+		for (const text of specialTexts) {
+			const result = await backend.write(text);
+			expect(result).toBe(true);
+
+			await new Promise((r) => setTimeout(r, 50));
+			const pasteProc = Bun.spawn(["xsel", "--clipboard", "--output"], {
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const pasteOutput = await new Response(pasteProc.stdout).text();
+			await pasteProc.exited;
+
+			// xsel may add a trailing newline, so trim both
+			expect(pasteOutput.trim()).toBe(text.trim());
+		}
+	});
+
+	it("handles empty string gracefully", async () => {
+		const backend = createLinuxXselBackend();
+
+		// Empty string should still work (clears clipboard)
+		const result = await backend.write("");
+		expect(result).toBe(true);
+	});
+});
+
 describe("Clipboard Backend Robustness", () => {
-	it("isAvailable returns error when WAYLAND_DISPLAY not set", async () => {
+	it("wl-copy isAvailable returns error when WAYLAND_DISPLAY not set", async () => {
 		const originalWayland = process.env.WAYLAND_DISPLAY;
 		delete process.env.WAYLAND_DISPLAY;
 
@@ -326,6 +473,27 @@ describe("Clipboard Backend Robustness", () => {
 			expect(error).not.toBeNull();
 			expect(error).toContain("WAYLAND_DISPLAY");
 		} finally {
+			if (originalWayland) {
+				process.env.WAYLAND_DISPLAY = originalWayland;
+			}
+		}
+	});
+
+	it("xsel isAvailable returns error when DISPLAY not set", async () => {
+		const originalDisplay = process.env.DISPLAY;
+		const originalWayland = process.env.WAYLAND_DISPLAY;
+		delete process.env.DISPLAY;
+		delete process.env.WAYLAND_DISPLAY;
+
+		try {
+			const backend = createLinuxXselBackend();
+			const error = await backend.isAvailable();
+			expect(error).not.toBeNull();
+			expect(error).toContain("DISPLAY");
+		} finally {
+			if (originalDisplay) {
+				process.env.DISPLAY = originalDisplay;
+			}
 			if (originalWayland) {
 				process.env.WAYLAND_DISPLAY = originalWayland;
 			}
