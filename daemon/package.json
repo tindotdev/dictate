@@ -1,6 +1,6 @@
 {
 	"name": "@tindotdev/dictate",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"description": "Speech-to-text daemon for Neovim using OpenAI Realtime API",
 	"type": "module",
 	"main": "dist/main.js",
@@ -11,7 +11,7 @@
 	},
 	"files": [
 		"dist",
-		"../README.md"
+		"README.md"
 	],
 	"publishConfig": {
 		"access": "public"
@@ -22,7 +22,8 @@
 		"test": "bun test",
 		"test:watch": "bun test --watch",
 		"coverage": "bun test --coverage",
-		"check": "bunx biome check --write --unsafe"
+		"check": "bunx biome check --write --unsafe",
+		"prepublishOnly": "cp ../README.md README.md"
 	},
 	"keywords": [
 		"neovim",
