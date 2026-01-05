@@ -15,11 +15,11 @@
 **What Remains for Public Launch:**
 
 1. ~~Documentation (CHANGELOG, privacy/cost warnings, troubleshooting)~~ ✅ **Complete**
-2. Open-source governance (CODE_OF_CONDUCT, CONTRIBUTING, issue templates)
+2. ~~Open-source governance (CODE_OF_CONDUCT, CONTRIBUTING, issue templates)~~ ✅ **Complete**
 3. Make repository public
 4. Final QA on fresh installations
 
-**Next Priority:** Focus on **Milestone 6 - Priority 2** (Open Source Governance)
+**Next Priority:** Make repository public, then final QA testing
 
 ---
 
@@ -170,13 +170,13 @@ Prepare for public announcement and open-source community engagement.
 - [x] **Troubleshooting Guide** - Expand README troubleshooting section with common issues and solutions
 - [x] **SECURITY.md** - Add vulnerability reporting policy and security contact
 
-### Priority 2: Open Source Governance (Required for Public Release)
+### Priority 2: Open Source Governance (Complete ✅)
 
-- [ ] **Make GitHub repository public**
-- [ ] **CODE_OF_CONDUCT.md** - Adopt standard Contributor Covenant or similar
-- [ ] **CONTRIBUTING.md** - Document how to contribute (setup, testing, PR process)
-- [ ] **Issue Templates** - Add bug report and feature request templates
-- [ ] **Support Policy** - Document how users can get help (GitHub Issues, Discussions, etc.)
+- [ ] **Make GitHub repository public** (Note: Tin will do this himself)
+- [x] **CODE_OF_CONDUCT.md** - Adopt standard Contributor Covenant or similar
+- [x] **CONTRIBUTING.md** - Document how to contribute (setup, testing, PR process)
+- [x] **Issue Templates** - Add bug report and feature request templates
+- [x] **Support Policy** - Document how users can get help (GitHub Issues, Discussions, etc.)
 
 ### Priority 3: Automation & Publishing (Nice-to-have)
 

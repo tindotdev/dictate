@@ -1,0 +1,120 @@
+name: Bug Report
+description: Report a bug or issue with dictate
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the information below to help us diagnose and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Tell us what went wrong...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. Start dictate with '...'
+        2. Speak into microphone '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: I expected the transcript to appear...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+      placeholder: Instead, I got an error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: Which OS are you using?
+      options:
+        - Linux
+        - macOS
+        - Other (please specify in additional context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Installation Method
+      description: How did you install dictate?
+      options:
+        - bunx -p @tindotdev/dictate
+        - npm global install
+        - Local build from source
+        - Systemd service (Linux)
+        - Other (please specify in additional context)
+    validations:
+      required: true
+
+  - type: input
+    id: bun-version
+    attributes:
+      label: Bun Version
+      description: Run `bun --version` to get this
+      placeholder: "1.0.0"
+    validations:
+      required: false
+
+  - type: input
+    id: neovim-version
+    attributes:
+      label: Neovim Version
+      description: Run `nvim --version` to get this (if using Neovim plugin)
+      placeholder: "NVIM v0.9.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: health-check
+    attributes:
+      label: Health Check Output
+      description: Run `:checkhealth dictate` in Neovim and paste the output here (if applicable)
+      placeholder: Paste the output from :checkhealth dictate
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and Error Messages
+      description: Any error messages, logs, or stack traces
+      placeholder: Paste any relevant logs or error messages here
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here (screenshots, configuration, etc.)
+    validations:
+      required: false

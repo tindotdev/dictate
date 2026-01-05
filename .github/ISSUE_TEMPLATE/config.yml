@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://github.com/tindotdev/dictate/blob/main/README.md
+    about: Read the README for installation and usage instructions
+  - name: Troubleshooting
+    url: https://github.com/tindotdev/dictate/blob/main/README.md#troubleshooting
+    about: Check the troubleshooting section for common issues
+  - name: Security Vulnerability
+    url: https://github.com/tindotdev/dictate/blob/main/SECURITY.md
+    about: Report security vulnerabilities privately

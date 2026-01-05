@@ -55,11 +55,11 @@ Speak into your microphone, press Ctrl+C when done, and the transcript is copied
 
 ## Platform Support
 
-| Platform | Desktop CLI | Neovim Plugin |
-|----------|-------------|---------------|
-| Linux (Wayland) | Supported | Supported |
-| Linux (X11) | Supported | Supported |
-| macOS | Supported | Supported |
+| Platform        | Desktop CLI | Neovim Plugin |
+| --------------- | ----------- | ------------- |
+| Linux (Wayland) | Supported   | Supported     |
+| Linux (X11)     | Supported   | Supported     |
+| macOS           | Supported   | Supported     |
 
 ## Backend Support
 
@@ -245,6 +245,7 @@ dictate.is_ws_ok()     -- Returns true if WebSocket is connected
 #### "No audio capture" or microphone not working
 
 **Linux:**
+
 ```bash
 # Check if PipeWire is running
 pw-cat --version
@@ -257,6 +258,7 @@ pw-cli list-objects | grep -i node
 ```
 
 **macOS:**
+
 ```bash
 # Check if ffmpeg is installed
 ffmpeg -version
@@ -273,6 +275,7 @@ ffmpeg -f avfoundation -i ":0" -t 5 test.wav
 #### "Clipboard unavailable" warnings
 
 **Linux Wayland:**
+
 ```bash
 # Install wl-clipboard
 sudo dnf install wl-clipboard    # Fedora
@@ -283,6 +286,7 @@ echo "test" | wl-copy && wl-paste
 ```
 
 **Linux X11:**
+
 ```bash
 # Install xclip or xsel
 sudo dnf install xclip           # Fedora
@@ -345,6 +349,48 @@ DEBUG=1 dictate --verbose
 - See [runbook.md](docs/runbook.md) for detailed testing commands
 - Enable debug mode: `DEBUG=1` environment variable
 - [Report issues](https://github.com/tindotdev/dictate/issues) on GitHub
+
+## Support
+
+Need help or want to report an issue? Here's how to get support:
+
+### Before Opening an Issue
+
+1. **Check existing issues** - Search [existing issues](https://github.com/tindotdev/dictate/issues) to see if your problem has already been reported
+2. **Run health check** - In Neovim, run `:checkhealth dictate` for diagnostic information
+3. **Check troubleshooting** - Review the [Troubleshooting](#troubleshooting) section above
+4. **Enable debug mode** - Run with `DEBUG=1` environment variable for verbose logging
+
+### Reporting Bugs
+
+Found a bug? [Open a bug report](https://github.com/tindotdev/dictate/issues/new/choose) with:
+
+- Description of the issue
+- Steps to reproduce
+- Expected vs actual behavior
+- Your environment (OS, Bun version, installation method)
+- Output from `:checkhealth dictate` (if using Neovim)
+- Any error messages or logs
+
+### Feature Requests
+
+Have an idea for an improvement? [Open a feature request](https://github.com/tindotdev/dictate/issues/new/choose) describing:
+
+- The problem you're trying to solve
+- Your proposed solution
+- Why this would benefit other users
+
+### Contributing
+
+Interested in contributing code or documentation? See [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+- Development setup instructions
+- Testing guidelines
+- Pull request process
+
+### Security Issues
+
+**Do not report security vulnerabilities in public issues.** See [SECURITY.md](SECURITY.md) for how to report security issues privately.
 
 ## Development
 
