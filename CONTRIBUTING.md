@@ -192,7 +192,7 @@ git clone --depth 1 https://github.com/nvim-lua/plenary.nvim \
   ~/.local/share/nvim/site/pack/vendor/start/plenary.nvim
 
 # Run Lua tests
-nvim --headless -c "lua require('plenary.test_harness').test_directory('nvim/tests', {minimal_init = 'nvim/tests/minimal_init.lua'})" -c "qa!"
+nvim --headless -c "lua require('plenary.test_harness').test_directory('tests', {minimal_init = 'tests/minimal_init.lua'})" -c "qa!"
 ```
 
 **Manual testing:**

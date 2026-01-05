@@ -78,4 +78,4 @@ jobs:
 
       - name: Run Lua tests
         run: |
-          nvim --headless -c "lua require('plenary.test_harness').test_directory('nvim/tests', {minimal_init = 'nvim/tests/minimal_init.lua'})" -c "qa!"
+          nvim --headless -c "lua require('plenary.test_harness').test_directory('tests', {minimal_init = 'tests/minimal_init.lua'})" -c "qa!"

@@ -8,12 +8,10 @@ pre-commit:
       stage_fixed: true
 
     stylua:
-      root: nvim/
       glob: "*.lua"
       run: stylua {staged_files}
       stage_fixed: true
 
     selene:
-      root: nvim/
       glob: "lua/**/*.lua"
       run: selene {staged_files}

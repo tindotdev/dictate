@@ -6,10 +6,10 @@
     "build": "cd daemon && bun run build",
     "check": "bun run check:daemon && bun run check:nvim",
     "check:daemon": "cd daemon && bun run check",
-    "check:nvim": "cd nvim && stylua --check . && selene lua",
+    "check:nvim": "stylua --check lua plugin tests && selene lua",
     "fix": "bun run fix:daemon && bun run fix:nvim",
     "fix:daemon": "cd daemon && bun run check",
-    "fix:nvim": "cd nvim && stylua .",
+    "fix:nvim": "stylua lua plugin tests",
     "prepare": "lefthook install",
     "publish:daemon": "cd daemon && bun run build && npm publish"
   },
