@@ -23,6 +23,7 @@ interface MockDaemon {
 	receivedMessages: ClientMessage[];
 	sendToAll: (msg: DaemonMessage) => void;
 	sendSequence: (msgs: DaemonMessage[], delayMs?: number) => Promise<void>;
+	waitForMessage: (type: string, timeoutMs?: number) => Promise<ClientMessage>;
 	cleanup: () => Promise<void>;
 }
 
@@ -103,6 +104,23 @@ async function createMockDaemon(): Promise<MockDaemon> {
 		}
 	};
 
+	const waitForMessage = async (
+		type: string,
+		timeoutMs = 1000,
+	): Promise<ClientMessage> => {
+		const startTime = Date.now();
+		while (Date.now() - startTime < timeoutMs) {
+			const msg = receivedMessages.find((m) => m.type === type);
+			if (msg) {
+				return msg;
+			}
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		throw new Error(
+			`Timeout waiting for message type: ${type} after ${timeoutMs}ms`,
+		);
+	};
+
 	const cleanup = async () => {
 		for (const client of clients) {
 			client.destroy();
@@ -123,6 +141,7 @@ async function createMockDaemon(): Promise<MockDaemon> {
 		receivedMessages,
 		sendToAll,
 		sendSequence,
+		waitForMessage,
 		cleanup,
 	};
 }
@@ -378,7 +397,8 @@ describe("CLI Integration with Mock Daemon", () => {
 				timeoutMs: 2000,
 			});
 
-			await new Promise((r) => setTimeout(r, 100));
+			// Wait for CLI to be ready (sent start_listening)
+			await daemon.waitForMessage("start_listening");
 
 			daemon.sendSequence([
 				{
@@ -392,7 +412,7 @@ describe("CLI Integration with Mock Daemon", () => {
 				{ type: "status", state: "idle", audio_ok: false, ws_ok: false },
 			]);
 
-			await new Promise((r) => setTimeout(r, 200));
+			await new Promise((r) => setTimeout(r, 250));
 			for (const client of daemon.clients) {
 				client.end();
 			}
@@ -473,7 +493,8 @@ describe("CLI Integration with Mock Daemon", () => {
 				timeoutMs: 3000,
 			});
 
-			await new Promise((r) => setTimeout(r, 100));
+			// Wait for CLI to be ready (sent start_listening)
+			await daemon.waitForMessage("start_listening");
 
 			daemon.sendToAll({
 				type: "error",
