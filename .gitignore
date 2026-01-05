@@ -29,3 +29,9 @@ coverage/
 
 # Lefthook
 .lefthook-local.yml
+
+# Claude Code settings
+.claude/
+
+# Backup directories
+.rewrite-backup/
