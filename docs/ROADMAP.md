@@ -10,15 +10,16 @@
 - All core features working and tested (305 tests passing)
 - Published to npm as @tindotdev/dictate v0.2.0
 - Zero TODOs/FIXMEs in codebase
+- Essential documentation (CHANGELOG, SECURITY, troubleshooting, privacy warnings) ✅
 
 **What Remains for Public Launch:**
 
-1. Documentation (CHANGELOG, privacy/cost warnings, troubleshooting)
-2. Open-source governance (CODE_OF_CONDUCT, CONTRIBUTING, SECURITY)
+1. ~~Documentation (CHANGELOG, privacy/cost warnings, troubleshooting)~~ ✅ **Complete**
+2. Open-source governance (CODE_OF_CONDUCT, CONTRIBUTING, issue templates)
 3. Make repository public
 4. Final QA on fresh installations
 
-**Next Priority:** Focus on **Milestone 6 - Priority 1** (Essential Documentation)
+**Next Priority:** Focus on **Milestone 6 - Priority 2** (Open Source Governance)
 
 ---
 
@@ -161,13 +162,13 @@ Deliver the v1 "done line": Linux + macOS support, desktop/clipboard usage, Open
 
 Prepare for public announcement and open-source community engagement.
 
-### Priority 1: Essential Documentation (Required for Public Release)
+### Priority 1: Essential Documentation (Complete ✅)
 
-- [ ] **CHANGELOG.md** - Document release history starting with v0.2.0
-- [ ] **Privacy & Cost Warning** - Add prominent note in README that audio is sent to OpenAI and incurs API costs
-- [ ] **Platform Support Table** - Update README table to show macOS as "Supported" (currently shows "In Progress")
-- [ ] **Troubleshooting Guide** - Expand README troubleshooting section with common issues and solutions
-- [ ] **SECURITY.md** - Add vulnerability reporting policy and security contact
+- [x] **CHANGELOG.md** - Document release history starting with v0.2.0
+- [x] **Privacy & Cost Warning** - Add prominent note in README that audio is sent to OpenAI and incurs API costs
+- [x] **Platform Support Table** - Update README table to show macOS as "Supported" (was "In Progress")
+- [x] **Troubleshooting Guide** - Expand README troubleshooting section with common issues and solutions
+- [x] **SECURITY.md** - Add vulnerability reporting policy and security contact
 
 ### Priority 2: Open Source Governance (Required for Public Release)
 
