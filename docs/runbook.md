@@ -1,13 +1,10 @@
 # Runbook
 
-Quick reference for development and testing commands.
+Quick reference for development and troubleshooting.
 
 ## Prerequisites
 
 ```bash
-# Verify PipeWire
-pw-cat --version
-
 # Verify bun
 bun --version
 
@@ -15,21 +12,26 @@ bun --version
 export OPENAI_API_KEY="sk-..."
 ```
 
+Platform notes:
+
+- Linux: verify PipeWire tools with `pw-cat --version`
+- macOS: install `ffmpeg` and verify with `ffmpeg -version`
+
 ## Desktop CLI Usage
 
-The `dictate` CLI is a one-shot dictation tool that copies transcripts to clipboard.
+The `dictate` CLI is a one-shot dictation tool.
 
 ### Basic Usage
 
 ```bash
-# Start dictation, copy to clipboard when done
+# Copy final transcript to clipboard (default)
 dictate
 
-# Print to stdout instead of clipboard
+# Print to stdout (and still copy to clipboard)
 dictate --stdout
 
-# Both clipboard and stdout
-dictate --stdout
+# Print to stdout only (no clipboard)
+dictate --no-clipboard
 
 # JSONL output for scripting
 dictate --json
@@ -45,17 +47,17 @@ dictate --verbose
 bunx -p @tindotdev/dictate dictate
 
 # With options
-bunx -p @tindotdev/dictate dictate --stdout --verbose
+bunx -p @tindotdev/dictate dictate --no-clipboard --verbose
 ```
 
 ### Integration Examples
 
 ```bash
 # Append to a file
-dictate --stdout --no-clipboard >> notes.txt
+dictate --no-clipboard >> notes.txt
 
 # Pipe to another command
-dictate --stdout --no-clipboard | tr '[:lower:]' '[:upper:]'
+dictate --no-clipboard | tr '[:lower:]' '[:upper:]'
 
 # Use in a script with JSON
 dictate --json | jq '.text' -r
@@ -78,7 +80,7 @@ bun run build
 
 ```bash
 cd daemon
-bun test              # Run all 194 tests
+bun test              # Run all daemon tests
 bun test --watch      # Watch mode
 bun test backoff      # Run specific test file
 ```
@@ -93,23 +95,7 @@ cd daemon
 bun test src/__tests__/integration/    # Run integration tests only
 ```
 
-**Test coverage (24 tests):**
-- 4.1: Multiple clients connecting simultaneously
-- 4.2: Status broadcast to all clients, transcripts to owner only
-- 4.3: Client disconnect handling (owner disconnect stops session)
-- 4.4: Duplicate command handling
-- 4.5: Session ownership (SESSION_BUSY errors, ownership lifecycle)
-
-**Architecture:**
-```
-TestClient 1 ──┐
-TestClient 2 ──┼──▶ SocketServer ──▶ StateMachine
-TestClient N ──┘    (real)          (real)
-                       │                │
-                       ▼                ▼
-            MockAudioSupervisor    NetworkSupervisor
-            (EventEmitter)         (local WS mock)
-```
+Integration tests cover multi-client session ownership (status to all clients; transcripts to the owner only).
 
 ## Manual Testing
 
@@ -180,7 +166,7 @@ ls -la $XDG_RUNTIME_DIR/dictate/
 rm $XDG_RUNTIME_DIR/dictate/dictate.sock
 
 # Kill orphan daemon
-pkill -f "bun.*main"
+pkill -f dictated
 ```
 
 ### Audio Issues (Linux)
@@ -203,7 +189,7 @@ ffmpeg -f avfoundation -list_devices true -i ""
 ffmpeg -f avfoundation -i ":0" -t 5 test.wav
 
 # Common issues:
-# - "Permission denied": Grant microphone access in System Preferences > Privacy
+# - "Permission denied": Grant microphone access in System Settings > Privacy & Security > Microphone
 # - "No such device": Check device index with list_devices command
 ```
 

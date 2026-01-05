@@ -1,69 +1,61 @@
-# dictate
+# dictate — real-time voice-to-text for Neovim
 
-Real-time speech-to-text dictation for Neovim and desktop using OpenAI's Realtime transcription API.
+Speech-to-text dictation using OpenAI's Realtime API. Type with your voice in Neovim or get transcripts auto-copied to clipboard from your terminal.
 
-## ⚠️ Privacy & Costs
+**Features:**
 
-**Important:** This tool sends your audio to OpenAI's servers for transcription.
+- Real-time transcription with live ghost text preview
+- Persistent daemon — survives editor restarts, handles multiple clients
+- Cross-platform audio (Linux: PipeWire, macOS: ffmpeg)
+- Simple toggle command (`:DictateToggle`)
 
-- **Audio is transmitted** to OpenAI's Realtime API in real-time
-- **Usage is billable** - You will incur OpenAI API costs based on your usage
-- Review [OpenAI's pricing](https://openai.com/api/pricing/) for Realtime API costs
-- Review [OpenAI's privacy policy](https://openai.com/policies/privacy-policy/) for data handling
-
-Only use this tool with audio content you're comfortable sending to OpenAI.
-
-## Quick Start (bunx)
-
-The fastest way to try dictate without installing:
+## Quick Start
 
 ```bash
-# Set your OpenAI API key
 export OPENAI_API_KEY="sk-..."
-
-# Run dictate (auto-starts daemon)
 bunx -p @tindotdev/dictate dictate
 ```
 
-Speak into your microphone, press Ctrl+C when done, and the transcript is copied to your clipboard.
+Speak into your microphone, press Ctrl+C when done. Transcript copied to clipboard.
 
-## Features
+## ⚠️ Privacy & Costs
 
-- `:DictateToggle` starts/stops dictation
-- Live ghost text preview as you speak
-- Text inserted at cursor on speech completion
-- Uses OpenAI's gpt-4o-transcribe model
+Audio is transmitted to OpenAI's Realtime API in real-time. Usage is billable. Review [OpenAI pricing](https://openai.com/api/pricing/) and [privacy policy](https://openai.com/policies/privacy-policy/).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    N[Neovim<br/>Lua plugin] <-->|stdio<br/>JSONL| C[dictatectl<br/>CLI bridge]
+    C <-->|Unix socket| D[dictated<br/>daemon]
+    D <-->|WebSocket| O[OpenAI API<br/>Realtime]
+
+    D -->|spawns & supervises| A[Audio capture]
+    A -.->|Linux| L[pw-cat<br/>PipeWire]
+    A -.->|macOS| M[ffmpeg<br/>AVFoundation]
+```
+
+The daemon runs as a standalone service and handles WebSocket connections to OpenAI, audio capture (pw-cat on Linux, ffmpeg on macOS), and state management. Multiple Neovim instances can connect via `dictatectl`, a CLI bridge that translates stdio JSONL to Unix socket messages.
+
+> Note: `dictate` is the user-facing CLI; it uses `dictatectl` under the hood for Neovim integration
 
 ## Requirements
 
-### All Platforms
+**All platforms:**
 
-- Bun runtime (required; Node.js is not supported)
+- Bun runtime ([install](https://bun.sh))
 - OpenAI API key with Realtime API access
 
-### Linux
+**Linux:**
 
-- PipeWire with `pw-cat` (`pipewire-utils` package on Fedora)
+- PipeWire with `pw-cat` (package: `pipewire-utils` on Fedora, `pipewire` on Ubuntu/Debian)
 - Clipboard: `wl-copy` (Wayland) or `xclip`/`xsel` (X11)
-- Neovim 0.10+ (for Neovim integration)
+- Neovim 0.10+ (for plugin)
 
-### macOS
+**macOS:**
 
 - ffmpeg (`brew install ffmpeg`)
-- pbcopy (built-in)
-- Neovim 0.10+ (for Neovim integration)
-
-## Platform Support
-
-| Platform        | Desktop CLI | Neovim Plugin |
-| --------------- | ----------- | ------------- |
-| Linux (Wayland) | Supported   | Supported     |
-| Linux (X11)     | Supported   | Supported     |
-| macOS           | Supported   | Supported     |
-
-## Backend Support
-
-- OpenAI only (Google Cloud is out of scope)
+- Neovim 0.10+ (for plugin)
 
 ## Installation
 
@@ -91,39 +83,39 @@ sudo apt install pipewire xclip         # X11
 brew install ffmpeg
 ```
 
-**All Platforms - Install Bun:**
+**Bun:**
+
+Install Bun by following the official instructions: <https://bun.sh/docs/installation>.
+
+### Desktop CLI
 
 ```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-### Desktop CLI (standalone usage)
-
-```bash
-# Option A: Run without installing (recommended for trying it out)
+# Run without installing (recommended)
 bunx -p @tindotdev/dictate dictate
 
-# Option B: Install globally
-npm install -g @tindotdev/dictate
-dictate  # run directly
+# Or install globally
+bun install -g @tindotdev/dictate
+dictate
 ```
 
-### Neovim Plugin - Method A: Global npm Install (Recommended)
+### Neovim Plugin
 
-Install the daemon globally and add the plugin:
+**Method A: Global Install (Recommended)**
+
+Install daemon globally:
 
 ```bash
-npm install -g @tindotdev/dictate
+bun install -g @tindotdev/dictate
 ```
 
-Then add to your lazy.nvim config:
+Add to lazy.nvim config:
 
 ```lua
 {
   "tindotdev/dictate",
   subdir = "nvim",
   keys = {
-    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
+    { "<Leader>ad", "<Cmd>DictateToggle<CR>", desc = "AI Dictate" },
   },
   cmd = { "DictateToggle", "DictateStart", "DictateStop" },
   config = function()
@@ -132,19 +124,17 @@ Then add to your lazy.nvim config:
 }
 ```
 
-The plugin will automatically find `dictatectl` in your PATH. Start the daemon:
+Start daemon:
 
 ```bash
-# Run manually
 dictated &
-
-# Or set up systemd service (optional)
+# Or set up systemd service:
 curl -fsSL https://raw.githubusercontent.com/tindotdev/dictate/main/scripts/install-service.sh | bash
 ```
 
-### Neovim Plugin - Method B: Clone and Build (For Development)
+**Method B: Local Development**
 
-Clone the repository and build locally:
+Clone and build:
 
 ```bash
 git clone https://github.com/tindotdev/dictate.git
@@ -153,14 +143,14 @@ bun install
 bun run build
 ```
 
-Add to lazy.nvim pointing to your local clone:
+Configure lazy.nvim:
 
 ```lua
 {
   dir = "~/path/to/dictate",
   subdir = "nvim",
   keys = {
-    { "<Leader>d", "<Cmd>DictateToggle<CR>", desc = "Toggle dictation" },
+    { "<Leader>ad", "<Cmd>DictateToggle<CR>", desc = "AI Dictate" },
   },
   config = function()
     require("dictate").setup()
@@ -168,7 +158,7 @@ Add to lazy.nvim pointing to your local clone:
 }
 ```
 
-The plugin will automatically use your local build. Set up the systemd service:
+Set up systemd service:
 
 ```bash
 cd ~/path/to/dictate
@@ -177,254 +167,150 @@ cd ~/path/to/dictate
 
 ## Configuration
 
-Set your OpenAI API key:
+**Environment variables:**
 
 ```bash
 export OPENAI_API_KEY="sk-..."
-```
-
-Optional environment variables:
-
-```bash
-export OPENAI_STT_MODEL="gpt-4o-mini-transcribe"  # Default: gpt-4o-transcribe
-export OPENAI_STT_PROMPT="technical terms like Neovim, TypeScript, PipeWire"
+export OPENAI_STT_MODEL="gpt-4o-transcribe"  # Set by default
+export OPENAI_STT_PROMPT="technical terms like Neovim, TypeScript"
 export DEBUG=1  # Enable debug logging
 ```
 
-Plugin options:
+**Plugin options:**
 
 ```lua
 require("dictate").setup({
-  daemon_cmd = nil,             -- Auto-detect (or specify explicit path)
-  keymap = nil,                 -- Optional: set a keymap (prefer lazy.nvim keys)
-  ghost_hl = 'Comment',         -- Highlight group for ghost text
-  insert_trailing_space = true, -- Add space after inserted text
-
-  -- Advanced: Force using global npm daemon instead of local build
-  use_global_daemon = false,    -- false=prefer local build, true=use npm package
+  daemon_cmd = nil,             -- Auto-detect
+  keymap = nil,                 -- Optional (prefer lazy.nvim keys)
+  ghost_hl = 'Comment',         -- Highlight for ghost text
+  insert_trailing_space = true, -- Add space after text
+  use_global_daemon = false,    -- false=local build, true=global package
 })
 ```
 
-**Advanced Options:**
-
-- `use_global_daemon`: Controls which daemon binary is used:
-  - `false` (default): Auto-detect, preferring local build at `plugin_dir/../daemon/dist`
-  - `true`: Force using globally installed `@tindotdev/dictate` from npm
-
-  Note: This only affects the daemon binary. The Neovim plugin Lua code always uses whatever is loaded by lazy.nvim (local `dir` or GitHub repo).
-
 ## Usage
 
-1. Start dictation: `:DictateToggle` (or your configured keymap)
-2. Speak - ghost text appears at cursor
-3. Pause - text is inserted when speech completes
-4. Stop: `:DictateToggle` again
+**Desktop CLI:**
 
-## API
+```bash
+dictate              # Transcribe to clipboard
+dictate --stdout     # Print to stdout (and copy to clipboard)
+dictate --no-clipboard # Print to stdout only
+```
+
+**Neovim:**
+
+1. `:DictateToggle` — start dictation
+2. Speak — ghost text appears at cursor
+3. Pause — text inserted when speech completes
+4. `:DictateToggle` — stop
+
+**Commands:**
+
+- `:DictateToggle` — toggle on/off
+- `:DictateStart` — start
+- `:DictateStop` — stop
+
+**API:**
 
 ```lua
 local dictate = require("dictate")
-
-dictate.is_running()   -- Returns true if dictatectl process is active
-dictate.get_state()    -- Returns: 'stopped'|'connecting'|'connected'|'idle'|'listening'|'error'
-dictate.is_active()    -- Returns true if actively listening
-dictate.is_audio_ok()  -- Returns true if audio capture is working
-dictate.is_ws_ok()     -- Returns true if WebSocket is connected
+dictate.is_running()   -- true if process active
+dictate.get_state()    -- 'stopped'|'connecting'|'connected'|'idle'|'listening'|'error'
+dictate.is_active()    -- true if listening
+dictate.is_audio_ok()  -- true if audio capture working
+dictate.is_ws_ok()     -- true if WebSocket connected
 ```
 
-## Commands
+## Development
 
-- `:DictateToggle` - Toggle dictation on/off
-- `:DictateStart` - Start dictation
-- `:DictateStop` - Stop dictation
+```bash
+cd daemon
+export OPENAI_API_KEY="..."
+bun dev        # Run in dev mode
+bun test       # Run tests
+bun run build  # Build for production
+```
 
 ## Troubleshooting
 
-### Common Issues
-
-#### "No audio capture" or microphone not working
+### Audio not working
 
 **Linux:**
 
 ```bash
-# Check if PipeWire is running
-pw-cat --version
-
-# Test audio capture directly
-pw-cat --record --rate=24000 --channels=1 --format=s16 - | head -c 1000
-
-# List available audio devices
-pw-cli list-objects | grep -i node
+pw-cat --version  # Check PipeWire installed
+pw-cat --record --rate=24000 --channels=1 --format=s16 - | head -c 1000  # Test capture
 ```
 
 **macOS:**
 
 ```bash
-# Check if ffmpeg is installed
-ffmpeg -version
-
-# List available audio devices
-ffmpeg -f avfoundation -list_devices true -i ""
-
-# Test audio capture (5 seconds)
-ffmpeg -f avfoundation -i ":0" -t 5 test.wav
-
-# Grant microphone permission in System Preferences > Privacy & Security > Microphone
+ffmpeg -version  # Check ffmpeg installed
+ffmpeg -f avfoundation -list_devices true -i ""  # List devices
+ffmpeg -f avfoundation -i ":0" -t 5 test.wav     # Test capture
+# Grant microphone permission: System Settings > Privacy & Security > Microphone
 ```
 
-#### "Clipboard unavailable" warnings
+### Clipboard warnings
 
 **Linux Wayland:**
 
 ```bash
-# Install wl-clipboard
-sudo dnf install wl-clipboard    # Fedora
-sudo apt install wl-clipboard    # Ubuntu/Debian
-
-# Test clipboard
+sudo dnf install wl-clipboard  # Fedora
+sudo apt install wl-clipboard  # Ubuntu/Debian
 echo "test" | wl-copy && wl-paste
 ```
 
 **Linux X11:**
 
 ```bash
-# Install xclip or xsel
-sudo dnf install xclip           # Fedora
-sudo apt install xclip           # Ubuntu/Debian
-
-# Test clipboard
+sudo dnf install xclip  # Fedora
+sudo apt install xclip  # Ubuntu/Debian
 echo "test" | xclip -selection clipboard && xclip -o -selection clipboard
 ```
 
-**Fallback:** If no clipboard tool is available, use `--stdout --no-clipboard` to print transcript to stdout.
+**Fallback:** Use `dictate --no-clipboard`
 
-#### Daemon won't start or "Connection refused"
+### Daemon issues
 
 ```bash
-# Check if daemon is running
-ps aux | grep dictated
+ps aux | grep dictated  # Check if running
 
-# Check for stale socket (Linux)
-ls -la $XDG_RUNTIME_DIR/dictate/
-
-# Check for stale socket (macOS)
-ls -la ~/.local/state/dictate/
-
-# Remove stale socket and restart
+# Remove stale socket
 rm $XDG_RUNTIME_DIR/dictate/dictate.sock  # Linux
 rm ~/.local/state/dictate/dictate.sock    # macOS
 
-# Kill any orphaned daemon
-pkill -f dictated
+pkill -f dictated  # Kill orphaned daemon
 ```
 
-#### Neovim: "dictatectl not found"
+### Neovim: "dictatectl not found"
 
 ```bash
-# Check if daemon is installed globally
-which dictatectl
-
-# If using local build, ensure it's built
-cd daemon && bun run build
-
-# Use :checkhealth to diagnose
-:checkhealth dictate
+which dictatectl              # Check if installed
+cd daemon && bun run build    # Build if using local clone
+:checkhealth dictate          # Neovim diagnostics
 ```
 
-#### API errors or "Authentication failed"
+### API errors
 
 ```bash
-# Verify API key is set
-echo $OPENAI_API_KEY
-
-# Check API key validity at https://platform.openai.com/api-keys
-
-# Enable debug logging
+echo $OPENAI_API_KEY  # Verify key set
 DEBUG=1 dictate --verbose
 ```
 
 ### Getting Help
 
-- Check `:checkhealth dictate` in Neovim for detailed diagnostics
-- See [runbook.md](docs/runbook.md) for detailed testing commands
-- Enable debug mode: `DEBUG=1` environment variable
+- Run `:checkhealth dictate` in Neovim for diagnostics
+- See [docs/runbook.md](docs/runbook.md) for detailed testing
+- Enable debug mode with `DEBUG=1`
 - [Report issues](https://github.com/tindotdev/dictate/issues) on GitHub
 
-## Support
+## Contributing
 
-Need help or want to report an issue? Here's how to get support:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing guidelines, and pull request process.
 
-### Before Opening an Issue
-
-1. **Check existing issues** - Search [existing issues](https://github.com/tindotdev/dictate/issues) to see if your problem has already been reported
-2. **Run health check** - In Neovim, run `:checkhealth dictate` for diagnostic information
-3. **Check troubleshooting** - Review the [Troubleshooting](#troubleshooting) section above
-4. **Enable debug mode** - Run with `DEBUG=1` environment variable for verbose logging
-
-### Reporting Bugs
-
-Found a bug? [Open a bug report](https://github.com/tindotdev/dictate/issues/new/choose) with:
-
-- Description of the issue
-- Steps to reproduce
-- Expected vs actual behavior
-- Your environment (OS, Bun version, installation method)
-- Output from `:checkhealth dictate` (if using Neovim)
-- Any error messages or logs
-
-### Feature Requests
-
-Have an idea for an improvement? [Open a feature request](https://github.com/tindotdev/dictate/issues/new/choose) describing:
-
-- The problem you're trying to solve
-- Your proposed solution
-- Why this would benefit other users
-
-### Contributing
-
-Interested in contributing code or documentation? See [CONTRIBUTING.md](CONTRIBUTING.md) for:
-
-- Development setup instructions
-- Testing guidelines
-- Pull request process
-
-### Security Issues
-
-**Do not report security vulnerabilities in public issues.** See [SECURITY.md](SECURITY.md) for how to report security issues privately.
-
-## Development
-
-```bash
-# Run daemon in development mode
-cd daemon
-export OPENAI_API_KEY="..."
-bun dev
-
-# Run tests
-bun test
-
-# Build for production
-bun run build
-```
-
-## Architecture
-
-```
-┌─────────────┐  stdio   ┌────────────┐  Unix Socket  ┌──────────────┐  WebSocket  ┌─────────────┐
-│   Neovim    │◄────────►│ dictatectl │◄─────────────►│    Daemon    │◄───────────►│ OpenAI API  │
-│   (Lua)     │  JSONL   │  (bridge)  │               │ (TypeScript) │             │  Realtime   │
-└─────────────┘          └────────────┘               └──────────────┘             └─────────────┘
-                                                             ▲
-                                                             │ supervises
-                                                             ▼
-                                                      ┌──────────────┐
-                                                      │    pw-cat    │
-                                                      │  (PipeWire)  │
-                                                      └──────────────┘
-```
-
-The daemon runs as a standalone service (optionally via systemd) and survives Neovim restarts.
-Multiple Neovim instances can connect to the same daemon.
+**Security:** Report vulnerabilities privately via [SECURITY.md](SECURITY.md).
 
 ## License
 

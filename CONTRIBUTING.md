@@ -197,7 +197,7 @@ nvim --headless -c "lua require('plenary.test_harness').test_directory('nvim/tes
 
 **Manual testing:**
 
-- See `daemon/TEST_CHECKLIST.md` for manual test scenarios
+- See `docs/runbook.md` for manual test scenarios and troubleshooting
 - Run `:checkhealth dictate` in Neovim to verify your setup
 
 #### Before Submitting a Pull Request

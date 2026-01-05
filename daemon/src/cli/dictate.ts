@@ -34,9 +34,12 @@ function parseOptions(): DictateOptions {
 		allowPositionals: false,
 	});
 
+	const clipboard = (values.clipboard ?? true) && !values["no-clipboard"];
+	const stdout = (values.stdout ?? false) || !clipboard;
+
 	return {
-		clipboard: values.clipboard && !values["no-clipboard"],
-		stdout: values.stdout ?? false,
+		clipboard,
+		stdout,
 		json: values.json ?? false,
 		verbose: values.verbose ?? false,
 		help: values.help ?? false,
@@ -52,15 +55,15 @@ Usage: dictate [options]
 Options:
   --clipboard       Copy final transcript to clipboard (default)
   --no-clipboard    Don't copy to clipboard
-  --stdout          Print partials and final to stdout
+  --stdout          Print partials and final to stdout (in addition to clipboard)
   --json            Output JSONL format (for integration)
   -v, --verbose     Show debug output
   -h, --help        Show this help
 
 Examples:
   dictate                    # Dictate, copy to clipboard
-  dictate --stdout           # Print transcript to stdout
-  dictate --no-clipboard     # Just print, don't copy
+  dictate --stdout           # Print to stdout (and copy to clipboard)
+  dictate --no-clipboard     # Print to stdout only
   dictate --json             # JSONL output for scripts
 
 Press Ctrl+C to stop listening and wait for final transcript.

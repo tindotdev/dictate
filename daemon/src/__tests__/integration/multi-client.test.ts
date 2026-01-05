@@ -2,7 +2,7 @@
  * Multi-Client Integration Tests
  *
  * These tests verify that the daemon correctly handles multiple simultaneous
- * client connections, corresponding to TEST_CHECKLIST.md Section 4:
+ * client connections; see docs/runbook.md for manual multi-client testing notes.
  *
  * 4.1 Multiple dictatectl Instances - Multiple clients can connect simultaneously
  * 4.2 Broadcast to All Clients - Status events reach all clients

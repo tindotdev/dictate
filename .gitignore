@@ -35,3 +35,6 @@ coverage/
 
 # Backup directories
 .rewrite-backup/
+
+# Local release / prep notes
+SUMMARY_*.md
