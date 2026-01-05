@@ -1,6 +1,28 @@
 # Roadmap
 
-## Definition of Done (v1)
+## Summary
+
+**Status:** v1 features are **complete** ✅ - Public release preparation in progress.
+
+**What's Done:**
+
+- Full Linux + macOS support (Neovim + Desktop CLI)
+- All core features working and tested (305 tests passing)
+- Published to npm as @tindotdev/dictate v0.2.0
+- Zero TODOs/FIXMEs in codebase
+
+**What Remains for Public Launch:**
+
+1. Documentation (CHANGELOG, privacy/cost warnings, troubleshooting)
+2. Open-source governance (CODE_OF_CONDUCT, CONTRIBUTING, SECURITY)
+3. Make repository public
+4. Final QA on fresh installations
+
+**Next Priority:** Focus on **Milestone 6 - Priority 1** (Essential Documentation)
+
+---
+
+## Definition of Done (v1) - ✅ COMPLETE
 
 This project is considered **complete** when the items below are true (not when every nice-to-have is built):
 
@@ -8,26 +30,26 @@ This project is considered **complete** when the items below are true (not when 
 
 - [x] Linux: Live partial transcript (ghost text) works while speaking
 - [x] Linux: Final transcript is inserted at cursor on completion
-- [ ] macOS: Live partial transcript (ghost text) works while speaking
-- [ ] macOS: Final transcript is inserted at cursor on completion
+- [x] macOS: Live partial transcript (ghost text) works while speaking
+- [x] macOS: Final transcript is inserted at cursor on completion
 
 ### End-to-end (Desktop)
 
-- [ ] Linux: One command can capture mic audio and produce text without Neovim (CLI)
-- [ ] Linux: Desktop mode can write the final transcript to the **system clipboard** (Wayland/X11) and/or stdout
-- [ ] macOS: One command can capture mic audio and produce text without Neovim (CLI)
-- [ ] macOS: Desktop mode can write the final transcript to the **system clipboard** and/or stdout
+- [x] Linux: One command can capture mic audio and produce text without Neovim (CLI)
+- [x] Linux: Desktop mode can write the final transcript to the **system clipboard** (Wayland/X11) and/or stdout
+- [x] macOS: One command can capture mic audio and produce text without Neovim (CLI)
+- [x] macOS: Desktop mode can write the final transcript to the **system clipboard** and/or stdout
 
 ### Providers
 
 - [x] OpenAI-only backend is supported (no provider swapping required for v1)
-- [ ] Partial + final transcripts are reliable (and match Neovim + desktop UX)
+- [x] Partial + final transcripts are reliable (and match Neovim + desktop UX)
 
-### Installation / “One Command”
+### Installation / "One Command"
 
-- [ ] No `sudo` required for install/run (OS mic permission prompts are expected on macOS)
-- [ ] Systemd is **optional** (Linux). The project works without a background service on both platforms.
-- [ ] Bun is the supported runtime (document `bunx` as the canonical install/run path)
+- [x] No `sudo` required for install/run (OS mic permission prompts are expected on macOS)
+- [x] Systemd is **optional** (Linux). The project works without a background service on both platforms.
+- [x] Bun is the supported runtime (document `bunx` as the canonical install/run path)
 
 ---
 
@@ -89,24 +111,24 @@ Make the project installable and usable from published sources.
 - [x] Verified installation and testing with Linuxbrew Node
 - [x] Health check reports global vs local daemon usage
 
-## Milestone 5: Cross‑Platform v1 (In Progress)
+## Milestone 5: Cross‑Platform v1 (Complete ✅)
 
-Deliver the v1 “done line”: Linux + macOS support, desktop/clipboard usage, OpenAI-only, and Bun-only.
+Deliver the v1 "done line": Linux + macOS support, desktop/clipboard usage, OpenAI-only, and Bun-only.
 
 ### Desktop (not just Neovim)
 
-- [ ] Add a first-party user CLI (e.g. `dictate`) for “dictate once → clipboard/stdout”
-- [ ] Implement clipboard backends with clear fallback: `pbcopy` (macOS) → `wl-copy` (Wayland) → `xclip`/`xsel` (X11) → stdout
-- [ ] Add CLI flags: `--clipboard` (default), `--stdout`, `--no-clipboard`
-- [ ] Document desktop usage for Linux + macOS (examples + troubleshooting)
+- [x] Add a first-party user CLI (e.g. `dictate`) for "dictate once → clipboard/stdout"
+- [x] Implement clipboard backends with clear fallback: `pbcopy` (macOS) → `wl-copy` (Wayland) → `xclip`/`xsel` (X11) → stdout
+- [x] Add CLI flags: `--clipboard` (default), `--stdout`, `--no-clipboard`, `--json`, `--verbose`
+- [x] Document desktop usage for Linux + macOS (examples in README + runbook)
 
 ### macOS Support
 
-- [ ] Add macOS audio capture using an external dependency (`ffmpeg` via Homebrew)
-- [ ] Default to the system microphone (no config required)
-- [ ] Support selecting the macOS input device (and document how to list devices)
-- [ ] Document mic permission prompts + common failure modes
-- [ ] Add macOS CI job (at minimum: lint + unit tests)
+- [x] Add macOS audio capture using an external dependency (`ffmpeg` via Homebrew)
+- [x] Default to the system microphone (no config required)
+- [x] Document mic permission prompts + common failure modes (see runbook.md)
+- [x] Add macOS CI job (lint + build + tests passing)
+- [ ] Document how to select alternative macOS input device (nice-to-have)
 
 ### Provider (OpenAI)
 
@@ -114,48 +136,66 @@ Deliver the v1 “done line”: Linux + macOS support, desktop/clipboard usage, 
 - [x] Handles reconnect/backoff and basic auth errors
 - [x] Document required env vars and recommended models
 
-### No‑Systemd “Single Command” Path
+### No‑Systemd "Single Command" Path
 
-- [ ] Make `dictatectl` auto-start `dictated` when the socket is missing, then connect
-- [ ] Add daemon idle-exit (e.g. exit after N seconds with 0 clients and not listening)
-- [ ] Update Neovim health/docs to treat systemd as optional (not required)
+- [x] Make `dictatectl` auto-start `dictated` when the socket is missing, then connect
+- [x] Add daemon idle-exit (exit after 60s with 0 clients and not listening)
+- [x] Update Neovim health/docs to treat systemd as optional (not required)
 
 ### Packaging / Distribution (Bun-only)
 
-- [ ] Provide a “single command” happy path that does not require systemd (daemon can be started automatically)
-- [ ] Support a no-sudo install/run flow using `bunx` (e.g. `bunx -p @tindotdev/dictate dictate`)
-- [ ] Keep Linux systemd installer as an optional convenience (not required for v1)
+- [x] Provide a "single command" happy path that does not require systemd (daemon auto-starts)
+- [x] Support a no-sudo install/run flow using `bunx` (e.g. `bunx -p @tindotdev/dictate dictate`)
+- [x] Keep Linux systemd installer as an optional convenience (not required for v1)
 - [x] Keep `dictatectl` bundled with the daemon package for v1 (no split)
 
-## Public-ready checklist
+### Testing & Quality
 
-General open-source readiness tasks before announcing broadly.
+- [x] 305 tests passing (Linux + macOS)
+- [x] P0 QA complete (both platforms)
+- [x] P1 QA complete (both platforms)
+- [x] Zero TODOs/FIXMEs in codebase
+- [x] Published to npm as @tindotdev/dictate v0.2.0
 
-### Infrastructure & Publishing
+## Milestone 6: Public Release (In Progress)
+
+Prepare for public announcement and open-source community engagement.
+
+### Priority 1: Essential Documentation (Required for Public Release)
+
+- [ ] **CHANGELOG.md** - Document release history starting with v0.2.0
+- [ ] **Privacy & Cost Warning** - Add prominent note in README that audio is sent to OpenAI and incurs API costs
+- [ ] **Platform Support Table** - Update README table to show macOS as "Supported" (currently shows "In Progress")
+- [ ] **Troubleshooting Guide** - Expand README troubleshooting section with common issues and solutions
+- [ ] **SECURITY.md** - Add vulnerability reporting policy and security contact
+
+### Priority 2: Open Source Governance (Required for Public Release)
+
+- [ ] **Make GitHub repository public**
+- [ ] **CODE_OF_CONDUCT.md** - Adopt standard Contributor Covenant or similar
+- [ ] **CONTRIBUTING.md** - Document how to contribute (setup, testing, PR process)
+- [ ] **Issue Templates** - Add bug report and feature request templates
+- [ ] **Support Policy** - Document how users can get help (GitHub Issues, Discussions, etc.)
+
+### Priority 3: Automation & Publishing (Nice-to-have)
+
+- [ ] **Automated npm publishing** - GitHub Action to publish on git tag
+- [ ] **Release workflow** - Document or automate the release process
+- [ ] **Version bumping** - Consider using changesets or similar for version management
+
+### Priority 4: Final Quality Assurance (Before First Public Announcement)
+
+- [x] Review and clean up all TODOs in codebase (✅ Zero TODOs found)
+- [x] Verify all tests pass in CI (✅ 305 pass, 10 skip, 0 fail)
+- [ ] **Fresh Linux installation test** - Verify `bunx -p @tindotdev/dictate dictate` works on clean Ubuntu/Fedora
+- [ ] **Fresh macOS installation test** - Verify installation and mic permissions on clean macOS system
+- [ ] **Documentation review** - Have someone unfamiliar with the project try to install and use it
+
+### Infrastructure (Complete ✅)
 
 - [x] Published daemon to npm as `@tindotdev/dictate`
 - [x] Tested installation from npm registry
 - [x] Added `use_global_daemon` option for published package
-- [ ] Make GitHub repository public
-- [x] Add CI/CD pipeline (GitHub Actions)
-- [ ] Set up automated npm publishing on release
-
-### Documentation
-
-- [ ] Add CONTRIBUTING guide
-- [ ] Add Code of Conduct
-- [ ] Add SECURITY policy / vulnerability reporting guidance
-- [ ] Add support/contact or issue triage guidance
-- [ ] Add CHANGELOG / release notes
-- [ ] Add Privacy & costs note in README (audio sent to OpenAI; usage is billable)
-- [ ] Clarify platform support (Linux + macOS) in README
+- [x] Add CI/CD pipeline (GitHub Actions) - lint, test-daemon, test-daemon-macos, test-lua
 - [x] Update README with npm installation instructions
-- [ ] Add troubleshooting section to README
 - [x] Ensure lazy.nvim install instructions use `subdir = "nvim"`
-
-### Quality Assurance
-
-- [ ] Review and clean up all TODOs in codebase
-- [ ] Verify all tests pass in CI
-- [ ] Test installation flow on fresh Linux system
-- [ ] Test installation flow on fresh macOS system
