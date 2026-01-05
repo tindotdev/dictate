@@ -52,7 +52,7 @@ describe("Linux pw-cat backend", () => {
 			// On Linux: null if pw-cat available, error message if not
 			if (error !== null) {
 				expect(error).toContain("pw-cat not found");
-				expect(error).toContain("pipewire-pulse");
+				expect(error).toContain("pipewire");
 			}
 		},
 	);
