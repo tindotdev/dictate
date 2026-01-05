@@ -2,6 +2,17 @@
 
 Real-time speech-to-text dictation for Neovim and desktop using OpenAI's Realtime transcription API.
 
+## ⚠️ Privacy & Costs
+
+**Important:** This tool sends your audio to OpenAI's servers for transcription.
+
+- **Audio is transmitted** to OpenAI's Realtime API in real-time
+- **Usage is billable** - You will incur OpenAI API costs based on your usage
+- Review [OpenAI's pricing](https://openai.com/api/pricing/) for Realtime API costs
+- Review [OpenAI's privacy policy](https://openai.com/policies/privacy-policy/) for data handling
+
+Only use this tool with audio content you're comfortable sending to OpenAI.
+
 ## Quick Start (bunx)
 
 The fastest way to try dictate without installing:
@@ -48,7 +59,7 @@ Speak into your microphone, press Ctrl+C when done, and the transcript is copied
 |----------|-------------|---------------|
 | Linux (Wayland) | Supported | Supported |
 | Linux (X11) | Supported | Supported |
-| macOS | In Progress | In Progress |
+| macOS | Supported | Supported |
 
 ## Backend Support
 
@@ -226,6 +237,114 @@ dictate.is_ws_ok()     -- Returns true if WebSocket is connected
 - `:DictateToggle` - Toggle dictation on/off
 - `:DictateStart` - Start dictation
 - `:DictateStop` - Stop dictation
+
+## Troubleshooting
+
+### Common Issues
+
+#### "No audio capture" or microphone not working
+
+**Linux:**
+```bash
+# Check if PipeWire is running
+pw-cat --version
+
+# Test audio capture directly
+pw-cat --record --rate=24000 --channels=1 --format=s16 - | head -c 1000
+
+# List available audio devices
+pw-cli list-objects | grep -i node
+```
+
+**macOS:**
+```bash
+# Check if ffmpeg is installed
+ffmpeg -version
+
+# List available audio devices
+ffmpeg -f avfoundation -list_devices true -i ""
+
+# Test audio capture (5 seconds)
+ffmpeg -f avfoundation -i ":0" -t 5 test.wav
+
+# Grant microphone permission in System Preferences > Privacy & Security > Microphone
+```
+
+#### "Clipboard unavailable" warnings
+
+**Linux Wayland:**
+```bash
+# Install wl-clipboard
+sudo dnf install wl-clipboard    # Fedora
+sudo apt install wl-clipboard    # Ubuntu/Debian
+
+# Test clipboard
+echo "test" | wl-copy && wl-paste
+```
+
+**Linux X11:**
+```bash
+# Install xclip or xsel
+sudo dnf install xclip           # Fedora
+sudo apt install xclip           # Ubuntu/Debian
+
+# Test clipboard
+echo "test" | xclip -selection clipboard && xclip -o -selection clipboard
+```
+
+**Fallback:** If no clipboard tool is available, use `--stdout --no-clipboard` to print transcript to stdout.
+
+#### Daemon won't start or "Connection refused"
+
+```bash
+# Check if daemon is running
+ps aux | grep dictated
+
+# Check for stale socket (Linux)
+ls -la $XDG_RUNTIME_DIR/dictate/
+
+# Check for stale socket (macOS)
+ls -la ~/.local/state/dictate/
+
+# Remove stale socket and restart
+rm $XDG_RUNTIME_DIR/dictate/dictate.sock  # Linux
+rm ~/.local/state/dictate/dictate.sock    # macOS
+
+# Kill any orphaned daemon
+pkill -f dictated
+```
+
+#### Neovim: "dictatectl not found"
+
+```bash
+# Check if daemon is installed globally
+which dictatectl
+
+# If using local build, ensure it's built
+cd daemon && bun run build
+
+# Use :checkhealth to diagnose
+:checkhealth dictate
+```
+
+#### API errors or "Authentication failed"
+
+```bash
+# Verify API key is set
+echo $OPENAI_API_KEY
+
+# Check API key validity at https://platform.openai.com/api-keys
+
+# Enable debug logging
+DEBUG=1 dictate --verbose
+```
+
+### Getting Help
+
+- Check `:checkhealth dictate` in Neovim for detailed diagnostics
+- See [runbook.md](docs/runbook.md) for detailed testing commands
+- Enable debug mode: `DEBUG=1` environment variable
+- [Report issues](https://github.com/tindotdev/dictate/issues) on GitHub
 
 ## Development
 
