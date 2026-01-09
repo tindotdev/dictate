@@ -142,7 +142,7 @@ export const DictatectlMessageSchema = z.discriminatedUnion("type", [
 	}),
 	z.object({
 		type: z.literal("error"),
-		code: z.literal("DAEMON_UNAVAILABLE"),
+		code: z.enum(["DAEMON_UNAVAILABLE", "CONFIG_ERROR"]),
 		message: z.string(),
 		recoverable: z.literal(false),
 		hint: z.string(),

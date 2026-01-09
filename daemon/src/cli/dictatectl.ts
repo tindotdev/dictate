@@ -41,6 +41,16 @@ function emitDaemonUnavailable(hint?: string): void {
 	});
 }
 
+function emitConfigError(message: string, hint?: string): void {
+	emit({
+		type: "error",
+		code: "CONFIG_ERROR",
+		message,
+		recoverable: false,
+		hint: hint ?? "Check your OPENAI_API_KEY environment variable",
+	});
+}
+
 // ============================================================================
 // Connection handling
 // ============================================================================
@@ -71,7 +81,12 @@ class DictatectlBridge {
 		// Ensure daemon is running (auto-start if needed)
 		const result = await ensureDaemonRunning({ socketPath: this.socketPath });
 		if (!result.success) {
-			emitDaemonUnavailable(result.hint ?? result.error);
+			// Use the appropriate error emitter based on error code
+			if (result.code === "CONFIG_ERROR") {
+				emitConfigError(result.error ?? "Configuration error", result.hint);
+			} else {
+				emitDaemonUnavailable(result.hint ?? result.error);
+			}
 			process.exit(1);
 		}
 

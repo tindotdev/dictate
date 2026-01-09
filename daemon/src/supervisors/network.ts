@@ -15,6 +15,8 @@ import type { Config } from "../config.js";
 const REALTIME_URL = "wss://api.openai.com/v1/realtime";
 // Realtime model for the WebSocket session (transcription model is set separately in session.update)
 const REALTIME_MODEL = "gpt-4o-realtime-preview";
+// Default connection timeout before emitting timeout error
+const DEFAULT_CONNECT_TIMEOUT_MS = 10000;
 
 // ============================================================================
 // Supervisor Types
@@ -64,6 +66,8 @@ export interface NetworkSupervisorOptions {
 	backoff?: Partial<BackoffConfig>;
 	/** Override WebSocket URL for testing */
 	wsUrl?: string;
+	/** Connection timeout in milliseconds (default: 10000) */
+	connectTimeoutMs?: number;
 }
 
 // ============================================================================
@@ -76,14 +80,18 @@ export class NetworkSupervisor extends EventEmitter {
 	private intentionalDisconnect = false;
 	private backoffState: BackoffState;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private connectTimer: ReturnType<typeof setTimeout> | null = null;
 	private config: Config;
 	private wsUrl: string;
+	private connectTimeoutMs: number;
 
 	constructor(options: NetworkSupervisorOptions) {
 		super();
 		this.config = options.config;
 		this.backoffState = createBackoffState(options.backoff);
 		this.wsUrl = options.wsUrl ?? `${REALTIME_URL}?model=${REALTIME_MODEL}`;
+		this.connectTimeoutMs =
+			options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 	}
 
 	private setState(newState: NetworkSupervisorState): void {
@@ -121,6 +129,7 @@ export class NetworkSupervisor extends EventEmitter {
 	disconnect(): void {
 		this.intentionalDisconnect = true;
 		this.cancelReconnect();
+		this.clearConnectTimer();
 		this.closeWebSocket();
 		resetBackoff(this.backoffState);
 
@@ -152,6 +161,20 @@ export class NetworkSupervisor extends EventEmitter {
 	private doConnect(): void {
 		this.setState("connecting");
 
+		// Set connection timeout
+		this.connectTimer = setTimeout(() => {
+			if (this.state === "connecting") {
+				this.emit(
+					"error",
+					new Error(
+						"Connection timed out while connecting to OpenAI Realtime API. Check your network and OPENAI_API_KEY.",
+					),
+				);
+				this.closeWebSocket();
+				this.handleClose(-1, "Connection timeout");
+			}
+		}, this.connectTimeoutMs);
+
 		try {
 			// Bun native WebSocket supports custom headers as a Bun-specific extension
 			this.ws = new WebSocket(this.wsUrl, {
@@ -161,12 +184,14 @@ export class NetworkSupervisor extends EventEmitter {
 				},
 			});
 		} catch (err) {
+			this.clearConnectTimer();
 			this.emit("error", err as Error);
 			this.handleClose(-1, "Connection failed");
 			return;
 		}
 
 		this.ws.addEventListener("open", () => {
+			this.clearConnectTimer();
 			this.setState("connected");
 			resetBackoff(this.backoffState);
 			this.sendSessionUpdate();
@@ -313,6 +338,13 @@ export class NetworkSupervisor extends EventEmitter {
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
+		}
+	}
+
+	private clearConnectTimer(): void {
+		if (this.connectTimer) {
+			clearTimeout(this.connectTimer);
+			this.connectTimer = null;
 		}
 	}
 }

@@ -378,4 +378,88 @@ describe("NetworkSupervisor", () => {
 			expect(supervisor).toBeInstanceOf(NetworkSupervisor);
 		});
 	});
+
+	describe("connection timeout", () => {
+		it("emits timeout error when connection takes too long", async () => {
+			// Use a non-routable IP to simulate connection hang
+			// 192.0.2.1 is reserved for documentation and won't route
+			const supervisor = createNetworkSupervisor({
+				config: mockConfig,
+				wsUrl: "ws://192.0.2.1:9999",
+				backoff: { maxRetries: 0, baseDelayMs: 10, jitterFactor: 0 },
+				connectTimeoutMs: 100, // Short timeout for test
+			});
+			supervisors.push(supervisor);
+
+			const errorHandler = mock((_err: Error) => {});
+			const failedHandler = mock((_err: Error) => {});
+			supervisor.on("error", errorHandler);
+			supervisor.on("failed", failedHandler);
+
+			supervisor.connect();
+
+			// Wait for timeout + some buffer
+			await new Promise((r) => setTimeout(r, 300));
+
+			expect(errorHandler).toHaveBeenCalled();
+			// Check that the error message mentions timeout
+			const errorCall = errorHandler.mock.calls[0];
+			expect(errorCall).toBeDefined();
+			expect((errorCall[0] as Error).message).toContain("timed out");
+		});
+
+		it("clears timeout on successful connection", async () => {
+			const port = 9120;
+			wss = await createTestServer(port);
+			const supervisor = createNetworkSupervisor({
+				config: mockConfig,
+				wsUrl: `ws://localhost:${port}`,
+				backoff: { maxRetries: 3, baseDelayMs: 10, jitterFactor: 0 },
+				connectTimeoutMs: 5000, // Long timeout
+			});
+			supervisors.push(supervisor);
+
+			const connectedHandler = mock(() => {});
+			const errorHandler = mock((_err: Error) => {});
+			supervisor.on("connected", connectedHandler);
+			supervisor.on("error", errorHandler);
+
+			supervisor.connect();
+
+			// Wait for connection
+			await new Promise((r) => setTimeout(r, 200));
+
+			expect(connectedHandler).toHaveBeenCalled();
+			expect(supervisor.isConnected()).toBe(true);
+			// No timeout error should have been emitted
+			expect(errorHandler).not.toHaveBeenCalled();
+		});
+
+		it("clears timeout on disconnect", async () => {
+			// Use non-routable IP so connection hangs
+			const supervisor = createNetworkSupervisor({
+				config: mockConfig,
+				wsUrl: "ws://192.0.2.1:9999",
+				backoff: { maxRetries: 0, baseDelayMs: 10, jitterFactor: 0 },
+				connectTimeoutMs: 500,
+			});
+			supervisors.push(supervisor);
+
+			const errorHandler = mock((_err: Error) => {});
+			supervisor.on("error", errorHandler);
+
+			supervisor.connect();
+
+			// Disconnect before timeout
+			await new Promise((r) => setTimeout(r, 50));
+			supervisor.disconnect();
+
+			// Wait past the original timeout
+			await new Promise((r) => setTimeout(r, 600));
+
+			// No timeout error should have been emitted
+			expect(errorHandler).not.toHaveBeenCalled();
+			expect(supervisor.getState()).toBe("disconnected");
+		});
+	});
 });

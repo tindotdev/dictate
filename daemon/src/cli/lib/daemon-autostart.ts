@@ -20,6 +20,8 @@ export interface AutostartResult {
 	success: boolean;
 	error?: string;
 	hint?: string;
+	/** Error code for structured error handling (e.g., CONFIG_ERROR, DAEMON_UNAVAILABLE) */
+	code?: "CONFIG_ERROR" | "DAEMON_UNAVAILABLE";
 }
 
 // ============================================================================
@@ -28,6 +30,7 @@ export interface AutostartResult {
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 100;
+const MAX_STDERR_BYTES = 4096;
 
 // ============================================================================
 // Daemon discovery
@@ -116,7 +119,7 @@ export async function isDaemonRunning(socketPath?: string): Promise<boolean> {
 /**
  * Wait for socket file to appear with polling.
  */
-async function waitForSocket(
+async function _waitForSocket(
 	socketPath: string,
 	timeoutMs: number,
 ): Promise<boolean> {
@@ -137,8 +140,60 @@ async function waitForSocket(
 // ============================================================================
 
 /**
+ * Parse daemon stderr to extract structured error information.
+ * Maps known patterns to error codes.
+ */
+function parseStderr(stderr: string): {
+	code?: "CONFIG_ERROR" | "DAEMON_UNAVAILABLE";
+	error: string;
+	hint?: string;
+} {
+	const trimmed = stderr.trim();
+
+	// CONFIG_ERROR: pattern from daemon/src/main.ts
+	if (trimmed.includes("CONFIG_ERROR:")) {
+		const match = trimmed.match(/CONFIG_ERROR:\s*(.+)/);
+		const message = match?.[1] ?? trimmed;
+		return {
+			code: "CONFIG_ERROR",
+			error: message,
+			hint: "Check your OPENAI_API_KEY environment variable",
+		};
+	}
+
+	// Configuration error from Zod validation
+	if (trimmed.includes("Configuration error:")) {
+		const match = trimmed.match(/Configuration error:\s*(.+)/);
+		const message = match?.[1] ?? trimmed;
+		return {
+			code: "CONFIG_ERROR",
+			error: message,
+			hint: "Check your OPENAI_API_KEY environment variable",
+		};
+	}
+
+	// bun: command not found
+	if (
+		trimmed.includes("bun: command not found") ||
+		trimmed.includes("bun: not found")
+	) {
+		return {
+			code: "DAEMON_UNAVAILABLE",
+			error: "bun runtime not found",
+			hint: "Install bun: curl -fsSL https://bun.sh/install | bash",
+		};
+	}
+
+	// Generic stderr - return as-is
+	return {
+		error: trimmed || "Unknown startup error",
+	};
+}
+
+/**
  * Spawn the daemon in background and wait for socket to appear.
  * Returns success/failure with actionable hints.
+ * Captures stderr during startup to surface configuration errors.
  */
 export async function autoStartDaemon(
 	options: AutostartOptions = {},
@@ -167,29 +222,90 @@ export async function autoStartDaemon(
 	const { command, args } = buildDaemonCommand(daemonPath);
 
 	try {
-		// Spawn daemon in background (detached, no stdio)
+		// Spawn daemon with stderr captured for error diagnostics
+		// We capture stderr during the startup window to surface config errors
 		const proc = Bun.spawn([command, ...args], {
-			stdio: ["ignore", "ignore", "ignore"],
-			// Note: Bun doesn't have 'detached' like Node, but the process
-			// will continue running after parent exits
+			stdio: ["ignore", "ignore", "pipe"], // Capture stderr only
 		});
 
-		// Don't wait for process to exit - it's a daemon
-		// Just unref it so it doesn't block our exit
+		// Collect stderr in background (capped to prevent memory issues)
+		let stderrText = "";
+		let daemonExited = false;
+		let exitCode: number | null = null;
+
+		// Read stderr asynchronously
+		const stderrReader = (async () => {
+			const reader = proc.stderr.getReader();
+			const decoder = new TextDecoder();
+			try {
+				while (stderrText.length < MAX_STDERR_BYTES) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					stderrText += decoder.decode(value, { stream: true });
+				}
+			} catch {
+				// Ignore read errors (process may have exited)
+			} finally {
+				reader.releaseLock();
+			}
+		})();
+
+		// Track process exit
+		proc.exited.then((code) => {
+			daemonExited = true;
+			exitCode = code;
+		});
+
+		// Don't block our exit on daemon
 		proc.unref();
 
-		// Wait for socket to appear
-		const socketAppeared = await waitForSocket(socketPath, timeoutMs);
+		// Wait for socket to appear, checking for early exit
+		const startTime = Date.now();
+		while (Date.now() - startTime < timeoutMs) {
+			// Check if daemon exited early (config error, crash, etc.)
+			if (daemonExited && exitCode !== 0) {
+				// Wait a bit for stderr to be fully read
+				await Promise.race([
+					stderrReader,
+					new Promise((r) => setTimeout(r, 100)),
+				]);
 
-		if (!socketAppeared) {
+				const parsed = parseStderr(stderrText);
+				return {
+					success: false,
+					code: parsed.code ?? "DAEMON_UNAVAILABLE",
+					error: parsed.error,
+					hint: parsed.hint,
+				};
+			}
+
+			if (await isDaemonRunning(socketPath)) {
+				return { success: true };
+			}
+
+			await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+		}
+
+		// Timeout: socket didn't appear
+		// Try to get any stderr that might explain why
+		await Promise.race([stderrReader, new Promise((r) => setTimeout(r, 50))]);
+
+		if (stderrText.trim()) {
+			const parsed = parseStderr(stderrText);
 			return {
 				success: false,
-				error: "Daemon started but socket did not appear",
-				hint: `Check daemon logs. Socket expected at: ${socketPath}`,
+				code: parsed.code ?? "DAEMON_UNAVAILABLE",
+				error: parsed.error || "Daemon started but socket did not appear",
+				hint: parsed.hint ?? `Socket expected at: ${socketPath}`,
 			};
 		}
 
-		return { success: true };
+		return {
+			success: false,
+			code: "DAEMON_UNAVAILABLE",
+			error: "Daemon started but socket did not appear",
+			hint: `Check daemon logs. Socket expected at: ${socketPath}`,
+		};
 	} catch (err) {
 		const errorMessage = (err as Error).message;
 
@@ -197,6 +313,7 @@ export async function autoStartDaemon(
 		if (errorMessage.includes("ENOENT") || errorMessage.includes("not found")) {
 			return {
 				success: false,
+				code: "DAEMON_UNAVAILABLE",
 				error: `Daemon executable not found: ${command}`,
 				hint: daemonPath
 					? `Check that ${daemonPath} exists`
@@ -206,6 +323,7 @@ export async function autoStartDaemon(
 
 		return {
 			success: false,
+			code: "DAEMON_UNAVAILABLE",
 			error: `Failed to start daemon: ${errorMessage}`,
 			hint: "Check that bun is installed and in PATH",
 		};

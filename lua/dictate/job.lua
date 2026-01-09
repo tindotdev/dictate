@@ -162,6 +162,38 @@ function M.handle_message(msg)
       -- Another client owns the session - reset our flag and show warning
       started_by_me = false
       notify.warn('Another Neovim instance is already dictating')
+    elseif msg.code == 'CONFIG_ERROR' then
+      -- Configuration error (e.g., missing OPENAI_API_KEY)
+      notify.error(
+        '[CONFIG_ERROR] '
+          .. (msg.message or 'Configuration error')
+          .. '\n  Run :checkhealth dictate for setup instructions'
+      )
+    elseif msg.code == 'AUTH_FAILED' then
+      -- Invalid or unauthorized API key
+      notify.error(
+        '[AUTH_FAILED] '
+          .. (msg.message or 'Invalid API key')
+          .. '\n  Get your API key at: https://platform.openai.com/api-keys'
+      )
+    elseif msg.code == 'DAEMON_UNAVAILABLE' then
+      -- Cannot connect to daemon
+      notify.error(
+        '[DAEMON_UNAVAILABLE] '
+          .. (msg.message or 'Cannot connect to daemon')
+          .. '\n  Run :checkhealth dictate for troubleshooting'
+      )
+    elseif msg.code == 'NETWORK_ERROR' then
+      -- Network/WebSocket error
+      local hint = msg.hint or 'Check your internet connection'
+      notify.error('[NETWORK_ERROR] ' .. (msg.message or 'Connection failed') .. '\n  ' .. hint)
+    elseif msg.code == 'AUDIO_UNAVAILABLE' then
+      -- Microphone/audio capture error
+      notify.error(
+        '[AUDIO_UNAVAILABLE] '
+          .. (msg.message or 'Audio capture failed')
+          .. '\n  Check that pw-cat is installed and microphone is accessible'
+      )
     else
       local hint = msg.hint and (' (' .. msg.hint .. ')') or ''
       notify.error('[' .. (msg.code or '?') .. '] ' .. (msg.message or 'unknown') .. hint)

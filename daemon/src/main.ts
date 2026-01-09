@@ -253,13 +253,27 @@ network.on("failed", (err: Error) => {
 
 network.on("error", (err: Error) => {
 	debug(`WebSocket error: ${err.message}`);
-	// Check for auth errors
-	if (err.message.includes("401") || err.message.includes("Unauthorized")) {
+	// Check for auth errors - match both HTTP status codes and Realtime API error types
+	if (
+		err.message.includes("401") ||
+		err.message.includes("Unauthorized") ||
+		err.message.startsWith("[unauthorized]") ||
+		err.message.startsWith("[authentication_error]") ||
+		err.message.startsWith("[invalid_api_key]")
+	) {
 		broadcastError(
 			"AUTH_FAILED",
-			"Invalid API key",
+			"Invalid or unauthorized API key",
 			false,
-			"Check your OPENAI_API_KEY",
+			"Check your OPENAI_API_KEY at https://platform.openai.com/api-keys",
+		);
+	} else if (err.message.includes("timed out")) {
+		// Connection timeout - could be network or auth issue
+		broadcastError(
+			"NETWORK_ERROR",
+			err.message,
+			true,
+			"Check your network connection and OPENAI_API_KEY",
 		);
 	} else {
 		broadcastError("NETWORK_ERROR", err.message, true);
