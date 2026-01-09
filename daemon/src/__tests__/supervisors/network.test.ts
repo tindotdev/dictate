@@ -11,9 +11,14 @@ import {
 const mockConfig: Config = {
 	apiKey: "test-key",
 	model: "gpt-4o-mini-transcribe",
+	language: "en",
+	prompt: "",
 	vadThreshold: 0.5,
 	vadPrefixPaddingMs: 300,
 	vadSilenceDurationMs: 500,
+	noiseReduction: null,
+	includeLogprobs: false,
+	debug: false,
 };
 
 describe("NetworkSupervisor", () => {
@@ -348,7 +353,7 @@ describe("NetworkSupervisor", () => {
 			await new Promise((r) => setTimeout(r, 50));
 
 			expect(receivedMessage).not.toBeNull();
-			expect((receivedMessage as { audio: string }).audio).toBe(
+			expect((receivedMessage as unknown as { audio: string }).audio).toBe(
 				"dGVzdCBhdWRpbw==",
 			);
 		});

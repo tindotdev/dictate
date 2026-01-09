@@ -119,10 +119,12 @@ export class SocketServer extends EventEmitter {
 		// Check for systemd socket activation
 		if (process.env.LISTEN_FDS === "1") {
 			// fd 3 is the socket passed by systemd
-			this.server = Bun.listen<ClientData>({
+			// Note: Bun's fd option for socket activation isn't exposed in TS types
+			// but works at runtime. Cast through unknown to bypass type checking.
+			this.server = Bun.listen({
 				fd: 3,
 				socket: this.createSocketHandlers(),
-			});
+			} as unknown as Parameters<typeof Bun.listen<ClientData>>[0]);
 			return;
 		}
 

@@ -177,12 +177,13 @@ export class NetworkSupervisor extends EventEmitter {
 
 		try {
 			// Bun native WebSocket supports custom headers as a Bun-specific extension
+			// Cast through unknown to bypass TypeScript's standard WebSocket types
 			this.ws = new WebSocket(this.wsUrl, {
 				headers: {
 					Authorization: `Bearer ${this.config.apiKey}`,
 					"OpenAI-Beta": "realtime=v1",
 				},
-			});
+			} as unknown as string[]);
 		} catch (err) {
 			this.clearConnectTimer();
 			this.emit("error", err as Error);

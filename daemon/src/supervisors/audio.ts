@@ -186,10 +186,11 @@ export class AudioSupervisor extends EventEmitter {
 	}
 
 	private async readStdout(): Promise<void> {
-		if (!this.process?.stdout) return;
+		const stdout = this.process?.stdout;
+		if (!stdout || typeof stdout === "number") return;
 
 		try {
-			this.stdoutReader = this.process.stdout.getReader();
+			this.stdoutReader = stdout.getReader();
 
 			while (true) {
 				const { done, value } = await this.stdoutReader.read();

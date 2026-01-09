@@ -386,13 +386,13 @@ describe("DaemonStateMachine", () => {
 				{ type: "FINAL_TRANSCRIPT_RECEIVED" },
 			];
 
-			const expectedStates: string[] = [
+			const expectedStates = [
 				"audio_starting",
 				"audio_starting", // waiting for ws
 				"listening",
 				"flushing",
 				"idle",
-			];
+			] as const;
 
 			transitions.forEach((event, i) => {
 				sm.transition(event);

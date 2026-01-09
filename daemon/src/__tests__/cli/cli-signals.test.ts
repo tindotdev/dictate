@@ -69,7 +69,8 @@ async function createMockDaemon(): Promise<MockDaemon> {
 							socket.write(
 								`${JSON.stringify({
 									type: "initialized",
-									version: "0.2.0",
+									client_id: "test_client_1",
+									daemon_version: "0.2.0",
 								} satisfies DaemonMessage)}\n`,
 							);
 						}

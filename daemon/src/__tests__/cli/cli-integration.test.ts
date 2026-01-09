@@ -57,7 +57,8 @@ async function createMockDaemon(): Promise<MockDaemon> {
 							socket.write(
 								`${JSON.stringify({
 									type: "initialized",
-									version: "0.2.0",
+									client_id: "test_client_1",
+									daemon_version: "0.2.0",
 								} satisfies DaemonMessage)}\n`,
 							);
 						}
@@ -374,7 +375,7 @@ describe("CLI Integration with Mock Daemon", () => {
 			daemon.sendSequence([
 				{ type: "status", state: "listening", audio_ok: true, ws_ok: true },
 				{ type: "speech_started", item_id: "item_1" },
-				{ type: "speech_stopped" },
+				{ type: "speech_stopped", item_id: "item_1" },
 				{ type: "status", state: "idle", audio_ok: false, ws_ok: false },
 			]);
 
@@ -498,7 +499,7 @@ describe("CLI Integration with Mock Daemon", () => {
 
 			daemon.sendToAll({
 				type: "error",
-				code: "FATAL_ERROR",
+				code: "INTERNAL_ERROR",
 				message: "Something went wrong",
 				recoverable: false,
 			});
@@ -521,7 +522,7 @@ describe("CLI Integration with Mock Daemon", () => {
 				{ type: "status", state: "listening", audio_ok: true, ws_ok: true },
 				{
 					type: "error",
-					code: "TRANSIENT_ERROR",
+					code: "NETWORK_ERROR",
 					message: "Temporary issue",
 					recoverable: true,
 				},

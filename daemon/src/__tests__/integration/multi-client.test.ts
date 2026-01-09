@@ -32,6 +32,10 @@ import type {
 	DaemonMessage,
 	DaemonState,
 } from "../../protocol.js";
+
+/** Helper type for status messages from daemon */
+type StatusMessage = Extract<DaemonMessage, { type: "status" }>;
+
 import { createSocketServer, type SocketServer } from "../../server.js";
 import {
 	createStateMachine,
@@ -98,9 +102,14 @@ interface TestDaemon {
 const mockConfig: Config = {
 	apiKey: "test-key",
 	model: "gpt-4o-mini-transcribe",
+	language: "en",
+	prompt: "",
 	vadThreshold: 0.5,
 	vadPrefixPaddingMs: 300,
 	vadSilenceDurationMs: 500,
+	noiseReduction: null,
+	includeLogprobs: false,
+	debug: false,
 };
 
 async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
@@ -217,8 +226,7 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 
 	server.on("client_message", (clientId, msg) => {
 		switch (msg.type) {
-			case "start_listening":
-			case "start": {
+			case "start_listening": {
 				// Check session ownership
 				if (sessionOwner !== null && sessionOwner !== clientId) {
 					// Reject: session already active
@@ -254,8 +262,7 @@ async function createTestDaemon(wsPort: number): Promise<TestDaemon> {
 				break;
 			}
 
-			case "stop_listening":
-			case "stop": {
+			case "stop_listening": {
 				// Only the session owner can stop listening
 				if (sessionOwner !== null && sessionOwner !== clientId) {
 					return; // Silently ignore non-owner stop
@@ -403,7 +410,9 @@ function createTestClient(socketPath: string): Promise<TestClient> {
 
 				waitForState(state, timeoutMs = 2000) {
 					return this.waitForMessage(
-						(msg) => msg.type === "status" && msg.state === state,
+						(msg) =>
+							msg.type === "status" &&
+							(msg as { type: "status"; state: DaemonState }).state === state,
 						timeoutMs,
 					);
 				},
@@ -500,12 +509,12 @@ describe("Multi-Client Integration", () => {
 			// Wait for initial status
 			const status1 = await client1.waitForState("idle");
 			expect(status1.type).toBe("status");
-			expect(status1.state).toBe("idle");
+			expect((status1 as StatusMessage).state).toBe("idle");
 
 			const client2 = await connectClient();
 			const status2 = await client2.waitForState("idle");
 			expect(status2.type).toBe("status");
-			expect(status2.state).toBe("idle");
+			expect((status2 as StatusMessage).state).toBe("idle");
 		});
 
 		it("assigns unique client IDs", async () => {
@@ -575,13 +584,13 @@ describe("Multi-Client Integration", () => {
 				client2.waitForState("listening"),
 			]);
 
-			expect(listening1.state).toBe("listening");
-			expect(listening1.audio_ok).toBe(true);
-			expect(listening1.ws_ok).toBe(true);
+			expect((listening1 as StatusMessage).state).toBe("listening");
+			expect((listening1 as StatusMessage).audio_ok).toBe(true);
+			expect((listening1 as StatusMessage).ws_ok).toBe(true);
 
-			expect(listening2.state).toBe("listening");
-			expect(listening2.audio_ok).toBe(true);
-			expect(listening2.ws_ok).toBe(true);
+			expect((listening2 as StatusMessage).state).toBe("listening");
+			expect((listening2 as StatusMessage).audio_ok).toBe(true);
+			expect((listening2 as StatusMessage).ws_ok).toBe(true);
 		});
 
 		it("sends transcription events only to session owner", async () => {
@@ -768,7 +777,7 @@ describe("Multi-Client Integration", () => {
 			const client2 = await connectClient();
 			const status = await client2.waitForState("idle");
 
-			expect(status.state).toBe("idle");
+			expect((status as StatusMessage).state).toBe("idle");
 			expect(daemon.server.getClientCount()).toBe(1);
 		});
 
@@ -932,7 +941,9 @@ describe("Multi-Client Integration", () => {
 				2000,
 			);
 			expect(status.type).toBe("status");
-			expect(["idle", "audio_starting", "listening"]).toContain(status.state);
+			expect(["idle", "audio_starting", "listening"]).toContain(
+				(status as StatusMessage).state,
+			);
 		});
 
 		it("sends correct audio_ok and ws_ok flags", async () => {
@@ -940,15 +951,15 @@ describe("Multi-Client Integration", () => {
 			const initialStatus = await client1.waitForState("idle");
 
 			// Initially both should be false
-			expect(initialStatus.audio_ok).toBe(false);
-			expect(initialStatus.ws_ok).toBe(false);
+			expect((initialStatus as StatusMessage).audio_ok).toBe(false);
+			expect((initialStatus as StatusMessage).ws_ok).toBe(false);
 
 			client1.send({ type: "start_listening" });
 
 			// Wait for listening state
 			const listeningStatus = await client1.waitForState("listening", 2000);
-			expect(listeningStatus.audio_ok).toBe(true);
-			expect(listeningStatus.ws_ok).toBe(true);
+			expect((listeningStatus as StatusMessage).audio_ok).toBe(true);
+			expect((listeningStatus as StatusMessage).ws_ok).toBe(true);
 		});
 	});
 
