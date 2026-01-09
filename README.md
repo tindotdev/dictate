@@ -113,14 +113,9 @@ Add to lazy.nvim config:
 ```lua
 {
   "tindotdev/dictate",
-  subdir = "nvim",
   keys = {
     { "<Leader>ad", "<Cmd>DictateToggle<CR>", desc = "AI Dictate" },
   },
-  cmd = { "DictateToggle", "DictateStart", "DictateStop" },
-  config = function()
-    require("dictate").setup()
-  end,
 }
 ```
 
@@ -148,13 +143,9 @@ Configure lazy.nvim:
 ```lua
 {
   dir = "~/path/to/dictate",
-  subdir = "nvim",
   keys = {
     { "<Leader>ad", "<Cmd>DictateToggle<CR>", desc = "AI Dictate" },
   },
-  config = function()
-    require("dictate").setup()
-  end,
 }
 ```
 
