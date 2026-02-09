@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Launcher script for dictate with global keyboard shortcuts
+# GROQ_API_KEY should be configured via: just add-secret
+
+# Ensure ~/.cargo/bin is in PATH
+export PATH="$HOME/.cargo/bin:$PATH"
+
+exec foot -T "dictate" -- dictate "$@"

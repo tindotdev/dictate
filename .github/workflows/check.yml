@@ -6,76 +6,22 @@ on:
     branches: [main]
 
 jobs:
-  lint:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Install Lua tools
-        run: |
-          cargo install stylua selene --locked
-
-      - name: Check daemon (biome)
-        run: bun run check:daemon
-
-      - name: Check nvim (selene + stylua)
-        run: bun run check:nvim
-
-  test-daemon:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Build daemon
-        run: cd daemon && bun run build
-
-      - name: Run daemon tests with coverage
-        run: cd daemon && bun test --coverage
-
-  test-daemon-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Check daemon (biome)
-        run: bun run check:daemon
-
-      - name: Build daemon
-        run: cd daemon && bun run build
-
-      - name: Run daemon tests
-        run: cd daemon && bun test
-
-  test-lua:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Neovim
-        uses: rhysd/action-setup-vim@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          neovim: true
-          version: stable
+          components: rustfmt, clippy
 
-      - name: Install plenary.nvim
-        run: |
-          git clone --depth 1 https://github.com/nvim-lua/plenary.nvim ~/.local/share/nvim/site/pack/vendor/start/plenary.nvim
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Run Lua tests
-        run: |
-          nvim --headless -c "lua require('plenary.test_harness').test_directory('tests', {minimal_init = 'tests/minimal_init.lua'})" -c "qa!"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace

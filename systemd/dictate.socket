@@ -1,9 +1,0 @@
-[Unit]
-Description=Dictate Daemon Socket
-
-[Socket]
-ListenStream=%t/dictate/dictate.sock
-SocketMode=0600
-
-[Install]
-WantedBy=sockets.target

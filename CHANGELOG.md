@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-02-09
+
+Complete rewrite from TypeScript/Bun to Rust.
+
+### Added
+
+- **Rust CLI** — one-shot `dictate` command: record → transcribe → clipboard
+- **Groq Whisper transcription** — replaces OpenAI Realtime API with Groq's OpenAI-compatible Whisper endpoint
+- **Native audio capture** — cpal-based recording with real-time resampling to 16kHz mono
+- **Progressive chunking** — overlapping chunks for long recordings with accurate transcription
+- **Explicit clipboard behavior** — Wayland-first (`wl-copy`), X11 fallback (`xclip`/`xsel`), never silently loses text
+- **Actionable error messages** — permission-denied errors include troubleshooting steps for PipeWire/ALSA
+- **Device selection** — `dictate devices` to list inputs, `--device <query>` to select
+- **Timestamp support** — `--timestamps word,segment` with `--format verbose_json`
+- **Model selection** — `--model whisper-large-v3-turbo` (default) or `--model whisper-large-v3`
+
+### Removed
+
+- **TypeScript daemon** — `daemon/` directory and all Bun-based code
+- **Lua/Neovim plugin** — `lua/`, `plugin/`, `tests/` (will be rewritten for v1.2)
+- **Legacy config files** — `package.json`, `lefthook.yml`, `renovate.json`, `selene.toml`, `stylua.toml`
+- **Legacy CI jobs** — Biome, Selene, Stylua, Bun test jobs removed; only Rust CI remains
+- **OpenAI Realtime API** — replaced by Groq Whisper
+
+### Changed
+
+- **Version scheme** — `1.0.0` marks the Rust rewrite as a stable major release (follows `0.1.0` → `0.2.0` → `0.3.0` TypeScript lineage)
+- **CI pipeline** — simplified to single Rust job (`cargo fmt`, `cargo clippy`, `cargo test`)
+- **README** — complete rewrite for Rust CLI usage
+- **CONTRIBUTING.md** — updated for Rust toolchain and `just` commands
+
+### Platform Support
+
+- Linux (Wayland + X11) — full support
+- macOS — not yet supported (planned)
+
 ## [0.2.0] - 2026-01-04
 
 First public release candidate with full Linux and macOS support.
@@ -86,7 +122,9 @@ Initial development releases (not publicly announced).
 
 ## Release Links
 
+- [1.0.0](https://github.com/tindotdev/dictate/releases/tag/v1.0.0) - 2026-02-09
 - [0.2.0](https://github.com/tindotdev/dictate/releases/tag/v0.2.0) - 2026-01-04
 
+[1.0.0]: https://github.com/tindotdev/dictate/compare/v0.3.0...v1.0.0
 [0.2.0]: https://github.com/tindotdev/dictate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tindotdev/dictate/releases/tag/v0.1.0

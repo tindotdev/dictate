@@ -1,11 +1,7 @@
-# Dependencies
-node_modules/
-
-# Build output
-daemon/dist/
-
-# Bun
-bun.lockb
+# Rust
+/target/
+**/*.rs.bk
+**/mutants.out*/
 
 # Environment
 .env
@@ -27,11 +23,9 @@ coverage/
 # Logs
 *.log
 
-# Lefthook
-.lefthook-local.yml
-
-# Claude Code settings
+# AI
 .claude/
+.codex/
 
 # Backup directories
 .rewrite-backup/
