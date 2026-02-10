@@ -14,9 +14,7 @@ pub enum AudioError {
     #[error("Recording failed: {0}")]
     RecordingFailed(String),
 
-    #[error(
-        "Audio device permission denied: {reason}\n\nTroubleshooting:\n  • Check that PipeWire/PulseAudio is running: `systemctl --user status pipewire`\n  • Add your user to the audio group: `sudo usermod -aG audio $USER` (then log out and back in)\n  • Check if another application has exclusive access to the device\n  • Try a different device with `dictate devices` and `dictate --device <name>`"
-    )]
+    #[error("Audio device permission denied: {reason}")]
     DevicePermissionDenied { reason: String },
 
     #[error("Resampling error: {0}")]
@@ -50,7 +48,9 @@ impl AudioError {
     pub(crate) fn from_build_stream(err: &cpal::BuildStreamError) -> Self {
         let msg = err.to_string();
         if is_permission_error(&msg) {
-            return Self::DevicePermissionDenied { reason: msg };
+            return Self::DevicePermissionDenied {
+                reason: format!("{msg}\n\nTroubleshooting:\n{}", permission_denied_help()),
+            };
         }
         Self::RecordingFailed(msg)
     }
@@ -58,7 +58,9 @@ impl AudioError {
     pub(crate) fn from_play_stream(err: &cpal::PlayStreamError) -> Self {
         let msg = err.to_string();
         if is_permission_error(&msg) {
-            return Self::DevicePermissionDenied { reason: msg };
+            return Self::DevicePermissionDenied {
+                reason: format!("{msg}\n\nTroubleshooting:\n{}", permission_denied_help()),
+            };
         }
         Self::RecordingFailed(msg)
     }
@@ -68,10 +70,25 @@ impl AudioError {
     }
 }
 
+/// Platform-specific troubleshooting guidance for audio permission errors.
+const fn permission_denied_help() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "  • Open System Settings → Privacy & Security → Microphone\n  \
+         • Ensure your terminal app (Terminal, iTerm2, etc.) is listed and enabled\n  \
+         • Try a different device with `dictate devices` and `dictate --device <name>`"
+    } else {
+        "  • Check that PipeWire/PulseAudio is running: `systemctl --user status pipewire`\n  \
+         • Add your user to the audio group: `sudo usermod -aG audio $USER` (then log out and back in)\n  \
+         • Check if another application has exclusive access to the device\n  \
+         • Try a different device with `dictate devices` and `dictate --device <name>`"
+    }
+}
+
 /// Check if an error message indicates a permission or access issue.
 ///
-/// cpal wraps OS-specific errors (ALSA/PipeWire) into opaque strings.
-/// We heuristically match known patterns to surface actionable guidance.
+/// cpal wraps OS-specific errors (ALSA/PipeWire on Linux, `CoreAudio` on macOS)
+/// into opaque strings. We heuristically match known patterns to surface
+/// actionable guidance.
 fn is_permission_error(msg: &str) -> bool {
     let lower = msg.to_lowercase();
     lower.contains("permission")
@@ -79,6 +96,7 @@ fn is_permission_error(msg: &str) -> bool {
         || lower.contains("access")
         || lower.contains("eacces")
         || lower.contains("eperm")
+        || lower.contains("kaudiohardware")
 }
 
 // ─── Transcription Errors ────────────────────────────────────────────────────
