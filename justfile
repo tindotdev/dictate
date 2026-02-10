@@ -36,6 +36,7 @@ build-release:
 
 # Install dictate CLI to ~/.cargo/bin/
 install:
+    mkdir -p tmp/
     cargo install --path crates/dictate-cli
 
 # Uninstall dictate CLI from ~/.cargo/bin/
