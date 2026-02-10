@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-10
+
+### Added
+
+- **macOS support** — full cross-platform support for macOS alongside Linux
+  - Clipboard integration via `pbcopy` (built-in to macOS)
+  - Platform-specific audio permission error messages (CoreAudio vs ALSA/PipeWire)
+  - CoreAudio error detection for permission-denied scenarios
+  - macOS CI integration (clippy + tests on `macos-latest`)
+- **Platform-aware error handling** — `permission_denied_help()` returns macOS or Linux-specific troubleshooting guidance
+
+### Changed
+
+- **Platform support** — macOS upgraded from "not yet supported" to full support
+
 ## [1.0.0] - 2026-02-09
 
 Complete rewrite from TypeScript/Bun to Rust.
@@ -122,9 +137,11 @@ Initial development releases (not publicly announced).
 
 ## Release Links
 
+- [1.1.0](https://github.com/tindotdev/dictate/releases/tag/v1.1.0) - 2026-02-10
 - [1.0.0](https://github.com/tindotdev/dictate/releases/tag/v1.0.0) - 2026-02-09
 - [0.2.0](https://github.com/tindotdev/dictate/releases/tag/v0.2.0) - 2026-01-04
 
+[1.1.0]: https://github.com/tindotdev/dictate/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tindotdev/dictate/compare/v0.3.0...v1.0.0
 [0.2.0]: https://github.com/tindotdev/dictate/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/tindotdev/dictate/releases/tag/v0.1.0
