@@ -39,6 +39,11 @@ tabled = "0.20.0"
 # Internal workspace crates
 dictate-core = { path = "crates/dictate-core" }
 
+# The profile that 'cargo dist' will build with.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [workspace.lints.clippy]
 # Lint groups (priority -1 so individual overrides take effect).
 all = { level = "deny", priority = -1 }
