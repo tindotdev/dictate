@@ -36,10 +36,10 @@ pub enum Commands {
     /// Record audio until Ctrl+C
     Record(RecordArgs),
 
-    /// Add or update a dictionary entry interactively
+    /// Add custom terms to dictionary (improves accuracy for technical terms, names, jargon)
     Remember,
 
-    /// Print the current dictionary
+    /// List dictionary entries
     #[command(alias = "dict")]
     Dictionary,
 }
