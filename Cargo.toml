@@ -43,7 +43,7 @@ tabled = "0.20.0"
 tempfile = "3.25.0"
 
 # Internal workspace crates
-dictate-core = { path = "crates/dictate-core" }
+dictate-core = { path = "crates/dictate-core", version = "1.3.0" }
 
 # The profile that 'cargo dist' will build with.
 [profile.dist]

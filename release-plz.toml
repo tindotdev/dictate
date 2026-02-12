@@ -5,13 +5,22 @@ changelog_config = "cliff.toml"
 # PR settings
 pr_name = "chore: release v{{ version }}"
 
-# Don't publish to crates.io — dictate is a CLI, not a library.
-publish = false
+# Tag format — matches existing tags (v1.0.0, v1.1.0, etc.).
+# Default for multi-package workspaces is "{{ package }}-v{{ version }}".
+git_tag_name = "v{{ version }}"
 
-# Create a git tag when the Release PR is merged.
+# Not published to crates.io — use git tags for version detection.
+publish = false
+git_release_enable = true
 git_tag_enable = true
 
-# Only release the CLI package (the user-facing binary).
 # dictate-core is an internal library — no separate release.
 [[package]]
+name = "dictate-core"
+git_only = true
+release = false
+
+# Only release the CLI package (the user-facing binary).
+[[package]]
 name = "dictate-cli"
+git_only = true
