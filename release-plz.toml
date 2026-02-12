@@ -8,6 +8,7 @@ pr_name = "chore: release v{{ version }}"
 # Tag format — matches existing tags (v1.0.0, v1.1.0, etc.).
 # Default for multi-package workspaces is "{{ package }}-v{{ version }}".
 git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
 
 # Not published to crates.io — use git tags for version detection.
 publish = false
