@@ -1,0 +1,17 @@
+[workspace]
+# Generate changelog using Keep a Changelog format (matches existing CHANGELOG.md).
+changelog_config = "cliff.toml"
+
+# PR settings
+pr_name = "chore: release v{{ version }}"
+
+# Don't publish to crates.io — dictate is a CLI, not a library.
+publish = false
+
+# Create a git tag when the Release PR is merged.
+git_tag_enable = true
+
+# Only release the CLI package (the user-facing binary).
+# dictate-core is an internal library — no separate release.
+[[package]]
+name = "dictate-cli"
