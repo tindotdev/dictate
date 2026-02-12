@@ -2,11 +2,13 @@
 
 pub mod audio;
 pub mod clipboard;
+pub mod dictionary;
 pub mod encoder;
 pub mod error;
 pub mod pipeline;
 pub mod provider;
 pub mod resampler;
+pub mod token;
 
 pub use audio::{
     AudioChunk, AudioReceiver, AudioRecorder, ChunkerConfig, DeviceInfo, DeviceSelection,
@@ -14,6 +16,7 @@ pub use audio::{
     RecvResult, list_input_devices,
 };
 pub use clipboard::{ClipboardError, check_clipboard_available};
+pub use dictionary::{Dictionary, DictionaryError, DictionaryStore, PromptHint};
 pub use encoder::{AudioEncoder, EncodedAudio, WavEncoder};
 pub use error::{AudioError, TranscriptionError};
 pub use pipeline::{PipelineConfig, TranscriptionPipeline};

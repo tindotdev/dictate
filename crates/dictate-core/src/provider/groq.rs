@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
 use crate::error::TranscriptionError;
+use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -29,26 +30,6 @@ const BASE_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(16);
 /// Rate-limited responses (429) multiply the delay by this factor.
 const RATE_LIMIT_MULTIPLIER: u32 = 2;
-
-/// Maximum allowed tokens for the prompt parameter per Groq API specification.
-const MAX_PROMPT_TOKENS: usize = 224;
-
-// ─── Token Counting ──────────────────────────────────────────────────────────
-
-/// Estimate the number of tokens in a text string.
-///
-/// Uses a language-agnostic upper bound of one Unicode scalar value per token.
-/// This intentionally overestimates for many prompts, but avoids undercounting
-/// short-token languages (e.g. CJK/emoji) that can otherwise slip past
-/// validation and fail server-side.
-///
-/// # Note
-///
-/// This is a conservative estimate and may reject prompts that would still fit
-/// the true tokenizer limit.
-fn estimate_token_count(text: &str) -> usize {
-    text.chars().count()
-}
 
 /// Validate that a prompt does not exceed the maximum token limit.
 ///
@@ -305,33 +286,7 @@ mod tests {
     use crate::encoder::EncodedAudio;
     use crate::provider::TimestampGranularity;
 
-    // ──── Token Counting Tests ────────────────────────────────────────────
-
-    #[test]
-    fn token_estimate_short_text() {
-        // One character is counted as one token (conservative upper bound).
-        assert_eq!(estimate_token_count("Hello world"), 11);
-    }
-
-    #[test]
-    fn token_estimate_technical_terms() {
-        // Technical prompt from API spec example.
-        let prompt = "Technical terms: API, HTTP, JSON";
-        assert_eq!(estimate_token_count(prompt), prompt.chars().count());
-    }
-
-    #[test]
-    fn token_estimate_max_length() {
-        // ASCII stays one token per character in the conservative estimate.
-        let text = "a".repeat(224);
-        assert_eq!(estimate_token_count(&text), MAX_PROMPT_TOKENS);
-    }
-
-    #[test]
-    fn token_estimate_unicode() {
-        let text = "Hello 🌍 世界"; // 10 chars (including emoji and Chinese)
-        assert_eq!(estimate_token_count(text), text.chars().count());
-    }
+    // ──── Prompt Validation Tests ────────────────────────────────────────
 
     #[test]
     fn validate_prompt_within_limit() {

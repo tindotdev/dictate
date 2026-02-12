@@ -35,6 +35,13 @@ pub enum Commands {
 
     /// Record audio until Ctrl+C
     Record(RecordArgs),
+
+    /// Add or update a dictionary entry interactively
+    Remember,
+
+    /// Print the current dictionary
+    #[command(alias = "dict")]
+    Dictionary,
 }
 
 #[derive(Args)]
@@ -235,5 +242,25 @@ mod tests {
     fn top_level_stdout_and_no_clipboard_conflict() {
         let result = Cli::try_parse_from(["dictate", "--stdout", "--no-clipboard"]);
         assert!(result.is_err());
+    }
+
+    // --- Dictionary subcommand tests ---
+
+    #[test]
+    fn parse_remember_subcommand() {
+        let cli = Cli::parse_from(["dictate", "remember"]);
+        assert!(matches!(cli.command, Some(Commands::Remember)));
+    }
+
+    #[test]
+    fn parse_dictionary_subcommand() {
+        let cli = Cli::parse_from(["dictate", "dictionary"]);
+        assert!(matches!(cli.command, Some(Commands::Dictionary)));
+    }
+
+    #[test]
+    fn parse_dict_alias() {
+        let cli = Cli::parse_from(["dictate", "dict"]);
+        assert!(matches!(cli.command, Some(Commands::Dictionary)));
     }
 }

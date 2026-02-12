@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-12
+
+### Added
+
+- **Dictionary feature** — persistent dictionary for Whisper prompt injection to improve transcription accuracy
+  - Maps commonly mis-transcribed words to their preferred spellings
+  - Entries are automatically injected into Whisper's `prompt` parameter during transcription
+  - Token budget management ensures dictionary entries fit within Whisper's prompt limits
+  - Persistent storage in `~/.local/share/dictate/dictionary.json` (Linux) or `~/Library/Application Support/dictate/dictionary.json` (macOS)
+- **`dictate remember` command** — interactive CLI for adding dictionary entries
+  - Prompts for "Heard" (mis-transcribed word) and "Preferred" (correct spelling)
+  - Confirms before overwriting existing entries
+  - Validates input (non-empty, trimmed)
+- **`dictate dictionary` command** — manage and view dictionary entries
+  - `dictate dictionary list` — display all entries in a formatted table
+  - `dictate dictionary clear` — remove all entries (with confirmation)
+- **Token counting utilities** — estimate token count for Whisper prompt budget calculations
+
+### Fixed
+
+- Prompt budget calculation now accounts for joiner cost (comma + space) between dictionary entries
+- Stabilized `DictionaryStore::open()` test to handle concurrent test execution
+
+### Changed
+
+- Dictionary entries are automatically included in all transcription requests when available
+- Dictionary format uses deterministic ordering (`BTreeMap`) for consistent serialization
+
 ## [1.1.0] - 2026-02-10
 
 ### Added
@@ -137,10 +165,12 @@ Initial development releases (not publicly announced).
 
 ## Release Links
 
+- [1.3.0](https://github.com/tindotdev/dictate/releases/tag/v1.3.0) - 2026-02-12
 - [1.1.0](https://github.com/tindotdev/dictate/releases/tag/v1.1.0) - 2026-02-10
 - [1.0.0](https://github.com/tindotdev/dictate/releases/tag/v1.0.0) - 2026-02-09
 - [0.2.0](https://github.com/tindotdev/dictate/releases/tag/v0.2.0) - 2026-01-04
 
+[1.3.0]: https://github.com/tindotdev/dictate/compare/v1.2.0...v1.3.0
 [1.1.0]: https://github.com/tindotdev/dictate/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tindotdev/dictate/compare/v0.3.0...v1.0.0
 [0.2.0]: https://github.com/tindotdev/dictate/compare/v0.1.0...v0.2.0

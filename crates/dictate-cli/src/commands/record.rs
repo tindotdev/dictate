@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DeviceSelection, GroqProvider, PipelineConfig, ProgressiveChunker, RecorderConfig, RecvResult,
-    ResponseFormat, Segment, TimestampGranularity, TranscriptionError, TranscriptionPipeline,
-    TranscriptionResult, WhisperModel, Word,
+    DeviceSelection, DictionaryStore, GroqProvider, PipelineConfig, ProgressiveChunker,
+    RecorderConfig, RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
+    TranscriptionPipeline, TranscriptionResult, WhisperModel, Word,
 };
 use thiserror::Error;
 
@@ -185,10 +186,13 @@ fn parse_and_create_pipeline(
         .clone()
         .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
 
+    // Load dictionary for prompt injection (best-effort: warn and continue on error)
+    let effective_prompt = load_dictionary_prompt(options.prompt.as_deref());
+
     let config = PipelineConfig {
         base_url,
         language: options.language.clone(),
-        prompt: options.prompt.clone(),
+        prompt: effective_prompt,
         response_format: response_format.unwrap_or_default(),
         model: options.model,
         temperature: options.temperature,
@@ -536,6 +540,73 @@ fn drain_remaining(
     }
 }
 
+/// Load the dictionary and compose the effective prompt.
+///
+/// This is best-effort: if the dictionary cannot be loaded, a warning is printed
+/// and the user's prompt (if any) is returned unchanged.
+fn load_dictionary_prompt(user_prompt: Option<&str>) -> Option<String> {
+    let store = match DictionaryStore::open() {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not open dictionary store: {err}");
+            return user_prompt.map(String::from);
+        }
+    };
+
+    let dict = match store.load() {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not load dictionary: {err}");
+            return user_prompt.map(String::from);
+        }
+    };
+
+    if dict.is_empty() {
+        return user_prompt.map(String::from);
+    }
+
+    // Calculate remaining token budget after the user's prompt.
+    // Reserve 2 tokens for the ". " joiner inserted by build_effective_prompt
+    // when both a dictionary hint and a user prompt are present.
+    let user_tokens = user_prompt.map_or(0, estimate_token_count);
+    let joiner_cost = if user_prompt.is_some() { 2 } else { 0 };
+    let remaining_budget = MAX_PROMPT_TOKENS.saturating_sub(user_tokens + joiner_cost);
+
+    let hint = dict.as_prompt_hint_within(remaining_budget);
+
+    if let Some(ref h) = hint {
+        if h.included < h.total {
+            eprintln!(
+                "[dictate] dictionary: using {}/{} entries (prompt token limit)",
+                h.included, h.total
+            );
+        } else {
+            eprintln!(
+                "[dictate] dictionary loaded ({} {})",
+                h.included,
+                if h.included == 1 { "entry" } else { "entries" }
+            );
+        }
+    }
+
+    build_effective_prompt(user_prompt, hint.as_ref().map(|h| h.text.as_str()))
+}
+
+/// Compose dictionary hint and user prompt into a single effective prompt.
+///
+/// Dictionary hint comes first (primes vocabulary), then user prompt (style/context).
+fn build_effective_prompt(
+    user_prompt: Option<&str>,
+    dictionary_hint: Option<&str>,
+) -> Option<String> {
+    match (dictionary_hint, user_prompt) {
+        (Some(hint), Some(user)) => Some(format!("{hint}. {user}")),
+        (Some(hint), None) => Some(hint.to_string()),
+        (None, Some(user)) => Some(user.to_string()),
+        (None, None) => None,
+    }
+}
+
 /// If `--timestamps` is set but `--format` isn't `verbose_json`, upgrade the format.
 ///
 /// Timestamps require `verbose_json` to carry segment/word metadata. Without the
@@ -864,6 +935,32 @@ mod tests {
         let msg = record_err.to_string();
         assert!(msg.contains("clipboard error"));
         assert!(msg.contains("no display environment"));
+    }
+
+    // ── build_effective_prompt tests ──────────────────────────────────
+
+    #[test]
+    fn effective_prompt_both_hint_and_user() {
+        let result = build_effective_prompt(Some("use formal English"), Some("Claude, Tin"));
+        assert_eq!(result, Some("Claude, Tin. use formal English".to_string()));
+    }
+
+    #[test]
+    fn effective_prompt_hint_only() {
+        let result = build_effective_prompt(None, Some("Claude, Tin"));
+        assert_eq!(result, Some("Claude, Tin".to_string()));
+    }
+
+    #[test]
+    fn effective_prompt_user_only() {
+        let result = build_effective_prompt(Some("use formal English"), None);
+        assert_eq!(result, Some("use formal English".to_string()));
+    }
+
+    #[test]
+    fn effective_prompt_neither() {
+        let result = build_effective_prompt(None, None);
+        assert!(result.is_none());
     }
 
     #[test]

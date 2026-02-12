@@ -233,5 +233,16 @@ record-both-timestamps device="": build-cli
         {{dictate_bin}} record --format verbose_json --timestamps word,segment; \
     fi
 
+# Add a dictionary entry (interactive)
+remember: build-cli
+    {{dictate_bin}} remember
+
+# Print dictionary
+dictionary: build-cli
+    {{dictate_bin}} dictionary
+
+# Alias
+dict: dictionary
+
 # Run all checks (fmt + clippy + test)
 check: fmt-check clippy test

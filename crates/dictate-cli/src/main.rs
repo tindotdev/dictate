@@ -13,6 +13,12 @@ enum CliError {
 
     #[error("recording failed")]
     Record(#[from] commands::record::RecordError),
+
+    #[error("dictionary error")]
+    Dictionary(#[from] dictate_core::DictionaryError),
+
+    #[error("remember failed")]
+    Remember(#[from] commands::remember::RememberError),
 }
 
 type Result<T> = std::result::Result<T, CliError>;
@@ -23,6 +29,14 @@ fn run() -> Result<()> {
     let args = match cli.command {
         Some(args::Commands::Devices) => {
             commands::devices::run()?;
+            return Ok(());
+        }
+        Some(args::Commands::Remember) => {
+            commands::remember::run()?;
+            return Ok(());
+        }
+        Some(args::Commands::Dictionary) => {
+            commands::dictionary::run()?;
             return Ok(());
         }
         Some(args::Commands::Record(args)) => args,

@@ -26,6 +26,7 @@ coverage/
 # AI
 .claude/
 .codex/
+.agents/
 
 # Backup directories
 .rewrite-backup/
