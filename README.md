@@ -30,7 +30,11 @@ dictate --device <query>             # select specific device by name/index
 dictate --language en                # language hint for better accuracy
 dictate --format verbose_json        # structured JSON output
 dictate --timestamps word            # word-level timestamps (requires verbose_json)
+dictate remember                     # add custom terms to dictionary
+dictate dictionary                   # list dictionary entries
 ```
+
+Dictionary entries are injected into Whisper's prompt parameter to improve accuracy for technical terms, names, and jargon. Stored at `~/.config/dictate/dictionary.json`.
 
 ## Configuration
 
