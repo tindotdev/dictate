@@ -42,6 +42,41 @@ pub enum Commands {
     /// List dictionary entries
     #[command(alias = "dict")]
     Dictionary,
+
+    /// Manage vocabulary words for transcription biasing
+    Vocab(VocabArgs),
+}
+
+#[derive(Args)]
+pub struct VocabArgs {
+    #[command(subcommand)]
+    pub command: VocabCommand,
+}
+
+#[derive(Subcommand)]
+pub enum VocabCommand {
+    /// Add one or more vocabulary words
+    #[command(
+        long_about = "Add one or more vocabulary words used to bias transcription.\n\
+Words that already exist in vocabulary are skipped with a warning.\n\
+Words that already exist as dictionary correction values are also skipped,\n\
+since they are already included in prompt hints."
+    )]
+    Add {
+        /// Words to add (e.g., `AWS` `OpenAI` `Kubernetes`)
+        #[arg(required = true)]
+        words: Vec<String>,
+    },
+
+    /// Remove one or more vocabulary words
+    Remove {
+        /// Words to remove
+        #[arg(required = true)]
+        words: Vec<String>,
+    },
+
+    /// List all vocabulary words
+    List,
 }
 
 #[derive(Args)]
@@ -256,6 +291,61 @@ mod tests {
     fn parse_dictionary_subcommand() {
         let cli = Cli::parse_from(["dictate", "dictionary"]);
         assert!(matches!(cli.command, Some(Commands::Dictionary)));
+    }
+
+    // --- Vocab subcommand tests ---
+
+    #[test]
+    fn parse_vocab_add_subcommand() {
+        let cli = Cli::parse_from(["dictate", "vocab", "add", "AWS", "OpenAI"]);
+
+        let Some(Commands::Vocab(vocab)) = cli.command else {
+            panic!("expected vocab subcommand");
+        };
+
+        let VocabCommand::Add { words } = vocab.command else {
+            panic!("expected vocab add");
+        };
+
+        assert_eq!(words, vec!["AWS", "OpenAI"]);
+    }
+
+    #[test]
+    fn parse_vocab_remove_subcommand() {
+        let cli = Cli::parse_from(["dictate", "vocab", "remove", "AWS"]);
+
+        let Some(Commands::Vocab(vocab)) = cli.command else {
+            panic!("expected vocab subcommand");
+        };
+
+        let VocabCommand::Remove { words } = vocab.command else {
+            panic!("expected vocab remove");
+        };
+
+        assert_eq!(words, vec!["AWS"]);
+    }
+
+    #[test]
+    fn parse_vocab_list_subcommand() {
+        let cli = Cli::parse_from(["dictate", "vocab", "list"]);
+
+        let Some(Commands::Vocab(vocab)) = cli.command else {
+            panic!("expected vocab subcommand");
+        };
+
+        assert!(matches!(vocab.command, VocabCommand::List));
+    }
+
+    #[test]
+    fn vocab_add_requires_words() {
+        let result = Cli::try_parse_from(["dictate", "vocab", "add"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn vocab_remove_requires_words() {
+        let result = Cli::try_parse_from(["dictate", "vocab", "remove"]);
+        assert!(result.is_err());
     }
 
     #[test]
