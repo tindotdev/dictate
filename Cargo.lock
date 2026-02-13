@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "dictate-cli"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "dictate-core"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "audioadapter",
  "audioadapter-buffers",
