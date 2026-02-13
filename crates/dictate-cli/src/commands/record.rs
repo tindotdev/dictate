@@ -7,9 +7,10 @@ use std::time::Duration;
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DeviceSelection, DictionaryStore, GroqProvider, PipelineConfig, ProgressiveChunker,
+    DeviceSelection, Dictionary, DictionaryStore, GroqProvider, PipelineConfig, ProgressiveChunker,
     RecorderConfig, RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
-    TranscriptionPipeline, TranscriptionResult, WhisperModel, Word,
+    TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
+    format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
 
@@ -186,8 +187,9 @@ fn parse_and_create_pipeline(
         .clone()
         .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
 
-    // Load dictionary for prompt injection (best-effort: warn and continue on error)
-    let effective_prompt = load_dictionary_prompt(options.prompt.as_deref());
+    // Load prompt hints (dictionary + vocabulary) for prompt injection.
+    // Best-effort: warn and continue on store errors.
+    let effective_prompt = load_prompt_hints(options.prompt.as_deref());
 
     let config = PipelineConfig {
         base_url,
@@ -540,49 +542,37 @@ fn drain_remaining(
     }
 }
 
-/// Load the dictionary and compose the effective prompt.
+/// Load dictionary and vocabulary hints, then compose the effective prompt.
 ///
-/// This is best-effort: if the dictionary cannot be loaded, a warning is printed
-/// and the user's prompt (if any) is returned unchanged.
-fn load_dictionary_prompt(user_prompt: Option<&str>) -> Option<String> {
-    let store = match DictionaryStore::open() {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("[dictate] warning: could not open dictionary store: {err}");
-            return user_prompt.map(String::from);
-        }
-    };
+/// This is best-effort: if either store cannot be loaded, a warning is printed
+/// and prompt composition continues with the available source(s).
+fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
+    let dictionary = load_dictionary_best_effort();
+    let vocabulary = load_vocabulary_best_effort();
 
-    let dict = match store.load() {
-        Ok(d) => d,
-        Err(err) => {
-            eprintln!("[dictate] warning: could not load dictionary: {err}");
-            return user_prompt.map(String::from);
-        }
-    };
-
-    if dict.is_empty() {
+    let merged_hints = merge_prompt_hints(&dictionary, &vocabulary);
+    if merged_hints.is_empty() {
         return user_prompt.map(String::from);
     }
 
     // Calculate remaining token budget after the user's prompt.
     // Reserve 2 tokens for the ". " joiner inserted by build_effective_prompt
-    // when both a dictionary hint and a user prompt are present.
+    // when both prompt hints and a user prompt are present.
     let user_tokens = user_prompt.map_or(0, estimate_token_count);
     let joiner_cost = if user_prompt.is_some() { 2 } else { 0 };
     let remaining_budget = MAX_PROMPT_TOKENS.saturating_sub(user_tokens + joiner_cost);
 
-    let hint = dict.as_prompt_hint_within(remaining_budget);
+    let hint = format_hint_within_budget(merged_hints.iter().map(String::as_str), remaining_budget);
 
     if let Some(ref h) = hint {
         if h.included < h.total {
             eprintln!(
-                "[dictate] dictionary: using {}/{} entries (prompt token limit)",
+                "[dictate] prompt hints: using {}/{} entries (token limit)",
                 h.included, h.total
             );
         } else {
             eprintln!(
-                "[dictate] dictionary loaded ({} {})",
+                "[dictate] prompt hints loaded ({} {})",
                 h.included,
                 if h.included == 1 { "entry" } else { "entries" }
             );
@@ -592,14 +582,47 @@ fn load_dictionary_prompt(user_prompt: Option<&str>) -> Option<String> {
     build_effective_prompt(user_prompt, hint.as_ref().map(|h| h.text.as_str()))
 }
 
-/// Compose dictionary hint and user prompt into a single effective prompt.
+fn load_dictionary_best_effort() -> Dictionary {
+    let store = match DictionaryStore::open() {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not open dictionary store: {err}");
+            return Dictionary::new();
+        }
+    };
+
+    match store.load() {
+        Ok(d) => d,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not load dictionary: {err}");
+            Dictionary::new()
+        }
+    }
+}
+
+fn load_vocabulary_best_effort() -> Vocabulary {
+    let store = match VocabularyStore::open() {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not open vocabulary store: {err}");
+            return Vocabulary::new();
+        }
+    };
+
+    match store.load() {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("[dictate] warning: could not load vocabulary: {err}");
+            Vocabulary::new()
+        }
+    }
+}
+
+/// Compose prompt hint and user prompt into a single effective prompt.
 ///
-/// Dictionary hint comes first (primes vocabulary), then user prompt (style/context).
-fn build_effective_prompt(
-    user_prompt: Option<&str>,
-    dictionary_hint: Option<&str>,
-) -> Option<String> {
-    match (dictionary_hint, user_prompt) {
+/// Prompt hint comes first (primes vocabulary), then user prompt (style/context).
+fn build_effective_prompt(user_prompt: Option<&str>, prompt_hint: Option<&str>) -> Option<String> {
+    match (prompt_hint, user_prompt) {
         (Some(hint), Some(user)) => Some(format!("{hint}. {user}")),
         (Some(hint), None) => Some(hint.to_string()),
         (None, Some(user)) => Some(user.to_string()),

@@ -19,6 +19,9 @@ enum CliError {
 
     #[error("remember failed")]
     Remember(#[from] commands::remember::RememberError),
+
+    #[error("vocab command failed")]
+    Vocab(#[from] commands::vocab::VocabError),
 }
 
 type Result<T> = std::result::Result<T, CliError>;
@@ -37,6 +40,10 @@ fn run() -> Result<()> {
         }
         Some(args::Commands::Dictionary) => {
             commands::dictionary::run()?;
+            return Ok(());
+        }
+        Some(args::Commands::Vocab(args)) => {
+            commands::vocab::run(&args)?;
             return Ok(());
         }
         Some(args::Commands::Record(args)) => args,

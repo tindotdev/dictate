@@ -1,6 +1,6 @@
 //! `dictate dictionary` command — print dictionary entries as a table.
 
-use dictate_core::{DictionaryError, DictionaryStore};
+use dictate_core::{DictionaryError, DictionaryStore, VocabularyStore};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Tabled)]
@@ -43,5 +43,29 @@ pub fn run() -> Result<(), DictionaryError> {
 
     println!("{table}");
 
+    if let Some(vocabulary_count) = load_vocabulary_count_best_effort() {
+        eprintln!();
+        eprintln!(
+            "Also: {} vocabulary {} (use `dictate vocab list` to view)",
+            vocabulary_count,
+            if vocabulary_count == 1 {
+                "word"
+            } else {
+                "words"
+            }
+        );
+    }
+
     Ok(())
+}
+
+fn load_vocabulary_count_best_effort() -> Option<usize> {
+    let store = VocabularyStore::open().ok()?;
+    let vocab = store.load().ok()?;
+
+    if vocab.is_empty() {
+        None
+    } else {
+        Some(vocab.len())
+    }
 }
