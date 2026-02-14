@@ -123,6 +123,21 @@ pub struct TranscriptionPipeline {
     config: PipelineConfig,
 }
 
+/// Outcome of optional post-processing for a transcription result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostProcessOutcome {
+    /// No post-processor is configured.
+    NotConfigured,
+    /// Input text was empty, so post-processing was skipped.
+    SkippedEmptyText,
+    /// Post-processing was skipped because `verbose_json` must preserve raw timestamps.
+    SkippedVerboseJson,
+    /// Post-processing succeeded and rewrote the output text.
+    Applied,
+    /// Post-processing failed and the raw transcription was returned.
+    FailedFallback,
+}
+
 impl TranscriptionPipeline {
     /// Create a new pipeline with the given provider and API key.
     ///
@@ -159,13 +174,24 @@ impl TranscriptionPipeline {
     ///
     /// Fail-safe: returns the original result on error (never loses transcribed text).
     #[must_use]
-    pub fn post_process_result(&self, mut result: TranscriptionResult) -> TranscriptionResult {
+    pub fn post_process_result(&self, result: TranscriptionResult) -> TranscriptionResult {
+        self.post_process_result_with_outcome(result).0
+    }
+
+    /// Post-process a merged transcription result and return the outcome.
+    ///
+    /// Fail-safe: returns the original result on error (never loses transcribed text).
+    #[must_use]
+    pub fn post_process_result_with_outcome(
+        &self,
+        mut result: TranscriptionResult,
+    ) -> (TranscriptionResult, PostProcessOutcome) {
         let Some(ref pp) = self.post_processor else {
-            return result;
+            return (result, PostProcessOutcome::NotConfigured);
         };
 
         if result.text.is_empty() {
-            return result;
+            return (result, PostProcessOutcome::SkippedEmptyText);
         }
 
         // VerboseJson includes segments/words with timestamps that correspond
@@ -173,7 +199,7 @@ impl TranscriptionPipeline {
         // would produce self-contradictory JSON, so skip post-processing.
         if self.config.response_format == ResponseFormat::VerboseJson {
             eprintln!("[dictate] skipping post-processing (incompatible with verbose_json format)");
-            return result;
+            return (result, PostProcessOutcome::SkippedVerboseJson);
         }
 
         let config = PostProcessConfig {
@@ -185,11 +211,11 @@ impl TranscriptionPipeline {
         match pp.process(&result.text, config) {
             Ok(processed) => {
                 result.text = processed;
-                result
+                (result, PostProcessOutcome::Applied)
             }
             Err(err) => {
                 eprintln!("[dictate] post-processing failed, using raw transcription: {err}");
-                result
+                (result, PostProcessOutcome::FailedFallback)
             }
         }
     }
@@ -633,11 +659,12 @@ mod tests {
             words: Some(vec![]),
         };
 
-        let processed = pipeline.post_process_result(result);
+        let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
 
         // Text should be unchanged — post-processor was never called
         assert_eq!(processed.text, "hello world");
         assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(outcome, PostProcessOutcome::SkippedVerboseJson);
     }
 
     #[test]
@@ -661,9 +688,10 @@ mod tests {
                 words: None,
             };
 
-            let processed = pipeline.post_process_result(result);
+            let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
             assert_eq!(processed.text, "HELLO WORLD", "format: {}", format.as_str());
             assert_eq!(calls.lock().unwrap().len(), 1);
+            assert_eq!(outcome, PostProcessOutcome::Applied);
         }
     }
 
@@ -687,10 +715,35 @@ mod tests {
             words: None,
         };
 
-        let processed = pipeline.post_process_result(result);
+        let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
 
         assert_eq!(processed.text, "hello world");
         assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(outcome, PostProcessOutcome::FailedFallback);
+    }
+
+    #[test]
+    fn post_process_outcome_not_configured_when_processor_missing() {
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                response_format: ResponseFormat::Json,
+                post_process: false,
+                ..PipelineConfig::default()
+            },
+        );
+
+        let result = TranscriptionResult {
+            text: "hello world".into(),
+            segments: None,
+            words: None,
+        };
+
+        let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
+
+        assert_eq!(processed.text, "hello world");
+        assert_eq!(outcome, PostProcessOutcome::NotConfigured);
     }
 
     #[test]

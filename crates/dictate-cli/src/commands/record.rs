@@ -8,9 +8,10 @@ use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
     DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor, GroqProvider, ModelId,
-    PipelineConfig, PostProcessor, ProgressiveChunker, RecorderConfig, RecvResult, ResponseFormat,
-    Segment, TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
-    Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
+    PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker, RecorderConfig,
+    RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
+    TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
+    format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
 
@@ -180,8 +181,14 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 
     // Output results
     let merged = merge_results(results);
-    let merged = pipeline.post_process_result(merged);
-    output_result(&merged, effective_format, interrupted, options);
+    let (merged, post_process_outcome) = pipeline.post_process_result_with_outcome(merged);
+    output_result(
+        &merged,
+        effective_format,
+        interrupted,
+        options,
+        post_process_outcome,
+    );
 
     Ok(())
 }
@@ -402,6 +409,7 @@ fn output_result(
     format: Option<ResponseFormat>,
     interrupted: bool,
     options: &RecordOptions,
+    post_process_outcome: PostProcessOutcome,
 ) {
     if merged.text.is_empty() && !interrupted {
         eprintln!("[dictate] no speech detected");
@@ -418,7 +426,7 @@ fn output_result(
     let use_clipboard = !options.stdout && !options.no_clipboard;
 
     // Format the result according to --format flag
-    let formatted = format_to_string(merged, format);
+    let formatted = format_to_string(merged, format, options.post_process, post_process_outcome);
 
     if use_clipboard {
         // Default behavior: copy to clipboard
@@ -757,11 +765,31 @@ fn merge_results(results: Vec<TranscriptionResult>) -> TranscriptionResult {
 /// Format the transcription result according to the requested format.
 ///
 /// Returns the formatted string ready for output (clipboard or stdout).
-fn format_to_string(result: &TranscriptionResult, format: Option<ResponseFormat>) -> String {
+fn format_to_string(
+    result: &TranscriptionResult,
+    format: Option<ResponseFormat>,
+    post_process_requested: bool,
+    post_process_outcome: PostProcessOutcome,
+) -> String {
     match format {
         Some(ResponseFormat::VerboseJson) => {
             // Full structured JSON with segments and words.
-            match serde_json::to_string_pretty(result) {
+            let mut payload = match serde_json::to_value(result) {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("[dictate] warning: JSON serialization failed: {err}");
+                    return result.text.clone();
+                }
+            };
+
+            if let Some((post_processed, status)) =
+                post_process_metadata(post_process_requested, post_process_outcome)
+            {
+                payload["post_processed"] = serde_json::Value::Bool(post_processed);
+                payload["post_process_status"] = serde_json::Value::String(status.to_string());
+            }
+
+            match serde_json::to_string_pretty(&payload) {
                 Ok(json) => json,
                 Err(err) => {
                     eprintln!("[dictate] warning: JSON serialization failed: {err}");
@@ -771,7 +799,15 @@ fn format_to_string(result: &TranscriptionResult, format: Option<ResponseFormat>
         }
         Some(ResponseFormat::Json) => {
             // Simple JSON with text only.
-            match serde_json::to_string_pretty(&serde_json::json!({"text": result.text})) {
+            let mut payload = serde_json::json!({"text": result.text});
+            if let Some((post_processed, status)) =
+                post_process_metadata(post_process_requested, post_process_outcome)
+            {
+                payload["post_processed"] = serde_json::Value::Bool(post_processed);
+                payload["post_process_status"] = serde_json::Value::String(status.to_string());
+            }
+
+            match serde_json::to_string_pretty(&payload) {
                 Ok(json) => json,
                 Err(err) => {
                     eprintln!("[dictate] warning: JSON serialization failed: {err}");
@@ -783,6 +819,23 @@ fn format_to_string(result: &TranscriptionResult, format: Option<ResponseFormat>
             // Plain text (default): preserves existing behavior exactly.
             result.text.clone()
         }
+    }
+}
+
+fn post_process_metadata(
+    post_process_requested: bool,
+    post_process_outcome: PostProcessOutcome,
+) -> Option<(bool, &'static str)> {
+    if !post_process_requested {
+        return None;
+    }
+
+    match post_process_outcome {
+        PostProcessOutcome::Applied => Some((true, "applied")),
+        PostProcessOutcome::FailedFallback => Some((false, "failed_fallback")),
+        PostProcessOutcome::SkippedVerboseJson => Some((false, "skipped_verbose_json")),
+        PostProcessOutcome::SkippedEmptyText => Some((false, "skipped_empty_text")),
+        PostProcessOutcome::NotConfigured => Some((false, "not_configured")),
     }
 }
 
@@ -1060,5 +1113,60 @@ mod tests {
         assert_eq!(words.len(), 2);
         assert_eq!(words[0].start, 0.0);
         assert_eq!(words[1].start, 88.0);
+    }
+
+    // ── post-process metadata tests ───────────────────────────────────
+
+    #[test]
+    fn json_output_omits_post_process_fields_when_not_requested() {
+        let result = make_result("hello world");
+        let formatted = format_to_string(
+            &result,
+            Some(ResponseFormat::Json),
+            false,
+            PostProcessOutcome::NotConfigured,
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
+        assert_eq!(json, serde_json::json!({"text": "hello world"}));
+    }
+
+    #[test]
+    fn json_output_includes_post_process_failure_metadata() {
+        let result = make_result("hello world");
+        let formatted = format_to_string(
+            &result,
+            Some(ResponseFormat::Json),
+            true,
+            PostProcessOutcome::FailedFallback,
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "text": "hello world",
+                "post_processed": false,
+                "post_process_status": "failed_fallback"
+            })
+        );
+    }
+
+    #[test]
+    fn verbose_json_output_includes_post_process_metadata() {
+        let result = make_verbose_result("hello", 0, 0.0, 1.0);
+        let formatted = format_to_string(
+            &result,
+            Some(ResponseFormat::VerboseJson),
+            true,
+            PostProcessOutcome::SkippedVerboseJson,
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
+        assert_eq!(json["text"], "hello");
+        assert_eq!(json["post_processed"], false);
+        assert_eq!(json["post_process_status"], "skipped_verbose_json");
+        assert!(json.get("segments").is_some());
+        assert!(json.get("words").is_some());
     }
 }

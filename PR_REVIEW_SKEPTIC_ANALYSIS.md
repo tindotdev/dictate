@@ -179,7 +179,16 @@ match pp.process(&result.text, config) {
 
 #### F-09: Post-Processing Failure Lacks User Visibility [Score: 45/100]
 
-**Location**: `crates/dictate-core/src/pipeline.rs:190-193`
+**Location**: `crates/dictate-core/src/pipeline.rs:126-221`, `crates/dictate-cli/src/commands/record.rs:765-840`
+
+**Status (2026-02-14)**: ✅ **Fixed**
+- Added explicit post-processing outcome tracking in the pipeline via `PostProcessOutcome` and `post_process_result_with_outcome(...)`.
+- Threaded post-process outcome through the record command output path.
+- Added script-visible JSON metadata when `--post-process` is requested:
+  - `"post_processed": true|false`
+  - `"post_process_status": "applied" | "failed_fallback" | "skipped_verbose_json" | "skipped_empty_text" | "not_configured"`
+- Added regression tests for outcome states and JSON/verbose JSON metadata emission.
+- Validation: `cargo test -p dictate-core pipeline::tests::` and `cargo test -p dictate-cli commands::record::tests::` passed.
 
 **What's Real**: Stderr message when post-processing fails might be missed by users, especially in scripts. Fail-safe behavior is correct (never lose text), but visibility could improve.
 
@@ -313,17 +322,17 @@ Progress:
 
 1. **F-03**: Log response body read failures (5 min) ✅ **Completed (2026-02-14)**
 2. **F-04**: Log JSON parse/schema failures with fallback truncation (10 min) ✅ **Completed (2026-02-14)**
-3. **F-10**: Add error classification boundary tests (20 min) ✅ **Completed (2026-02-14)**
+3. **F-08**: Extract duplicate HTTP error handling (30 min) ✅ **Completed (2026-02-14)**
+4. **F-09**: Improve post-processing failure visibility (20 min) ✅ **Completed (2026-02-14)**
+5. **F-10**: Add error classification boundary tests (20 min) ✅ **Completed (2026-02-14)**
 
-Both debugging improvements and boundary classification tests are complete.
+Debugging improvements, maintainability cleanup, UX visibility, and boundary classification tests are complete.
 
-### Defer to Follow-Up PR (105 minutes)
+### Defer to Follow-Up PR (55 minutes)
 
-- F-08: Extract duplicate HTTP error handling (30 min)
-- F-09: Improve post-processing failure visibility (20 min)
 - F-01, F-07, F-12, F-13: Backlog items (55 min total)
 
-These are valuable polish items for v1.4.0 but don't block merge.
+These are low-priority backlog items and do not block merge.
 
 ### Ignore
 
@@ -339,8 +348,8 @@ This PR is in **VERY GOOD shape**. The architecture is sound, the fail-safe prin
 2. **Essential regression tests** (F-06)
 3. **Important test gaps (now covered)** (F-05)
 4. **Debugging improvements** (F-03, F-04) ✅ completed on 2026-02-14
-5. **Maintainability issues** (F-08)
-6. **UX polish** (F-09)
+5. **Maintainability issues** (F-08) ✅ completed on 2026-02-14
+6. **UX polish** (F-09) ✅ completed on 2026-02-14
 7. **Theoretical concerns** (F-01, F-07)
 8. **Premature optimization** (F-12, F-13)
 9. **Noise** (F-11)
@@ -359,8 +368,8 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 **Skeptical Reality**:
 
 - Must fix: 35-65 minutes before merge (F-02, F-06, F-05) ✅ completed on 2026-02-14
-- Nice to have: 0 minutes remaining (F-03, F-04, F-10 complete on 2026-02-14)
-- Polish: 105 minutes for follow-up PR (F-08, F-09)
+- Nice to have: 0 minutes remaining (F-03, F-04, F-08, F-09, F-10 complete on 2026-02-14)
+- Polish/backlog: 55 minutes for follow-up PR (F-01, F-07, F-12, F-13)
 - **Total**: 35-65 minutes to production-ready (completed)
 
 ### Key Insights
@@ -379,7 +388,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 ## Final Verdict
 
-**MERGE now (F-02, F-06, and F-05 fixed on 2026-02-14; F-03, F-04, and F-10 optional quality improvements also completed on 2026-02-14)**. Required fixes are complete; remaining items are optional quality improvements suitable for follow-up PR(s) before or after v1.4.0 release.
+**MERGE now (F-02, F-06, and F-05 fixed on 2026-02-14; F-03, F-04, F-08, F-09, and F-10 optional quality improvements also completed on 2026-02-14)**. Required fixes are complete; remaining items are low-priority backlog concerns suitable for follow-up PR(s) before or after v1.4.0 release.
 
 The PR demonstrates strong engineering principles. Don't let review perfectionism delay shipping valuable functionality.
 
