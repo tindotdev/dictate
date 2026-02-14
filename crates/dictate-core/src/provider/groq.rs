@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
 use crate::error::TranscriptionError;
+use crate::groq_error::api_error_from_failed_response;
 use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -29,7 +30,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(16);
-const ERROR_BODY_TRUNCATION_CHARS: usize = 200;
 
 /// Validate that a prompt does not exceed the maximum token limit.
 ///
@@ -45,38 +45,6 @@ fn validate_prompt_length(prompt: &str) -> Result<(), TranscriptionError> {
     }
 
     Ok(())
-}
-
-fn truncated_body(body: &str) -> String {
-    let mut truncated: String = body.chars().take(ERROR_BODY_TRUNCATION_CHARS).collect();
-    if body.chars().count() > ERROR_BODY_TRUNCATION_CHARS {
-        truncated.push_str("...");
-    }
-    truncated
-}
-
-fn extract_error_message(body: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(json) => json
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(|message| message.as_str())
-            .map_or_else(
-                || {
-                    eprintln!(
-                        "[dictate] warning: Groq error JSON missing `error.message`, using truncated body"
-                    );
-                    truncated_body(body)
-                },
-                std::string::ToString::to_string,
-            ),
-        Err(err) => {
-            eprintln!(
-                "[dictate] warning: failed to parse Groq error JSON, using truncated body: {err}"
-            );
-            truncated_body(body)
-        }
-    }
 }
 
 // ─── Provider ────────────────────────────────────────────────────────────────
@@ -212,18 +180,7 @@ fn send_request(
     let status = response.status();
 
     if !status.is_success() {
-        let status_code = status.as_u16();
-        let body = response.text().unwrap_or_else(|err| {
-            eprintln!("[dictate] warning: failed to read Groq error response body: {err}");
-            String::from("<failed to read body>")
-        });
-
-        let message = extract_error_message(&body);
-
-        return Err(TranscriptionError::Api {
-            status: status_code,
-            message,
-        });
+        return Err(api_error_from_failed_response(response, "Groq error"));
     }
 
     let body = response
@@ -258,30 +215,6 @@ mod tests {
     use super::*;
     use crate::encoder::EncodedAudio;
     use crate::provider::TimestampGranularity;
-
-    #[test]
-    fn extract_error_message_reads_nested_error_message() {
-        let body = r#"{"error":{"message":"invalid api key"}}"#;
-        assert_eq!(extract_error_message(body), "invalid api key");
-    }
-
-    #[test]
-    fn extract_error_message_truncates_on_invalid_json() {
-        let body = &format!("{{\"error\":{}", "x".repeat(260));
-        let message = extract_error_message(body);
-
-        assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
-        assert!(message.ends_with("..."));
-    }
-
-    #[test]
-    fn extract_error_message_truncates_when_schema_is_unexpected() {
-        let body = &format!("{{\"message\":\"{}\"}}", "x".repeat(240));
-        let message = extract_error_message(body);
-
-        assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
-        assert!(message.ends_with("..."));
-    }
 
     // ──── Prompt Validation Tests ────────────────────────────────────────
 

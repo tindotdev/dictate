@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod dictionary;
 pub mod encoder;
 pub mod error;
+mod groq_error;
 pub mod model_id;
 pub mod pipeline;
 pub mod postprocess;

@@ -153,7 +153,19 @@ match pp.process(&result.text, config) {
 
 #### F-08: Duplicate HTTP Error Handling Code [Score: 30/100]
 
-**Location**: `crates/dictate-core/src/postprocess/groq.rs:149-185` vs. `crates/dictate-core/src/provider/groq.rs`
+**Location**: `crates/dictate-core/src/postprocess/groq.rs:183-187`, `crates/dictate-core/src/provider/groq.rs:180-184`, `crates/dictate-core/src/groq_error.rs:1-53`
+
+**Status (2026-02-14)**: ✅ **Fixed**
+- Extracted shared Groq HTTP error handling into `crates/dictate-core/src/groq_error.rs`:
+  - response-body read failure fallback
+  - nested `error.message` extraction
+  - truncated-body fallback for malformed/unexpected JSON
+  - unified `TranscriptionError::Api` construction
+- Updated both Groq call sites to use the shared helper:
+  - `provider/groq.rs` now delegates non-success responses via `api_error_from_failed_response(...)`
+  - `postprocess/groq.rs` now delegates non-success responses via `api_error_from_failed_response(...)`
+- Consolidated duplicate extraction tests into `groq_error` module tests.
+- Validation: `cargo test -p dictate-core groq_error`, `cargo test -p dictate-core provider::groq`, `cargo test -p dictate-core postprocess::groq`, and `cargo test -p dictate-core` passed.
 
 **What's Real**: Nearly identical error parsing logic in two files. Classic DRY violation with real maintenance cost.
 

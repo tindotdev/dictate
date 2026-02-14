@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{PostProcessConfig, PostProcessor};
 use crate::error::TranscriptionError;
+use crate::groq_error::api_error_from_failed_response;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -26,45 +27,12 @@ const CHAT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(16);
-const ERROR_BODY_TRUNCATION_CHARS: usize = 200;
 
 const SYSTEM_PROMPT: &str = "\
 Clean up this voice transcript. Fix punctuation and capitalization. \
 Remove filler words (um, uh, like, you know). Keep the original \
 meaning and all technical terms intact. Output only the cleaned \
 text, nothing else.";
-
-fn truncated_body(body: &str) -> String {
-    let mut truncated: String = body.chars().take(ERROR_BODY_TRUNCATION_CHARS).collect();
-    if body.chars().count() > ERROR_BODY_TRUNCATION_CHARS {
-        truncated.push_str("...");
-    }
-    truncated
-}
-
-fn extract_error_message(body: &str) -> String {
-    match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(json) => json
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(|message| message.as_str())
-            .map_or_else(
-                || {
-                    eprintln!(
-                        "[dictate] warning: Groq post-process error JSON missing `error.message`, using truncated body"
-                    );
-                    truncated_body(body)
-                },
-                std::string::ToString::to_string,
-            ),
-        Err(err) => {
-            eprintln!(
-                "[dictate] warning: failed to parse Groq post-process error JSON, using truncated body: {err}"
-            );
-            truncated_body(body)
-        }
-    }
-}
 
 // ─── Post-processor ─────────────────────────────────────────────────────────
 
@@ -215,20 +183,10 @@ fn send_chat_request(
     let status = response.status();
 
     if !status.is_success() {
-        let status_code = status.as_u16();
-        let body = response.text().unwrap_or_else(|err| {
-            eprintln!(
-                "[dictate] warning: failed to read Groq post-process error response body: {err}"
-            );
-            String::from("<failed to read body>")
-        });
-
-        let message = extract_error_message(&body);
-
-        return Err(TranscriptionError::Api {
-            status: status_code,
-            message,
-        });
+        return Err(api_error_from_failed_response(
+            response,
+            "Groq post-process error",
+        ));
     }
 
     let body = response
@@ -251,30 +209,6 @@ fn send_chat_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extract_error_message_reads_nested_error_message() {
-        let body = r#"{"error":{"message":"rate limit exceeded"}}"#;
-        assert_eq!(extract_error_message(body), "rate limit exceeded");
-    }
-
-    #[test]
-    fn extract_error_message_truncates_on_invalid_json() {
-        let body = &format!("{{\"error\":{}", "x".repeat(260));
-        let message = extract_error_message(body);
-
-        assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
-        assert!(message.ends_with("..."));
-    }
-
-    #[test]
-    fn extract_error_message_truncates_when_schema_is_unexpected() {
-        let body = &format!("{{\"message\":\"{}\"}}", "x".repeat(240));
-        let message = extract_error_message(body);
-
-        assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
-        assert!(message.ends_with("..."));
-    }
 
     fn fast_retry_builder() -> ExponentialBuilder {
         ExponentialBuilder::default()
