@@ -23,6 +23,9 @@ const GROQ_API_KEY_VAR: &str = "GROQ_API_KEY";
 /// Environment variable for an optional Groq API base URL override.
 const GROQ_BASE_URL_VAR: &str = "GROQ_BASE_URL";
 
+/// Environment variable for an optional post-processing chat API base URL override.
+const GROQ_CHAT_BASE_URL_VAR: &str = "GROQ_CHAT_BASE_URL";
+
 #[derive(Debug, Error)]
 pub enum RecordError {
     #[error("audio error: {0}")]
@@ -58,6 +61,7 @@ pub struct RecordOptions {
     no_clipboard: bool,
     post_process: bool,
     post_process_model: Option<String>,
+    post_process_base_url: Option<String>,
 }
 
 impl RecordOptions {
@@ -137,6 +141,12 @@ impl RecordOptions {
         self.post_process_model = Some(model.into());
         self
     }
+
+    /// Override the post-processing chat API base URL.
+    pub fn post_process_base_url(mut self, url: impl Into<String>) -> Self {
+        self.post_process_base_url = Some(url.into());
+        self
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -202,6 +212,11 @@ fn parse_and_create_pipeline(
         .clone()
         .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
 
+    let post_process_base_url = options
+        .post_process_base_url
+        .clone()
+        .or_else(|| std::env::var(GROQ_CHAT_BASE_URL_VAR).ok());
+
     // Load prompt hints (dictionary + vocabulary) for prompt injection.
     // Best-effort: warn and continue on store errors.
     let effective_prompt = load_prompt_hints(options.prompt.as_deref());
@@ -216,6 +231,7 @@ fn parse_and_create_pipeline(
         timestamp_granularities: options.timestamp_granularities.clone().unwrap_or_default(),
         post_process: options.post_process,
         post_process_model: options.post_process_model.clone(),
+        post_process_base_url,
     };
 
     let mut pipeline = TranscriptionPipeline::new(Box::new(GroqProvider), api_key, config);

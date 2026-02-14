@@ -129,6 +129,10 @@ pub struct RecordArgs {
     /// Model for post-processing (default: llama-3.1-8b-instant)
     #[arg(long, requires = "post_process")]
     pub post_process_model: Option<String>,
+
+    /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
+    #[arg(long, requires = "post_process")]
+    pub post_process_base_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -435,5 +439,37 @@ mod tests {
         let cli = Cli::parse_from(["dictate", "-p"]);
         assert!(cli.command.is_none());
         assert!(cli.record_args.post_process);
+    }
+
+    #[test]
+    fn post_process_base_url_requires_post_process() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "record",
+            "--post-process-base-url",
+            "https://chat.example.com/v1/chat/completions",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn post_process_base_url_accepted_with_post_process() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--post-process",
+            "--post-process-base-url",
+            "https://chat.example.com/v1/chat/completions",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+        assert_eq!(
+            args.post_process_base_url.as_deref(),
+            Some("https://chat.example.com/v1/chat/completions")
+        );
     }
 }

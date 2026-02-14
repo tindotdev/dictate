@@ -92,6 +92,9 @@ fn run() -> Result<()> {
     if let Some(model) = args.post_process_model {
         options = options.post_process_model(model);
     }
+    if let Some(url) = args.post_process_base_url {
+        options = options.post_process_base_url(url);
+    }
 
     commands::record::run(&options)?;
 

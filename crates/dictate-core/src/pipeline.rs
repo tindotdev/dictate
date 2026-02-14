@@ -91,6 +91,9 @@ pub struct PipelineConfig {
     pub post_process: bool,
     /// Optional LLM model for post-processing.
     pub post_process_model: Option<String>,
+    /// Optional base URL for the post-processing chat endpoint.
+    /// Separate from `base_url` (transcription) because they hit different APIs.
+    pub post_process_base_url: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -105,6 +108,7 @@ impl Default for PipelineConfig {
             timestamp_granularities: Vec::new(),
             post_process: false,
             post_process_model: None,
+            post_process_base_url: None,
         }
     }
 }
@@ -163,9 +167,17 @@ impl TranscriptionPipeline {
             return result;
         }
 
+        // VerboseJson includes segments/words with timestamps that correspond
+        // to the raw Whisper output. Rewriting only the top-level `text` field
+        // would produce self-contradictory JSON, so skip post-processing.
+        if self.config.response_format == ResponseFormat::VerboseJson {
+            eprintln!("[dictate] skipping post-processing (incompatible with verbose_json format)");
+            return result;
+        }
+
         let config = PostProcessConfig {
             api_key: &self.api_key,
-            base_url: self.config.base_url.as_deref(),
+            base_url: self.config.post_process_base_url.as_deref(),
             model: self.config.post_process_model.as_deref(),
         };
 
@@ -533,5 +545,157 @@ mod tests {
     #[test]
     fn whisper_model_default() {
         assert_eq!(WhisperModel::default(), WhisperModel::LargeV3Turbo);
+    }
+
+    // ── Post-processing tests ───────────────────────────────────────────
+
+    /// Recorded post-processor calls: (input text, `base_url` passed).
+    type PostProcessCalls = Arc<Mutex<Vec<(String, Option<String>)>>>;
+
+    /// Mock post-processor that records calls and returns uppercased text.
+    struct MockPostProcessor {
+        calls: PostProcessCalls,
+    }
+
+    impl MockPostProcessor {
+        fn new(calls: PostProcessCalls) -> Self {
+            Self { calls }
+        }
+    }
+
+    impl PostProcessor for MockPostProcessor {
+        fn name(&self) -> &'static str {
+            "mock-pp"
+        }
+
+        fn process(
+            &self,
+            text: &str,
+            config: crate::postprocess::PostProcessConfig<'_>,
+        ) -> Result<String, crate::error::TranscriptionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((text.to_string(), config.base_url.map(String::from)));
+            Ok(text.to_uppercase())
+        }
+    }
+
+    #[test]
+    fn post_process_skips_verbose_json_format() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                response_format: ResponseFormat::VerboseJson,
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+
+        let result = TranscriptionResult {
+            text: "hello world".into(),
+            segments: Some(vec![]),
+            words: Some(vec![]),
+        };
+
+        let processed = pipeline.post_process_result(result);
+
+        // Text should be unchanged — post-processor was never called
+        assert_eq!(processed.text, "hello world");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn post_process_runs_for_json_and_text_formats() {
+        for format in [ResponseFormat::Json, ResponseFormat::Text] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let pipeline = TranscriptionPipeline::new(
+                Box::new(MockProvider::new("test")),
+                "test-key".into(),
+                PipelineConfig {
+                    response_format: format,
+                    post_process: true,
+                    ..PipelineConfig::default()
+                },
+            )
+            .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+
+            let result = TranscriptionResult {
+                text: "hello world".into(),
+                segments: None,
+                words: None,
+            };
+
+            let processed = pipeline.post_process_result(result);
+            assert_eq!(processed.text, "HELLO WORLD", "format: {}", format.as_str());
+            assert_eq!(calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::significant_drop_tightening)]
+    fn post_process_uses_post_process_base_url_not_base_url() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                base_url: Some("https://whisper.example.com/v1/audio".into()),
+                post_process_base_url: Some("https://chat.example.com/v1/chat".into()),
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+
+        let result = TranscriptionResult {
+            text: "hello".into(),
+            segments: None,
+            words: None,
+        };
+
+        let _ = pipeline.post_process_result(result);
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].1.as_deref(),
+            Some("https://chat.example.com/v1/chat"),
+            "post-processor should receive post_process_base_url, not base_url"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::significant_drop_tightening)]
+    fn post_process_base_url_defaults_to_none() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                base_url: Some("https://whisper.example.com/v1/audio".into()),
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+
+        let result = TranscriptionResult {
+            text: "hello".into(),
+            segments: None,
+            words: None,
+        };
+
+        let _ = pipeline.post_process_result(result);
+
+        let recorded = calls.lock().unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(
+            recorded[0].1, None,
+            "post-processor should get None when post_process_base_url is unset (not inherit base_url)"
+        );
     }
 }
