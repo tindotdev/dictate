@@ -131,7 +131,15 @@ match pp.process(&result.text, config) {
 
 #### F-04: JSON Error Extraction Swallows Parse Failures [Score: 45/100]
 
-**Location**: `crates/dictate-core/src/postprocess/groq.rs:170-179`, `crates/dictate-core/src/provider/groq.rs:187-196`
+**Location**: `crates/dictate-core/src/postprocess/groq.rs:45-67,217-226`, `crates/dictate-core/src/provider/groq.rs:58-80,214-221`
+
+**Status (2026-02-14)**: ✅ **Fixed**
+- Added explicit JSON parse/schema failure warnings while preserving the truncated-body fallback in both provider and post-process paths.
+- Added targeted regression tests:
+  - `extract_error_message_reads_nested_error_message`
+  - `extract_error_message_truncates_on_invalid_json`
+  - `extract_error_message_truncates_when_schema_is_unexpected`
+- Validation: `cargo test -p dictate-core postprocess::groq` and `cargo test -p dictate-core provider::groq` passed.
 
 **What's Real**: When API returns malformed JSON or unexpected error schema, parse errors are silently discarded and body is truncated to 200 chars.
 
@@ -281,12 +289,12 @@ Progress:
 
 **Total**: Required fixes complete; merge-ready.
 
-### Optional Quick Wins (10 minutes remaining)
+### Optional Quick Wins (Completed)
 
 1. **F-03**: Log response body read failures (5 min) ✅ **Completed (2026-02-14)**
-2. **F-04**: Log JSON parse failures (10 min)
+2. **F-04**: Log JSON parse/schema failures with fallback truncation (10 min) ✅ **Completed (2026-02-14)**
 
-These are trivial improvements that enhance debugging. Do if time permits.
+Both debugging improvements are complete.
 
 ### Defer to Follow-Up PR (125 minutes)
 
@@ -310,7 +318,7 @@ This PR is in **VERY GOOD shape**. The architecture is sound, the fail-safe prin
 1. **Actual bugs** (F-02)
 2. **Essential regression tests** (F-06)
 3. **Important test gaps (now covered)** (F-05)
-4. **Debugging improvements** (F-03, F-04)
+4. **Debugging improvements** (F-03, F-04) ✅ completed on 2026-02-14
 5. **Maintainability issues** (F-08)
 6. **UX polish** (F-09, F-10)
 7. **Theoretical concerns** (F-01, F-07)
@@ -331,7 +339,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 **Skeptical Reality**:
 
 - Must fix: 35-65 minutes before merge (F-02, F-06, F-05) ✅ completed on 2026-02-14
-- Nice to have: 15 minutes if time permits (F-03, F-04)
+- Nice to have: 0 minutes remaining (F-03, F-04 complete on 2026-02-14)
 - Polish: 125 minutes for follow-up PR (F-08, F-09, F-10)
 - **Total**: 35-65 minutes to production-ready (completed)
 
@@ -351,7 +359,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 ## Final Verdict
 
-**MERGE now (F-02, F-06, and F-05 fixed on 2026-02-14)**. Required fixes are complete; remaining items are optional quality improvements suitable for follow-up PR(s) before or after v1.4.0 release.
+**MERGE now (F-02, F-06, and F-05 fixed on 2026-02-14; F-03 and F-04 optional debugging improvements also completed on 2026-02-14)**. Required fixes are complete; remaining items are optional quality improvements suitable for follow-up PR(s) before or after v1.4.0 release.
 
 The PR demonstrates strong engineering principles. Don't let review perfectionism delay shipping valuable functionality.
 
