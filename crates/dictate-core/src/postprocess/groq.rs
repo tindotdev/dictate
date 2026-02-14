@@ -50,7 +50,7 @@ fn chat_client() -> Result<&'static Client, TranscriptionError> {
                 .map_err(|e| format!("failed to initialize chat HTTP client: {e}"))
         })
         .as_ref()
-        .map_err(|e| TranscriptionError::Network(e.clone()))
+        .map_err(|e| TranscriptionError::HttpClientInitialization(e.clone()))
 }
 
 impl PostProcessor for GroqPostProcessor {

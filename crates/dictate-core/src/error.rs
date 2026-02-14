@@ -119,6 +119,10 @@ pub enum TranscriptionError {
     #[error("network error: {0}")]
     Network(String),
 
+    /// HTTP client setup failed before any request was sent.
+    #[error("HTTP client initialization failed: {0}")]
+    HttpClientInitialization(String),
+
     /// The API returned a non-success HTTP status.
     #[error("API error ({status}): {message}")]
     Api {
@@ -247,6 +251,12 @@ mod tests {
     fn retryable_network_errors() {
         let err = TranscriptionError::Network("timeout".into());
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn http_client_initialization_is_not_retryable() {
+        let err = TranscriptionError::HttpClientInitialization("tls backend missing".into());
+        assert!(!err.is_retryable());
     }
 
     #[test]

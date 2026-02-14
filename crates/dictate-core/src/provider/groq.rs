@@ -66,7 +66,7 @@ fn http_client() -> Result<&'static Client, TranscriptionError> {
                 .map_err(|e| format!("failed to initialize HTTP client: {e}"))
         })
         .as_ref()
-        .map_err(|e| TranscriptionError::Network(e.clone()))
+        .map_err(|e| TranscriptionError::HttpClientInitialization(e.clone()))
 }
 
 impl TranscriptionProvider for GroqProvider {
