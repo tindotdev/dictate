@@ -71,28 +71,48 @@ impl PostProcessor for GroqPostProcessor {
         let model = config.model.unwrap_or(DEFAULT_MODEL);
         let client = chat_client()?;
 
-        (|| send_chat_request(client, url, config.api_key, model, text))
-            .retry(
-                ExponentialBuilder::default()
-                    .with_min_delay(BASE_DELAY)
-                    .with_max_delay(MAX_DELAY)
-                    .with_max_times(MAX_RETRIES as usize),
-            )
-            .when(super::super::error::TranscriptionError::is_retryable)
-            .notify(|err, dur| {
+        retry_chat_request(
+            || send_chat_request(client, url, config.api_key, model, text),
+            retry_builder(),
+            |err, dur| {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
-            })
-            .call()
-            .map_err(|e| {
-                if e.is_rate_limit_error() {
-                    TranscriptionError::RateLimitExhausted {
-                        retries: MAX_RETRIES,
-                    }
-                } else {
-                    e
-                }
-            })
+            },
+        )
     }
+}
+
+fn retry_builder() -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(BASE_DELAY)
+        .with_max_delay(MAX_DELAY)
+        .with_max_times(MAX_RETRIES as usize)
+}
+
+fn retry_chat_request<Op, Notify>(
+    mut operation: Op,
+    retry: ExponentialBuilder,
+    mut notify: Notify,
+) -> Result<String, TranscriptionError>
+where
+    Op: FnMut() -> Result<String, TranscriptionError>,
+    Notify: FnMut(&TranscriptionError, Duration),
+{
+    (|| operation())
+        .retry(retry)
+        .when(super::super::error::TranscriptionError::is_retryable)
+        .notify(|err, dur| {
+            notify(err, dur);
+        })
+        .call()
+        .map_err(|e| {
+            if e.is_rate_limit_error() {
+                TranscriptionError::RateLimitExhausted {
+                    retries: MAX_RETRIES,
+                }
+            } else {
+                e
+            }
+        })
 }
 
 // ─── HTTP request ────────────────────────────────────────────────────────────
@@ -204,6 +224,121 @@ fn send_chat_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fast_retry_builder() -> ExponentialBuilder {
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(1))
+            .with_max_delay(Duration::from_millis(2))
+            .with_max_times(MAX_RETRIES as usize)
+    }
+
+    #[test]
+    fn retry_exhaustion_retries_then_returns_last_retryable_error() {
+        let mut attempts = 0;
+        let mut notifications = 0;
+
+        let result = retry_chat_request(
+            || {
+                attempts += 1;
+                Err(TranscriptionError::Api {
+                    status: 503,
+                    message: "service unavailable".to_string(),
+                })
+            },
+            fast_retry_builder(),
+            |_, _| {
+                notifications += 1;
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TranscriptionError::Api { status: 503, .. })
+        ));
+        assert_eq!(attempts, (MAX_RETRIES + 1) as usize);
+        assert_eq!(notifications, MAX_RETRIES as usize);
+    }
+
+    #[test]
+    fn rate_limit_retry_exhaustion_converts_to_rate_limit_exhausted() {
+        let mut attempts = 0;
+        let mut notifications = 0;
+
+        let result = retry_chat_request(
+            || {
+                attempts += 1;
+                Err(TranscriptionError::Api {
+                    status: 429,
+                    message: "rate limited".to_string(),
+                })
+            },
+            fast_retry_builder(),
+            |_, _| {
+                notifications += 1;
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TranscriptionError::RateLimitExhausted {
+                retries: MAX_RETRIES
+            })
+        ));
+        assert_eq!(attempts, (MAX_RETRIES + 1) as usize);
+        assert_eq!(notifications, MAX_RETRIES as usize);
+    }
+
+    #[test]
+    fn non_retryable_error_skips_retry_and_notify() {
+        let mut attempts = 0;
+        let mut notifications = 0;
+
+        let result = retry_chat_request(
+            || {
+                attempts += 1;
+                Err(TranscriptionError::Api {
+                    status: 401,
+                    message: "invalid key".to_string(),
+                })
+            },
+            fast_retry_builder(),
+            |_, _| {
+                notifications += 1;
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(TranscriptionError::Api { status: 401, .. })
+        ));
+        assert_eq!(attempts, 1);
+        assert_eq!(notifications, 0);
+    }
+
+    #[test]
+    fn retry_notify_receives_each_retryable_error() {
+        let mut notifications = Vec::new();
+
+        let result = retry_chat_request(
+            || {
+                Err(TranscriptionError::Network(
+                    "connection reset by peer".to_string(),
+                ))
+            },
+            fast_retry_builder(),
+            |err, dur| {
+                notifications.push((err.to_string(), dur));
+            },
+        );
+
+        assert!(matches!(result, Err(TranscriptionError::Network(_))));
+        assert_eq!(notifications.len(), MAX_RETRIES as usize);
+        assert!(
+            notifications
+                .iter()
+                .all(|(msg, _)| msg.contains("network error: connection reset by peer"))
+        );
+    }
 
     #[test]
     fn empty_text_skips_api() {

@@ -86,8 +86,16 @@ match pp.process(&result.text, config) {
 #### F-05: Missing Tests for Retry Exhaustion Logic [Score: 80/100]
 
 **Location**: `crates/dictate-core/src/postprocess/groq.rs:74-95`
+**Status (2026-02-14)**: ✅ **Fixed**
+- Added targeted retry tests in `crates/dictate-core/src/postprocess/groq.rs`:
+  - `retry_exhaustion_retries_then_returns_last_retryable_error`
+  - `rate_limit_retry_exhaustion_converts_to_rate_limit_exhausted`
+  - `non_retryable_error_skips_retry_and_notify`
+  - `retry_notify_receives_each_retryable_error`
+- Extracted retry execution into a testable helper (`retry_chat_request`) while preserving production behavior.
+- Validation: `cargo test -p dictate-core postprocess::groq` and `cargo test -p dictate-core` passed.
 
-**What's Real**: The `backon` retry logic is critical infrastructure with zero direct tests for retry exhaustion, rate limit conversion, or notify callbacks.
+**What's Real**: The `backon` retry logic was critical infrastructure with zero direct post-process tests for retry exhaustion, rate limit conversion, or notify callbacks. This gap is now covered.
 
 **Nuance**: The existing transcription provider tests DO exercise similar retry logic indirectly, and `backon` is battle-tested. This reduces urgency slightly.
 
@@ -97,7 +105,7 @@ match pp.process(&result.text, config) {
 
 **Risk if Ignored**: Medium likelihood of integration bugs with error classification (not `backon` itself). Example: if `.when()` predicate is broken, retries behave incorrectly.
 
-**Verdict**: Important but can be done post-merge if time is tight, given similarity to working production patterns.
+**Verdict**: ✅ Completed. The test gap is closed with focused retry-exhaustion coverage.
 
 ---
 
@@ -254,19 +262,20 @@ match pp.process(&result.text, config) {
 
 ## Merge Recommendation
 
-**Status**: ✅ **APPROVE WITH MINOR FIXES**
+**Status**: ✅ **APPROVE / MERGE READY**
 
-### Immediate Action (35-65 minutes)
+### Immediate Action (Completed)
 
 1. **F-02**: Add `HttpClientInitialization` error variant (15 min) ✅ **REQUIRED**
 2. **F-06**: Add post-processing failure fallback test (20 min) ✅ **REQUIRED**
-3. **F-05**: Add retry exhaustion tests (30 min) ⚠️ **IMPORTANT** (can be post-merge if needed)
+3. **F-05**: Add retry exhaustion tests (30 min) ✅ **REQUIRED**
 
 Progress:
 - F-02 completed on 2026-02-14.
 - F-06 completed on 2026-02-14.
+- F-05 completed on 2026-02-14.
 
-**Total**: Required fixes complete; +30 minutes if including retry tests (F-05) before merge.
+**Total**: Required fixes complete; merge-ready.
 
 ### Optional Quick Wins (15 minutes)
 
@@ -296,7 +305,7 @@ This PR is in **VERY GOOD shape**. The architecture is sound, the fail-safe prin
 
 1. **Actual bugs** (F-02)
 2. **Essential regression tests** (F-06)
-3. **Important test gaps** (F-05)
+3. **Important test gaps (now covered)** (F-05)
 4. **Debugging improvements** (F-03, F-04)
 5. **Maintainability issues** (F-08)
 6. **UX polish** (F-09, F-10)
@@ -317,10 +326,10 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 **Skeptical Reality**:
 
-- Must fix: 35-65 minutes before merge (F-02, F-06, optionally F-05)
+- Must fix: 35-65 minutes before merge (F-02, F-06, F-05) ✅ completed on 2026-02-14
 - Nice to have: 15 minutes if time permits (F-03, F-04)
 - Polish: 125 minutes for follow-up PR (F-08, F-09, F-10)
-- **Total**: 35-65 minutes to production-ready
+- **Total**: 35-65 minutes to production-ready (completed)
 
 ### Key Insights
 
@@ -328,7 +337,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 2. **The ModelId type is exemplary**: Parse-don't-validate pattern with comprehensive validation. Suggestions for ergonomic improvements (F-12) are premature.
 
-3. **Error classification is sound**: The retry logic mirrors working production patterns. F-05 tests are important but not blocking given backon's battle-tested status.
+3. **Error classification is sound**: The retry logic mirrors working production patterns and now has direct post-processing regression coverage (F-05), reducing integration risk around retry predicates and rate-limit conversion.
 
 4. **Most "critical" findings are polish**: F-01 (redundant field), F-07 (backoff timing), F-11 (import paths) are theoretical concerns or style preferences, not actual bugs.
 
@@ -338,7 +347,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 ## Final Verdict
 
-**MERGE now (F-02 and F-06 fixed on 2026-02-14)**. Optionally add F-05 retry tests (~30 minutes) before merge for extra confidence. The rest can wait for immediate follow-up PR before v1.4.0 release.
+**MERGE now (F-02, F-06, and F-05 fixed on 2026-02-14)**. Required fixes are complete; remaining items are optional quality improvements suitable for follow-up PR(s) before or after v1.4.0 release.
 
 The PR demonstrates strong engineering principles. Don't let review perfectionism delay shipping valuable functionality.
 
