@@ -44,19 +44,19 @@ fn truncated_body(body: &str) -> String {
 
 fn extract_error_message(body: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(body) {
-        Ok(json) => match json
+        Ok(json) => json
             .get("error")
             .and_then(|error| error.get("message"))
             .and_then(|message| message.as_str())
-        {
-            Some(message) => message.to_string(),
-            None => {
-                eprintln!(
-                    "[dictate] warning: Groq post-process error JSON missing `error.message`, using truncated body"
-                );
-                truncated_body(body)
-            }
-        },
+            .map_or_else(
+                || {
+                    eprintln!(
+                        "[dictate] warning: Groq post-process error JSON missing `error.message`, using truncated body"
+                    );
+                    truncated_body(body)
+                },
+                std::string::ToString::to_string,
+            ),
         Err(err) => {
             eprintln!(
                 "[dictate] warning: failed to parse Groq post-process error JSON, using truncated body: {err}"
