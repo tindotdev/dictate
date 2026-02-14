@@ -56,6 +56,11 @@ CLIENT.get_or_init(|| {
 
 **Location**: `crates/dictate-core/src/pipeline.rs:162-195`
 
+**Status (2026-02-14)**: ✅ **Fixed**
+- Added `FailingPostProcessor` test double in `crates/dictate-core/src/pipeline.rs`.
+- Added regression test `post_process_failure_falls_back_to_raw_transcription`.
+- Validation: `cargo test -p dictate-core pipeline::tests::post_process -- --nocapture` passed.
+
 **What's Real**: The core fail-safe behavior (preserving original text when post-processing fails) is **completely untested**. This is THE most important property of the feature.
 
 **Evidence**:
@@ -259,8 +264,9 @@ match pp.process(&result.text, config) {
 
 Progress:
 - F-02 completed on 2026-02-14.
+- F-06 completed on 2026-02-14.
 
-**Total**: 35 minutes for required fixes, 65 minutes if including retry tests
+**Total**: Required fixes complete; +30 minutes if including retry tests (F-05) before merge.
 
 ### Optional Quick Wins (15 minutes)
 
@@ -332,7 +338,7 @@ The review marked 6 issues as "CRITICAL" when only 2-3 genuinely warrant that de
 
 ## Final Verdict
 
-**MERGE after fixing F-02 and F-06 (~35 minutes)**. Optionally add F-05 retry tests (~30 minutes) before merge for peace of mind. The rest can wait for immediate follow-up PR before v1.4.0 release.
+**MERGE now (F-02 and F-06 fixed on 2026-02-14)**. Optionally add F-05 retry tests (~30 minutes) before merge for extra confidence. The rest can wait for immediate follow-up PR before v1.4.0 release.
 
 The PR demonstrates strong engineering principles. Don't let review perfectionism delay shipping valuable functionality.
 

@@ -582,6 +582,37 @@ mod tests {
         }
     }
 
+    /// Mock post-processor that always fails after recording calls.
+    struct FailingPostProcessor {
+        calls: PostProcessCalls,
+    }
+
+    impl FailingPostProcessor {
+        fn new(calls: PostProcessCalls) -> Self {
+            Self { calls }
+        }
+    }
+
+    impl PostProcessor for FailingPostProcessor {
+        fn name(&self) -> &'static str {
+            "mock-pp-failing"
+        }
+
+        fn process(
+            &self,
+            text: &str,
+            config: crate::postprocess::PostProcessConfig<'_>,
+        ) -> Result<String, crate::error::TranscriptionError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((text.to_string(), config.base_url.map(String::from)));
+            Err(crate::error::TranscriptionError::Network(
+                "forced post-process failure".into(),
+            ))
+        }
+    }
+
     #[test]
     fn post_process_skips_verbose_json_format() {
         let calls = Arc::new(Mutex::new(Vec::new()));
@@ -634,6 +665,32 @@ mod tests {
             assert_eq!(processed.text, "HELLO WORLD", "format: {}", format.as_str());
             assert_eq!(calls.lock().unwrap().len(), 1);
         }
+    }
+
+    #[test]
+    fn post_process_failure_falls_back_to_raw_transcription() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                response_format: ResponseFormat::Json,
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(FailingPostProcessor::new(Arc::clone(&calls))));
+
+        let result = TranscriptionResult {
+            text: "hello world".into(),
+            segments: None,
+            words: None,
+        };
+
+        let processed = pipeline.post_process_result(result);
+
+        assert_eq!(processed.text, "hello world");
+        assert_eq!(calls.lock().unwrap().len(), 1);
     }
 
     #[test]
