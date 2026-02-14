@@ -7,9 +7,9 @@ use std::time::Duration;
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor, GroqProvider, PipelineConfig,
-    PostProcessor, ProgressiveChunker, RecorderConfig, RecvResult, ResponseFormat, Segment,
-    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
+    DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor, GroqProvider, ModelId,
+    PipelineConfig, PostProcessor, ProgressiveChunker, RecorderConfig, RecvResult, ResponseFormat,
+    Segment, TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
     Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
@@ -54,13 +54,13 @@ pub struct RecordOptions {
     language: Option<String>,
     prompt: Option<String>,
     response_format: Option<ResponseFormat>,
-    model: Option<WhisperModel>,
+    transcription_model: Option<WhisperModel>,
     temperature: Option<f32>,
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
     stdout: bool,
     no_clipboard: bool,
     post_process: bool,
-    post_process_model: Option<String>,
+    post_process_model: Option<ModelId>,
     post_process_base_url: Option<String>,
 }
 
@@ -100,9 +100,9 @@ impl RecordOptions {
         self
     }
 
-    /// Set the Whisper model (`LargeV3Turbo` or `LargeV3`).
-    pub const fn model(mut self, model: WhisperModel) -> Self {
-        self.model = Some(model);
+    /// Set the Whisper transcription model (`LargeV3Turbo` or `LargeV3`).
+    pub const fn transcription_model(mut self, model: WhisperModel) -> Self {
+        self.transcription_model = Some(model);
         self
     }
 
@@ -137,8 +137,8 @@ impl RecordOptions {
     }
 
     /// Set the model for post-processing.
-    pub fn post_process_model(mut self, model: impl Into<String>) -> Self {
-        self.post_process_model = Some(model.into());
+    pub fn post_process_model(mut self, model: ModelId) -> Self {
+        self.post_process_model = Some(model);
         self
     }
 
@@ -226,7 +226,7 @@ fn parse_and_create_pipeline(
         language: options.language.clone(),
         prompt: effective_prompt,
         response_format: response_format.unwrap_or_default(),
-        model: options.model,
+        transcription_model: options.transcription_model,
         temperature: options.temperature,
         timestamp_granularities: options.timestamp_granularities.clone().unwrap_or_default(),
         post_process: options.post_process,

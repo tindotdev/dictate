@@ -184,6 +184,27 @@ pub const fn is_retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
 }
 
+// ─── Model ID Errors ────────────────────────────────────────────────────────
+
+/// Errors that can occur when constructing a [`ModelId`](crate::model_id::ModelId).
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum ModelIdError {
+    /// The model ID string was empty.
+    #[error("model ID must not be empty")]
+    Empty,
+
+    /// The model ID exceeded the maximum length of 128 characters.
+    #[error("model ID is too long ({len} chars, max 128)")]
+    TooLong {
+        /// Actual length of the invalid model ID string.
+        len: usize,
+    },
+
+    /// The model ID contained characters outside `[a-zA-Z0-9._/-]`.
+    #[error("model ID contains invalid characters (allowed: a-zA-Z0-9._/-)")]
+    InvalidCharacters,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

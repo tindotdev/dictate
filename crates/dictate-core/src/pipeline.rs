@@ -11,6 +11,7 @@ use crate::audio::chunker::OVERLAP_SAMPLES;
 use crate::encoder::AudioEncoder;
 use crate::encoder::WavEncoder;
 use crate::error::TranscriptionError;
+use crate::model_id::ModelId;
 use crate::postprocess::{PostProcessConfig, PostProcessor};
 use crate::provider::{
     ResponseFormat, TimestampGranularity, TranscriptionProvider, TranscriptionResult, WhisperModel,
@@ -80,8 +81,8 @@ pub struct PipelineConfig {
     pub prompt: Option<String>,
     /// Response format. Defaults to JSON.
     pub response_format: ResponseFormat,
-    /// Optional model selection. Defaults to provider-specific default if None.
-    pub model: Option<WhisperModel>,
+    /// Optional transcription model selection. Defaults to provider-specific default if None.
+    pub transcription_model: Option<WhisperModel>,
     /// Optional sampling temperature (0.0-1.0). Default 0.0 recommended for transcription.
     pub temperature: Option<f32>,
     /// Optional timestamp granularities.
@@ -90,7 +91,7 @@ pub struct PipelineConfig {
     /// Whether post-processing is enabled.
     pub post_process: bool,
     /// Optional LLM model for post-processing.
-    pub post_process_model: Option<String>,
+    pub post_process_model: Option<ModelId>,
     /// Optional base URL for the post-processing chat endpoint.
     /// Separate from `base_url` (transcription) because they hit different APIs.
     pub post_process_base_url: Option<String>,
@@ -103,7 +104,7 @@ impl Default for PipelineConfig {
             language: None,
             prompt: None,
             response_format: ResponseFormat::Json,
-            model: None,
+            transcription_model: None,
             temperature: None,
             timestamp_granularities: Vec::new(),
             post_process: false,
@@ -178,7 +179,7 @@ impl TranscriptionPipeline {
         let config = PostProcessConfig {
             api_key: &self.api_key,
             base_url: self.config.post_process_base_url.as_deref(),
-            model: self.config.post_process_model.as_deref(),
+            model: self.config.post_process_model.as_ref().map(ModelId::as_str),
         };
 
         match pp.process(&result.text, config) {
@@ -234,7 +235,7 @@ impl TranscriptionPipeline {
             provider_config = provider_config.with_prompt(prompt);
         }
         provider_config = provider_config.with_response_format(self.config.response_format);
-        if let Some(model) = self.config.model {
+        if let Some(model) = self.config.transcription_model {
             provider_config = provider_config.with_model(model.as_str());
         }
         if let Some(temp) = self.config.temperature {

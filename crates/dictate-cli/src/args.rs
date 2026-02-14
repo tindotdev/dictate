@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use dictate_core::{ResponseFormat, TimestampGranularity};
+use dictate_core::{ModelId, ResponseFormat, TimestampGranularity};
 
 /// Parse and validate temperature in the 0.0–1.0 range.
 fn parse_temperature(s: &str) -> Result<f32, String> {
@@ -101,9 +101,9 @@ pub struct RecordArgs {
     #[arg(long)]
     pub format: Option<ResponseFormat>,
 
-    /// Model selection: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
+    /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
     #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
-    pub model: Option<String>,
+    pub transcription_model: Option<String>,
 
     /// Sampling temperature (0.0-1.0). Default 0.0 is recommended for transcription
     #[arg(long, value_parser = parse_temperature)]
@@ -128,7 +128,7 @@ pub struct RecordArgs {
 
     /// Model for post-processing (default: llama-3.1-8b-instant)
     #[arg(long, requires = "post_process")]
-    pub post_process_model: Option<String>,
+    pub post_process_model: Option<ModelId>,
 
     /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
     #[arg(long, requires = "post_process")]
@@ -429,7 +429,7 @@ mod tests {
 
         assert!(args.post_process);
         assert_eq!(
-            args.post_process_model.as_deref(),
+            args.post_process_model.as_ref().map(dictate_core::ModelId::as_str),
             Some("llama-3.1-8b-instant")
         );
     }
