@@ -171,6 +171,31 @@ mod tests {
     }
 
     #[test]
+    fn record_accepts_transcription_model_flag() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--transcription-model",
+            "whisper-large-v3",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert_eq!(
+            args.transcription_model.as_deref(),
+            Some("whisper-large-v3")
+        );
+    }
+
+    #[test]
+    fn record_rejects_legacy_model_flag() {
+        let result = Cli::try_parse_from(["dictate", "record", "--model", "whisper-large-v3"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn temperature_rejects_out_of_range() {
         let result = Cli::try_parse_from(["dictate", "record", "--temperature", "1.5"]);
         assert!(result.is_err());
@@ -429,7 +454,9 @@ mod tests {
 
         assert!(args.post_process);
         assert_eq!(
-            args.post_process_model.as_ref().map(dictate_core::ModelId::as_str),
+            args.post_process_model
+                .as_ref()
+                .map(dictate_core::ModelId::as_str),
             Some("llama-3.1-8b-instant")
         );
     }

@@ -176,12 +176,12 @@ record-format format device="": build-cli
         {{dictate_bin}} record --format "{{format}}"; \
     fi
 
-# Record with specific model (whisper-large-v3-turbo, whisper-large-v3)
-record-model model device="": build-cli
+# Record with specific transcription model (whisper-large-v3-turbo, whisper-large-v3)
+record-transcription-model model device="": build-cli
     if [ -n "{{device}}" ]; then \
-        {{dictate_bin}} record --model "{{model}}" --device "{{device}}"; \
+        {{dictate_bin}} record --transcription-model "{{model}}" --device "{{device}}"; \
     else \
-        {{dictate_bin}} record --model "{{model}}"; \
+        {{dictate_bin}} record --transcription-model "{{model}}"; \
     fi
 
 # Record with all Phase 2 options (language + prompt + format)
