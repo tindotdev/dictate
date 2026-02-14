@@ -4,108 +4,86 @@ Voice-to-text for Linux. Speak → transcribe → clipboard.
 
 ![dictate demo](assets/demo.gif)
 
-## Requirements
-
-- Rust toolchain
-- [Groq API key](https://console.groq.com/keys)
-- Linux audio (PipeWire or PulseAudio)
-- Clipboard: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11)
-
 ## Installation
+
+**Homebrew:**
+
+```bash
+brew tap tindotdev/tap
+brew install tindotdev/tap/dictate-cli
+```
+
+**From source:**
 
 ```bash
 git clone https://github.com/tindotdev/dictate.git && cd dictate
-just install       # installs to ~/.cargo/bin/dictate
-just add-secret    # configure GROQ_API_KEY
+just install
 ```
 
 ## Usage
 
 ```bash
-dictate                              # record → clipboard
-dictate --stdout                     # record → stdout (+ clipboard)
-dictate --no-clipboard               # record → stdout only
-dictate devices                      # list audio input devices
-dictate --device <query>             # select specific device by name/index
-dictate --language en                # language hint for better accuracy
-dictate --format verbose_json        # structured JSON output
-dictate --timestamps word            # word-level timestamps (requires verbose_json)
-dictate remember                     # add custom terms to dictionary
-dictate dictionary                   # list dictionary entries
+dictate                        # record → clipboard
+dictate --stdout               # record → stdout (+ clipboard)
+dictate --no-clipboard         # record → stdout only
+dictate --language en          # language hint for accuracy
+dictate --device <query>       # select device by name or index
+dictate devices                # list audio input devices
 ```
 
-Dictionary entries are injected into Whisper's prompt parameter to improve accuracy for technical terms, names, and jargon. Stored at `~/.config/dictate/dictionary.json`.
+### Output formats
+
+```bash
+dictate --format verbose_json        # structured JSON
+dictate --timestamps word            # word-level timestamps (requires verbose_json)
+```
+
+### Vocabulary
+
+Custom terms improve transcription accuracy for technical jargon, names, and abbreviations.
+
+```bash
+dictate vocab add AWS OpenAI
+dictate vocab remove AWS
+dictate vocab list
+```
+
+### Dictionary
+
+Corrections for commonly misheard words. Interactive editor.
+
+```bash
+dictate remember                     # add correction (interactive)
+dictate dictionary                   # list entries
+```
+
+Both are injected into Whisper's prompt parameter. Stored at `~/.config/dictate/`.
 
 ## Configuration
 
-- `GROQ_API_KEY` (required) — Groq API key for Whisper transcription
-- `GROQ_BASE_URL` (optional) — override API endpoint URL
-
-## Global Activation
-
-For desktop-wide activation, bind a launcher script to a global shortcut.
-
-Configure your API key:
-
 ```bash
-just add-secret
+export GROQ_API_KEY="your-api-key"  # console.groq.com/keys
+export GROQ_BASE_URL="..."          # optional: override endpoint
 ```
 
-Install the launcher:
+Add to shell profile for persistence. From source: `just add-secret`.
 
-```bash
-just install-launcher
-```
+## Requirements
 
-Bind a global shortcut in your compositor:
+- Linux audio (PipeWire or PulseAudio)
+- Clipboard: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11)
 
-COSMIC:
+## Global shortcut
 
-```
-super + semicolon
-  /home/you/.local/bin/dictate-launch
-```
+Bind `dictate` to a key in your compositor for desktop-wide activation.
 
-Sway:
+**Sway:** `bindsym $mod+d exec foot -T "dictate" -- dictate`
 
-```
-bindsym $mod+d exec ~/.local/bin/dictate-launch
-```
+**Hyprland:** `bind = SUPER, D, exec, foot -T "dictate" -- dictate`
 
-Hyprland:
+**COSMIC:** `super + semicolon → foot -T "dictate" -- dictate`
 
-```
-bind = SUPER, D, exec, ~/.local/bin/dictate-launch
-```
-
-## Troubleshooting
-
-Audio issues:
-
-```bash
-systemctl --user status pipewire  # check PipeWire
-dictate devices                    # list devices
-dictate --device "device name"     # test specific device
-sudo usermod -aG audio $USER       # fix permissions (then log out/in)
-```
-
-Clipboard issues:
-
-```bash
-# Wayland
-sudo dnf install wl-clipboard
-echo "test" | wl-copy && wl-paste
-
-# X11
-sudo dnf install xclip
-echo "test" | xclip -selection clipboard && xclip -o -selection clipboard
-```
-
-API errors:
-
-- 401 — invalid/expired API key
-- 429 — rate limited (retries automatically)
-- 413 — recording too long (shouldn't happen with chunking)
+Replace `foot` with your terminal of choice.
 
 ## Architecture
 
@@ -113,19 +91,27 @@ API errors:
 microphone → cpal → resample (16kHz mono) → chunking → Groq Whisper → clipboard
 ```
 
-- Audio capture — cpal with real-time resampling
-- Ring buffer — lock-free SPSC for zero-allocation transfer
-- Progressive chunking — overlapping chunks for long recordings
-- Transcription — Groq Whisper API (OpenAI-compatible)
-- Clipboard — platform-aware with error handling
+- **Audio capture** — cpal with real-time resampling
+- **Ring buffer** — lock-free SPSC for zero-allocation transfer
+- **Progressive chunking** — overlapping chunks for long recordings
+- **Transcription** — Groq Whisper API (OpenAI-compatible)
+- **Clipboard** — platform-aware with fallback to stderr
+
+## Troubleshooting
+
+**Audio:** Check PipeWire status with `systemctl --user status pipewire`. List devices with `dictate devices`. Fix permissions with `sudo usermod -aG audio $USER` (requires re-login).
+
+**Clipboard:** Install `wl-clipboard` (Wayland) or `xclip` (X11). Verify with `echo "test" | wl-copy && wl-paste`.
+
+**API errors:** 401 = invalid key. 429 = rate limited (retries automatically). 413 = recording too long.
 
 ## Privacy
 
-Audio is sent to the [Groq API](https://groq.com) for transcription. Review [Groq's privacy policy](https://groq.com/privacy-policy/) and [terms of use](https://groq.com/terms-of-use/). No audio is stored locally.
+Audio is sent to [Groq](https://groq.com) for transcription. No audio is stored locally. See Groq's [privacy policy](https://groq.com/privacy-policy/) and [terms of use](https://groq.com/terms-of-use/).
 
 ## Acknowledgments
 
-Audio pipeline design: [whis](https://github.com/frankdierolf/whis).
+Audio pipeline design inspired by [whis](https://github.com/frankdierolf/whis).
 
 ## License
 
