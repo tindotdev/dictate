@@ -230,6 +230,22 @@ mod tests {
     }
 
     #[test]
+    fn retryable_status_boundaries() {
+        // Below first retryable edge (408)
+        assert!(!is_retryable_status(407));
+        assert!(is_retryable_status(408));
+
+        // Around 429 edge
+        assert!(!is_retryable_status(428));
+        assert!(is_retryable_status(429));
+        assert!(!is_retryable_status(430));
+
+        // Around 5xx retryable set upper edge (504)
+        assert!(is_retryable_status(504));
+        assert!(!is_retryable_status(505));
+    }
+
+    #[test]
     fn retryable_api_errors() {
         let retryable = TranscriptionError::Api {
             status: 500,
@@ -270,11 +286,27 @@ mod tests {
 
         let exhausted = TranscriptionError::RateLimitExhausted { retries: 3 };
         assert!(exhausted.is_rate_limit_error());
+        assert!(exhausted.is_retryable());
 
         let server_error = TranscriptionError::Api {
             status: 500,
             message: "internal".into(),
         };
         assert!(!server_error.is_rate_limit_error());
+    }
+
+    #[test]
+    fn api_boundary_errors_classify_as_non_rate_limit() {
+        let below = TranscriptionError::Api {
+            status: 428,
+            message: "precondition required".into(),
+        };
+        assert!(!below.is_rate_limit_error());
+
+        let above = TranscriptionError::Api {
+            status: 430,
+            message: "request header fields too large".into(),
+        };
+        assert!(!above.is_rate_limit_error());
     }
 }
