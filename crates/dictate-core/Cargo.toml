@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 audioadapter.workspace = true
 audioadapter-buffers.workspace = true
+backon.workspace = true
 bytes.workspace = true
 cpal.workspace = true
 directories.workspace = true

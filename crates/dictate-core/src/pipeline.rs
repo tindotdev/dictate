@@ -11,6 +11,7 @@ use crate::audio::chunker::OVERLAP_SAMPLES;
 use crate::encoder::AudioEncoder;
 use crate::encoder::WavEncoder;
 use crate::error::TranscriptionError;
+use crate::postprocess::{PostProcessConfig, PostProcessor};
 use crate::provider::{
     ResponseFormat, TimestampGranularity, TranscriptionProvider, TranscriptionResult, WhisperModel,
 };
@@ -86,6 +87,10 @@ pub struct PipelineConfig {
     /// Optional timestamp granularities.
     /// Requires `response_format: ResponseFormat::VerboseJson`.
     pub timestamp_granularities: Vec<TimestampGranularity>,
+    /// Whether post-processing is enabled.
+    pub post_process: bool,
+    /// Optional LLM model for post-processing.
+    pub post_process_model: Option<String>,
 }
 
 impl Default for PipelineConfig {
@@ -98,6 +103,8 @@ impl Default for PipelineConfig {
             model: None,
             temperature: None,
             timestamp_granularities: Vec::new(),
+            post_process: false,
+            post_process_model: None,
         }
     }
 }
@@ -105,6 +112,7 @@ impl Default for PipelineConfig {
 /// Orchestrates audio encoding and transcription for a recording session.
 pub struct TranscriptionPipeline {
     provider: Box<dyn TranscriptionProvider>,
+    post_processor: Option<Box<dyn PostProcessor>>,
     api_key: String,
     encoder: WavEncoder,
     config: PipelineConfig,
@@ -128,9 +136,48 @@ impl TranscriptionPipeline {
     ) -> Self {
         Self {
             provider,
+            post_processor: None,
             api_key,
             encoder: WavEncoder,
             config,
+        }
+    }
+
+    /// Attach an optional post-processor to refine transcribed text.
+    #[must_use]
+    pub fn with_post_processor(mut self, post_processor: Box<dyn PostProcessor>) -> Self {
+        self.post_processor = Some(post_processor);
+        self
+    }
+
+    /// Post-process a merged transcription result via LLM.
+    ///
+    /// Fail-safe: returns the original result on error (never loses transcribed text).
+    #[must_use]
+    pub fn post_process_result(&self, mut result: TranscriptionResult) -> TranscriptionResult {
+        let Some(ref pp) = self.post_processor else {
+            return result;
+        };
+
+        if result.text.is_empty() {
+            return result;
+        }
+
+        let config = PostProcessConfig {
+            api_key: &self.api_key,
+            base_url: self.config.base_url.as_deref(),
+            model: self.config.post_process_model.as_deref(),
+        };
+
+        match pp.process(&result.text, config) {
+            Ok(processed) => {
+                result.text = processed;
+                result
+            }
+            Err(err) => {
+                eprintln!("[dictate] post-processing failed, using raw transcription: {err}");
+                result
+            }
         }
     }
 

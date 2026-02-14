@@ -6,6 +6,7 @@ pub mod dictionary;
 pub mod encoder;
 pub mod error;
 pub mod pipeline;
+pub mod postprocess;
 pub mod prompt;
 pub mod provider;
 pub mod resampler;
@@ -22,6 +23,7 @@ pub use dictionary::{Dictionary, DictionaryError, DictionaryStore};
 pub use encoder::{AudioEncoder, EncodedAudio, WavEncoder};
 pub use error::{AudioError, TranscriptionError};
 pub use pipeline::{PipelineConfig, TranscriptionPipeline};
+pub use postprocess::{GroqPostProcessor, PostProcessConfig, PostProcessor};
 pub use prompt::{PromptHint, format_hint_within_budget, merge_prompt_hints};
 pub use provider::{
     GroqProvider, ResponseFormat, Segment, TimestampGranularity, TranscriptionProvider,

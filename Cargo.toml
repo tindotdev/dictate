@@ -12,6 +12,9 @@ repository = "https://github.com/tindotdev/dictate"
 # Shared error handling
 thiserror = "2.0.18"
 
+# Retry logic
+backon = "1.6.0"
+
 # Audio processing
 audioadapter = "2.0.0"
 audioadapter-buffers = "2.0.0"

@@ -233,6 +233,22 @@ record-both-timestamps device="": build-cli
         {{dictate_bin}} record --format verbose_json --timestamps word,segment; \
     fi
 
+# Record with LLM post-processing for punctuation and formatting
+record-postprocess model="" device="": build-cli
+    if [ -n "{{device}}" ]; then \
+        if [ -n "{{model}}" ]; then \
+            {{dictate_bin}} record --post-process --post-process-model "{{model}}" --device "{{device}}"; \
+        else \
+            {{dictate_bin}} record --post-process --device "{{device}}"; \
+        fi; \
+    else \
+        if [ -n "{{model}}" ]; then \
+            {{dictate_bin}} record --post-process --post-process-model "{{model}}"; \
+        else \
+            {{dictate_bin}} record --post-process; \
+        fi; \
+    fi
+
 # Add a dictionary entry (interactive)
 remember: build-cli
     {{dictate_bin}} remember

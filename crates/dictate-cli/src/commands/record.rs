@@ -7,10 +7,10 @@ use std::time::Duration;
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DeviceSelection, Dictionary, DictionaryStore, GroqProvider, PipelineConfig, ProgressiveChunker,
-    RecorderConfig, RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
-    TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
-    format_hint_within_budget, merge_prompt_hints,
+    DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor, GroqProvider, PipelineConfig,
+    PostProcessor, ProgressiveChunker, RecorderConfig, RecvResult, ResponseFormat, Segment,
+    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
+    Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
 
@@ -56,6 +56,8 @@ pub struct RecordOptions {
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
     stdout: bool,
     no_clipboard: bool,
+    post_process: bool,
+    post_process_model: Option<String>,
 }
 
 impl RecordOptions {
@@ -123,6 +125,18 @@ impl RecordOptions {
         self.no_clipboard = enabled;
         self
     }
+
+    /// Enable LLM post-processing for punctuation and formatting cleanup.
+    pub const fn post_process(mut self, enabled: bool) -> Self {
+        self.post_process = enabled;
+        self
+    }
+
+    /// Set the model for post-processing.
+    pub fn post_process_model(mut self, model: impl Into<String>) -> Self {
+        self.post_process_model = Some(model.into());
+        self
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -156,6 +170,7 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 
     // Output results
     let merged = merge_results(results);
+    let merged = pipeline.post_process_result(merged);
     output_result(&merged, effective_format, interrupted, options);
 
     Ok(())
@@ -199,13 +214,18 @@ fn parse_and_create_pipeline(
         model: options.model,
         temperature: options.temperature,
         timestamp_granularities: options.timestamp_granularities.clone().unwrap_or_default(),
+        post_process: options.post_process,
+        post_process_model: options.post_process_model.clone(),
     };
 
-    let pipeline = Arc::new(TranscriptionPipeline::new(
-        Box::new(GroqProvider),
-        api_key,
-        config,
-    ));
+    let mut pipeline = TranscriptionPipeline::new(Box::new(GroqProvider), api_key, config);
+
+    if options.post_process {
+        let pp: Box<dyn PostProcessor> = Box::new(GroqPostProcessor);
+        pipeline = pipeline.with_post_processor(pp);
+    }
+
+    let pipeline = Arc::new(pipeline);
 
     Ok((effective_format, pipeline))
 }

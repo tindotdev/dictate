@@ -86,6 +86,12 @@ fn run() -> Result<()> {
     if args.no_clipboard {
         options = options.no_clipboard(true);
     }
+    if args.post_process {
+        options = options.post_process(true);
+    }
+    if let Some(model) = args.post_process_model {
+        options = options.post_process_model(model);
+    }
 
     commands::record::run(&options)?;
 

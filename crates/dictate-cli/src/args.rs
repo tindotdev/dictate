@@ -121,6 +121,14 @@ pub struct RecordArgs {
     /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
     #[arg(long, conflicts_with = "stdout")]
     pub no_clipboard: bool,
+
+    /// Post-process transcription with LLM for better punctuation and formatting
+    #[arg(long, short = 'p')]
+    pub post_process: bool,
+
+    /// Model for post-processing (default: llama-3.1-8b-instant)
+    #[arg(long, requires = "post_process")]
+    pub post_process_model: Option<String>,
 }
 
 #[cfg(test)]
@@ -352,5 +360,80 @@ mod tests {
     fn parse_dict_alias() {
         let cli = Cli::parse_from(["dictate", "dict"]);
         assert!(matches!(cli.command, Some(Commands::Dictionary)));
+    }
+
+    // --- Post-processing flag tests ---
+
+    #[test]
+    fn post_process_flag_defaults_to_false() {
+        let cli = Cli::parse_from(["dictate", "record"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(!args.post_process);
+        assert!(args.post_process_model.is_none());
+    }
+
+    #[test]
+    fn post_process_long_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "--post-process"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+    }
+
+    #[test]
+    fn post_process_short_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "-p"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+    }
+
+    #[test]
+    fn post_process_model_requires_post_process() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "record",
+            "--post-process-model",
+            "llama-3.1-8b-instant",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn post_process_model_accepted_with_post_process() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--post-process",
+            "--post-process-model",
+            "llama-3.1-8b-instant",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+        assert_eq!(
+            args.post_process_model.as_deref(),
+            Some("llama-3.1-8b-instant")
+        );
+    }
+
+    #[test]
+    fn top_level_post_process_flag() {
+        let cli = Cli::parse_from(["dictate", "-p"]);
+        assert!(cli.command.is_none());
+        assert!(cli.record_args.post_process);
     }
 }
