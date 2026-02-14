@@ -182,7 +182,10 @@ fn send_request(
         let status_code = status.as_u16();
         let body = response
             .text()
-            .unwrap_or_else(|_| String::from("<failed to read body>"));
+            .unwrap_or_else(|err| {
+                eprintln!("[dictate] warning: failed to read Groq error response body: {err}");
+                String::from("<failed to read body>")
+            });
 
         let message = serde_json::from_str::<serde_json::Value>(&body)
             .ok()

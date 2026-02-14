@@ -115,6 +115,10 @@ match pp.process(&result.text, config) {
 
 **Location**: `crates/dictate-core/src/postprocess/groq.rs:166-168`, `crates/dictate-core/src/provider/groq.rs:183-185`
 
+**Status (2026-02-14)**: ✅ **Fixed**
+- Added warning logs for failures while reading non-success Groq HTTP response bodies in both provider and post-process paths.
+- Validation: `cargo test -p dictate-core postprocess::groq` and `cargo test -p dictate-core provider::groq` passed.
+
 **What's Real**: When reading error response body fails (mid-response disconnect, encoding error), the secondary error is discarded with `unwrap_or_else(|_| ...)`.
 
 **Why It's Not Critical**: Primary error is still surfaced. We're only losing secondary diagnostic info on error paths. Fix is trivial (add `eprintln!`).
@@ -277,9 +281,9 @@ Progress:
 
 **Total**: Required fixes complete; merge-ready.
 
-### Optional Quick Wins (15 minutes)
+### Optional Quick Wins (10 minutes remaining)
 
-1. **F-03**: Log response body read failures (5 min)
+1. **F-03**: Log response body read failures (5 min) ✅ **Completed (2026-02-14)**
 2. **F-04**: Log JSON parse failures (10 min)
 
 These are trivial improvements that enhance debugging. Do if time permits.
