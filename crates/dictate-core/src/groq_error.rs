@@ -34,7 +34,7 @@ fn extract_error_message(body: &str, error_label: &str) -> String {
     }
 }
 
-pub(crate) fn api_error_from_failed_response(
+pub fn api_error_from_failed_response(
     response: reqwest::blocking::Response,
     error_label: &str,
 ) -> TranscriptionError {

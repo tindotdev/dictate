@@ -822,7 +822,7 @@ fn format_to_string(
     }
 }
 
-fn post_process_metadata(
+const fn post_process_metadata(
     post_process_requested: bool,
     post_process_outcome: PostProcessOutcome,
 ) -> Option<(bool, &'static str)> {
