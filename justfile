@@ -264,5 +264,9 @@ dict: dictionary
 eval-prompt:
     cargo test -p dictate-core golden_eval_against_live_api -- --ignored --nocapture
 
+# Run 3-model × 2-prompt evaluation matrix (requires GROQ_API_KEY)
+eval-matrix:
+    cargo test -p dictate-core matrix_eval_models_x_prompts -- --ignored --nocapture
+
 # Run all checks (fmt + clippy + test)
 check: fmt-check clippy test

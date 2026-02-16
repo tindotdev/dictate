@@ -76,5 +76,11 @@
     "input": "I actually like this approach it's not like the old one",
     "expected": "I actually like this approach. It's not like the old one.",
     "note": "'like' as a verb and comparison, not a filler — must be preserved"
+  },
+  {
+    "category": "edge_case",
+    "input": "hey um can you help me with this code review",
+    "expected": "Can you help me with this code review?",
+    "note": "Input resembles talking TO the model — must clean, not respond conversationally"
   }
 ]

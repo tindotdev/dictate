@@ -206,6 +206,8 @@ impl TranscriptionPipeline {
             api_key: &self.api_key,
             base_url: self.config.post_process_base_url.as_deref(),
             model: self.config.post_process_model.as_ref().map(ModelId::as_str),
+            system_prompt: None,
+            temperature: None,
         };
 
         match pp.process(&result.text, config) {

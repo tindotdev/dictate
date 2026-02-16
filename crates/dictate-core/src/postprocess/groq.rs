@@ -66,10 +66,12 @@ impl PostProcessor for GroqPostProcessor {
 
         let url = config.base_url.unwrap_or(DEFAULT_CHAT_URL);
         let model = config.model.unwrap_or(DEFAULT_MODEL);
+        let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
+        let temperature = config.temperature;
         let client = chat_client()?;
 
         retry_chat_request(
-            || send_chat_request(client, url, config.api_key, model, text),
+            || send_chat_request(client, url, config.api_key, model, text, system_prompt, temperature),
             retry_builder(),
             |err, dur| {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
@@ -118,6 +120,8 @@ where
 struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -148,19 +152,22 @@ fn send_chat_request(
     api_key: &str,
     model: &str,
     text: &str,
+    system_prompt: &str,
+    temperature: Option<f32>,
 ) -> Result<String, TranscriptionError> {
     let body = ChatRequest {
         model,
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: SYSTEM_PROMPT,
+                content: system_prompt,
             },
             ChatMessage {
                 role: "user",
                 content: text,
             },
         ],
+        temperature,
     };
 
     let response = client
@@ -328,6 +335,8 @@ mod tests {
             api_key: "test",
             base_url: None,
             model: None,
+            system_prompt: None,
+            temperature: None,
         };
         let result = pp.process("", config).unwrap();
         assert_eq!(result, "");
@@ -360,6 +369,8 @@ mod tests {
             api_key: "test-key",
             base_url: Some(&url),
             model: None,
+            system_prompt: None,
+            temperature: None,
         };
 
         let result = pp.process("um hello how are you uh doing today", config);
@@ -386,6 +397,8 @@ mod tests {
             api_key: "bad-key",
             base_url: Some(&url),
             model: None,
+            system_prompt: None,
+            temperature: None,
         };
 
         let result = pp.process("hello", config);
@@ -422,6 +435,8 @@ mod tests {
             api_key: "test-key",
             base_url: Some(&url),
             model: Some("llama-3.1-8b-instant"),
+            system_prompt: None,
+            temperature: None,
         };
 
         let result = pp.process("some text", config);

@@ -144,6 +144,8 @@ fn golden_eval_against_live_api() {
             api_key: &api_key,
             base_url: None,
             model: None,
+            system_prompt: None,
+            temperature: None,
         };
 
         let result = pp.process(&case.input, config);
@@ -263,4 +265,157 @@ fn rouge1_empty_strings() {
     assert!((rouge1_f("", "") - 1.0).abs() < f64::EPSILON);
     assert!(rouge1_f("hello", "") < f64::EPSILON);
     assert!(rouge1_f("", "hello") < f64::EPSILON);
+}
+
+// ──── Matrix evaluation ──────────────────────────────────────────────────
+
+const PROMPT_CURRENT: &str = include_str!("prompts/cleanup.txt");
+const PROMPT_V2: &str = include_str!("prompts/candidates/2026-02-16-23:18:23+07:00.txt");
+
+/// Models to evaluate in the matrix.
+const MODELS: &[&str] = &[
+    "llama-3.1-8b-instant",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "llama-3.3-70b-versatile",
+];
+
+/// Prompt variants to evaluate in the matrix.
+const PROMPTS: &[(&str, &str)] = &[
+    ("cleanup.txt", PROMPT_CURRENT),
+    ("cleanup_v2.txt", PROMPT_V2),
+];
+
+/// Per-combo aggregate scores.
+struct ComboResult {
+    model: &'static str,
+    prompt_name: &'static str,
+    pass: usize,
+    fail: usize,
+    avg_lev: f64,
+    avg_rouge: f64,
+}
+
+/// Run all golden cases across 3 models × 2 prompts and print a comparison table.
+///
+/// Requires `GROQ_API_KEY` environment variable. Skipped in normal CI.
+///
+/// ```bash
+/// just eval-matrix
+/// ```
+#[test]
+#[ignore = "hits live Groq API — run with: just eval-matrix"]
+#[allow(clippy::cast_precision_loss)]
+fn matrix_eval_models_x_prompts() {
+    let api_key = match std::env::var("GROQ_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("GROQ_API_KEY not set — skipping matrix eval");
+            return;
+        }
+    };
+
+    let cases = load_golden_cases();
+    let pp = GroqPostProcessor;
+    let mut results: Vec<ComboResult> = Vec::new();
+
+    for &(prompt_name, prompt_text) in PROMPTS {
+        for &model in MODELS {
+            eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+            eprintln!("║  Model: {model:<30}  Prompt: {prompt_name:<20} ║");
+            eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+
+            let mut pass = 0;
+            let mut fail = 0;
+            let mut total_lev = 0.0;
+            let mut total_rouge = 0.0;
+
+            for (i, case) in cases.iter().enumerate() {
+                let config = PostProcessConfig {
+                    api_key: &api_key,
+                    base_url: None,
+                    model: Some(model),
+                    system_prompt: Some(prompt_text),
+                    temperature: Some(0.0),
+                };
+
+                let result = pp.process(&case.input, config);
+
+                match result {
+                    Ok(actual) => {
+                        let lev = similarity(&actual, &case.expected);
+                        let rouge = rouge1_f(&actual, &case.expected);
+                        total_lev += lev;
+                        total_rouge += rouge;
+
+                        let verdict = if lev >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
+                        if lev >= PASS_THRESHOLD {
+                            pass += 1;
+                        } else {
+                            fail += 1;
+                        }
+
+                        eprintln!(
+                            "║ [{:>2}] {:<22} {verdict}  lev={lev:.2}  rouge1={rouge:.2}",
+                            i + 1,
+                            case.category
+                        );
+                        if lev < PASS_THRESHOLD {
+                            eprintln!("║      input:    {}", case.input);
+                            eprintln!("║      expected: {}", case.expected);
+                            eprintln!("║      actual:   {actual}");
+                            eprintln!("║      note:     {}", case.note);
+                        }
+                    }
+                    Err(e) => {
+                        fail += 1;
+                        eprintln!("║ [{:>2}] {:<22} ERROR: {e}", i + 1, case.category);
+                    }
+                }
+
+                // Rate-limit between cases
+                std::thread::sleep(Duration::from_millis(500));
+            }
+
+            let (avg_lev, avg_rouge) = if cases.is_empty() {
+                (0.0, 0.0)
+            } else {
+                let n = cases.len() as f64;
+                (total_lev / n, total_rouge / n)
+            };
+
+            eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+            eprintln!(
+                "║  Results: {pass} pass, {fail} fail — avg lev={avg_lev:.2}  avg rouge1={avg_rouge:.2}"
+            );
+            eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+
+            results.push(ComboResult {
+                model,
+                prompt_name,
+                pass,
+                fail,
+                avg_lev,
+                avg_rouge,
+            });
+
+            // Rate-limit between combos
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    }
+
+    // ── Summary comparison table ─────────────────────────────────────────
+    eprintln!("\n┌─────────────────────────────────────────────────────────────────────────────────────────┐");
+    eprintln!("│  MATRIX SUMMARY                                                                         │");
+    eprintln!("├──────────────────────────────────────┬────────────────┬──────┬──────┬────────┬───────────┤");
+    eprintln!("│ Model                                │ Prompt         │ Pass │ Fail │ Avg Lev│ Avg ROUGE │");
+    eprintln!("├──────────────────────────────────────┼────────────────┼──────┼──────┼────────┼───────────┤");
+
+    for r in &results {
+        eprintln!(
+            "│ {:<36} │ {:<14} │ {:>4} │ {:>4} │ {:>5.2}  │ {:>8.2}  │",
+            r.model, r.prompt_name, r.pass, r.fail, r.avg_lev, r.avg_rouge
+        );
+    }
+
+    eprintln!("└──────────────────────────────────────┴────────────────┴──────┴──────┴────────┴───────────┘\n");
 }

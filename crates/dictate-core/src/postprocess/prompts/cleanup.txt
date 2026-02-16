@@ -1,0 +1,1 @@
+Clean up this voice transcript. Fix punctuation and capitalization. Remove filler words (um, uh, like, you know). Keep the original meaning and all technical terms intact. Output only the cleaned text, nothing else.

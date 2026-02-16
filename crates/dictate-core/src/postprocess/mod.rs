@@ -37,4 +37,8 @@ pub struct PostProcessConfig<'a> {
     pub base_url: Option<&'a str>,
     /// Optional model override (default depends on the implementation).
     pub model: Option<&'a str>,
+    /// Optional system prompt override (falls back to built-in `SYSTEM_PROMPT`).
+    pub system_prompt: Option<&'a str>,
+    /// Optional temperature for chat completion (omitted from request when `None`).
+    pub temperature: Option<f32>,
 }
