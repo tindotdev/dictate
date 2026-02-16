@@ -211,6 +211,12 @@ impl TranscriptionPipeline {
         };
 
         match pp.process(&result.text, config) {
+            Ok(processed) if processed.trim().is_empty() => {
+                eprintln!(
+                    "[dictate] post-processing returned empty text, keeping raw transcription"
+                );
+                (result, PostProcessOutcome::FailedFallback)
+            }
             Ok(processed) => {
                 result.text = processed;
                 (result, PostProcessOutcome::Applied)
@@ -610,6 +616,33 @@ mod tests {
         }
     }
 
+    /// Mock post-processor that returns a fixed string (including empty).
+    struct FixedOutputPostProcessor {
+        output: String,
+    }
+
+    impl FixedOutputPostProcessor {
+        fn new(output: &str) -> Self {
+            Self {
+                output: output.to_string(),
+            }
+        }
+    }
+
+    impl PostProcessor for FixedOutputPostProcessor {
+        fn name(&self) -> &'static str {
+            "mock-pp-fixed"
+        }
+
+        fn process(
+            &self,
+            _text: &str,
+            _config: crate::postprocess::PostProcessConfig<'_>,
+        ) -> Result<String, crate::error::TranscriptionError> {
+            Ok(self.output.clone())
+        }
+    }
+
     /// Mock post-processor that always fails after recording calls.
     struct FailingPostProcessor {
         calls: PostProcessCalls,
@@ -722,6 +755,36 @@ mod tests {
         assert_eq!(processed.text, "hello world");
         assert_eq!(calls.lock().unwrap().len(), 1);
         assert_eq!(outcome, PostProcessOutcome::FailedFallback);
+    }
+
+    #[test]
+    fn post_process_empty_output_preserves_raw_transcription() {
+        for empty_output in ["", "   ", "\n\t "] {
+            let pipeline = TranscriptionPipeline::new(
+                Box::new(MockProvider::new("test")),
+                "test-key".into(),
+                PipelineConfig {
+                    response_format: ResponseFormat::Json,
+                    post_process: true,
+                    ..PipelineConfig::default()
+                },
+            )
+            .with_post_processor(Box::new(FixedOutputPostProcessor::new(empty_output)));
+
+            let result = TranscriptionResult {
+                text: "hello world".into(),
+                segments: None,
+                words: None,
+            };
+
+            let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
+
+            assert_eq!(
+                processed.text, "hello world",
+                "raw text must be preserved when post-processor returns {empty_output:?}"
+            );
+            assert_eq!(outcome, PostProcessOutcome::FailedFallback);
+        }
     }
 
     #[test]
