@@ -8,7 +8,7 @@ mod eval;
 
 pub mod groq;
 
-pub use groq::GroqPostProcessor;
+pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
 use crate::error::TranscriptionError;
 

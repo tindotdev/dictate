@@ -17,7 +17,9 @@ use crate::groq_error::api_error_from_failed_response;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_CHAT_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL: &str = "openai/gpt-oss-20b";
+
+/// Default LLM model used for post-processing when no override is provided.
+pub const DEFAULT_POST_PROCESS_MODEL: &str = "openai/gpt-oss-20b";
 
 /// HTTP timeout for chat completions (60s — text-only, much faster than audio).
 const CHAT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -65,7 +67,7 @@ impl PostProcessor for GroqPostProcessor {
         }
 
         let url = config.base_url.unwrap_or(DEFAULT_CHAT_URL);
-        let model = config.model.unwrap_or(DEFAULT_MODEL);
+        let model = config.model.unwrap_or(DEFAULT_POST_PROCESS_MODEL);
         let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
         let temperature = config.temperature;
         let client = chat_client()?;

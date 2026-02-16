@@ -7,9 +7,9 @@ use std::time::Duration;
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor, GroqProvider, ModelId,
-    PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker, RecorderConfig,
-    RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
+    DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor,
+    GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker,
+    RecorderConfig, RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
     TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
     format_hint_within_budget, merge_prompt_hints,
 };
@@ -181,6 +181,16 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 
     // Output results
     let merged = merge_results(results);
+
+    if options.post_process && !merged.text.is_empty() {
+        let model = options
+            .post_process_model
+            .as_ref()
+            .map(|m| m.as_str())
+            .unwrap_or(DEFAULT_POST_PROCESS_MODEL);
+        eprintln!("[dictate] post-processing with {model}...");
+    }
+
     let (merged, post_process_outcome) = pipeline.post_process_result_with_outcome(merged);
     output_result(
         &merged,

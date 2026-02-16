@@ -304,127 +304,121 @@ struct ComboResult {
     avg_rouge: f64,
 }
 
-/// Run all golden cases across 3 models × 2 prompts and print a comparison table.
-///
-/// Requires `GROQ_API_KEY` environment variable. Skipped in normal CI.
-///
-/// ```bash
-/// just eval-matrix
-/// ```
-#[test]
-#[ignore = "hits live Groq API — run with: just eval-matrix"]
-#[allow(clippy::cast_precision_loss)]
-fn matrix_eval_models_x_prompts() {
-    let api_key = match std::env::var("GROQ_API_KEY") {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            eprintln!("GROQ_API_KEY not set — skipping matrix eval");
-            return;
-        }
-    };
+fn print_matrix_combo_header(model: &str, prompt_name: &str) {
+    eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+    eprintln!("║  Model: {model:<30}  Prompt: {prompt_name:<20} ║");
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+}
 
-    let cases = load_golden_cases();
+fn print_matrix_combo_footer(pass: usize, fail: usize, avg_lev: f64, avg_rouge: f64) {
+    eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+    eprintln!(
+        "║  Results: {pass} pass, {fail} fail — avg lev={avg_lev:.2}  avg rouge1={avg_rouge:.2}"
+    );
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn combo_averages(total_lev: f64, total_rouge: f64, case_count: usize) -> (f64, f64) {
+    if case_count == 0 {
+        (0.0, 0.0)
+    } else {
+        let n = case_count as f64;
+        (total_lev / n, total_rouge / n)
+    }
+}
+
+fn evaluate_combo(
+    api_key: &str,
+    cases: &[GoldenCase],
+    model: &'static str,
+    prompt_name: &'static str,
+    prompt_text: &str,
+) -> ComboResult {
     let pp = GroqPostProcessor;
-    let mut results: Vec<ComboResult> = Vec::new();
+    print_matrix_combo_header(model, prompt_name);
+
+    let mut pass = 0;
+    let mut fail = 0;
+    let mut total_lev = 0.0;
+    let mut total_rouge = 0.0;
+
+    for (i, case) in cases.iter().enumerate() {
+        let config = PostProcessConfig {
+            api_key,
+            base_url: None,
+            model: Some(model),
+            system_prompt: Some(prompt_text),
+            temperature: Some(0.0),
+        };
+
+        let result = pp.process(&case.input, config);
+        match result {
+            Ok(actual) => {
+                let lev = similarity(&actual, &case.expected);
+                let rouge = rouge1_f(&actual, &case.expected);
+                total_lev += lev;
+                total_rouge += rouge;
+
+                let passed = lev >= PASS_THRESHOLD;
+                let verdict = if passed { "PASS" } else { "FAIL" };
+                if passed {
+                    pass += 1;
+                } else {
+                    fail += 1;
+                }
+
+                eprintln!(
+                    "║ [{:>2}] {:<22} {verdict}  lev={lev:.2}  rouge1={rouge:.2}",
+                    i + 1,
+                    case.category
+                );
+                if !passed {
+                    eprintln!("║      input:    {}", case.input);
+                    eprintln!("║      expected: {}", case.expected);
+                    eprintln!("║      actual:   {actual}");
+                    eprintln!("║      note:     {}", case.note);
+                }
+            }
+            Err(e) => {
+                fail += 1;
+                eprintln!("║ [{:>2}] {:<22} ERROR: {e}", i + 1, case.category);
+            }
+        }
+
+        // Rate-limit between cases.
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    let (avg_lev, avg_rouge) = combo_averages(total_lev, total_rouge, cases.len());
+    print_matrix_combo_footer(pass, fail, avg_lev, avg_rouge);
+
+    ComboResult {
+        model,
+        prompt_name,
+        pass,
+        fail,
+        avg_lev,
+        avg_rouge,
+    }
+}
+
+fn run_matrix_eval(api_key: &str, cases: &[GoldenCase]) -> Vec<ComboResult> {
+    let mut results = Vec::new();
 
     for &(prompt_name, prompt_text) in PROMPTS {
         for &model in MODELS {
-            eprintln!(
-                "\n╔═══════════════════════════════════════════════════════════════════════════╗"
-            );
-            eprintln!("║  Model: {model:<30}  Prompt: {prompt_name:<20} ║");
-            eprintln!(
-                "╠═══════════════════════════════════════════════════════════════════════════╣"
-            );
-
-            let mut pass = 0;
-            let mut fail = 0;
-            let mut total_lev = 0.0;
-            let mut total_rouge = 0.0;
-
-            for (i, case) in cases.iter().enumerate() {
-                let config = PostProcessConfig {
-                    api_key: &api_key,
-                    base_url: None,
-                    model: Some(model),
-                    system_prompt: Some(prompt_text),
-                    temperature: Some(0.0),
-                };
-
-                let result = pp.process(&case.input, config);
-
-                match result {
-                    Ok(actual) => {
-                        let lev = similarity(&actual, &case.expected);
-                        let rouge = rouge1_f(&actual, &case.expected);
-                        total_lev += lev;
-                        total_rouge += rouge;
-
-                        let verdict = if lev >= PASS_THRESHOLD {
-                            "PASS"
-                        } else {
-                            "FAIL"
-                        };
-                        if lev >= PASS_THRESHOLD {
-                            pass += 1;
-                        } else {
-                            fail += 1;
-                        }
-
-                        eprintln!(
-                            "║ [{:>2}] {:<22} {verdict}  lev={lev:.2}  rouge1={rouge:.2}",
-                            i + 1,
-                            case.category
-                        );
-                        if lev < PASS_THRESHOLD {
-                            eprintln!("║      input:    {}", case.input);
-                            eprintln!("║      expected: {}", case.expected);
-                            eprintln!("║      actual:   {actual}");
-                            eprintln!("║      note:     {}", case.note);
-                        }
-                    }
-                    Err(e) => {
-                        fail += 1;
-                        eprintln!("║ [{:>2}] {:<22} ERROR: {e}", i + 1, case.category);
-                    }
-                }
-
-                // Rate-limit between cases
-                std::thread::sleep(Duration::from_millis(500));
-            }
-
-            let (avg_lev, avg_rouge) = if cases.is_empty() {
-                (0.0, 0.0)
-            } else {
-                let n = cases.len() as f64;
-                (total_lev / n, total_rouge / n)
-            };
-
-            eprintln!(
-                "╠═══════════════════════════════════════════════════════════════════════════╣"
-            );
-            eprintln!(
-                "║  Results: {pass} pass, {fail} fail — avg lev={avg_lev:.2}  avg rouge1={avg_rouge:.2}"
-            );
-            eprintln!(
-                "╚═══════════════════════════════════════════════════════════════════════════╝"
-            );
-
-            results.push(ComboResult {
-                model,
-                prompt_name,
-                pass,
-                fail,
-                avg_lev,
-                avg_rouge,
-            });
-
-            // Rate-limit between combos
+            let result = evaluate_combo(api_key, cases, model, prompt_name, prompt_text);
+            results.push(result);
+            // Rate-limit between combos.
             std::thread::sleep(Duration::from_secs(2));
         }
     }
 
-    // ── Summary comparison table ─────────────────────────────────────────
+    results
+}
+
+fn print_matrix_summary(results: &[ComboResult]) {
     eprintln!(
         "\n┌─────────────────────────────────────────────────────────────────────────────────────────┐"
     );
@@ -441,7 +435,7 @@ fn matrix_eval_models_x_prompts() {
         "├──────────────────────────────────────┼────────────────┼──────┼──────┼────────┼───────────┤"
     );
 
-    for r in &results {
+    for r in results {
         eprintln!(
             "│ {:<36} │ {:<14} │ {:>4} │ {:>4} │ {:>5.2}  │ {:>8.2}  │",
             r.model, r.prompt_name, r.pass, r.fail, r.avg_lev, r.avg_rouge
@@ -451,4 +445,27 @@ fn matrix_eval_models_x_prompts() {
     eprintln!(
         "└──────────────────────────────────────┴────────────────┴──────┴──────┴────────┴───────────┘\n"
     );
+}
+
+/// Run all golden cases across 3 models × 2 prompts and print a comparison table.
+///
+/// Requires `GROQ_API_KEY` environment variable. Skipped in normal CI.
+///
+/// ```bash
+/// just eval-matrix
+/// ```
+#[test]
+#[ignore = "hits live Groq API — run with: just eval-matrix"]
+fn matrix_eval_models_x_prompts() {
+    let api_key = match std::env::var("GROQ_API_KEY") {
+        Ok(k) if !k.is_empty() => k,
+        _ => {
+            eprintln!("GROQ_API_KEY not set — skipping matrix eval");
+            return;
+        }
+    };
+
+    let cases = load_golden_cases();
+    let results = run_matrix_eval(&api_key, &cases);
+    print_matrix_summary(&results);
 }
