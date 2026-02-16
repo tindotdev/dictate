@@ -327,7 +327,6 @@ fn rouge1_mixed_repetition() {
 // ──── Matrix evaluation ──────────────────────────────────────────────────
 
 const PROMPT_CURRENT: &str = include_str!("prompts/cleanup.txt");
-const PROMPT_V2: &str = include_str!("prompts/candidates/2026-02-16-23:18:23+07:00.txt");
 
 /// Models to evaluate in the matrix.
 const MODELS: &[&str] = &[
@@ -339,10 +338,9 @@ const MODELS: &[&str] = &[
 ];
 
 /// Prompt variants to evaluate in the matrix.
-const PROMPTS: &[(&str, &str)] = &[
-    ("cleanup.txt", PROMPT_CURRENT),
-    ("cleanup_v2.txt", PROMPT_V2),
-];
+///
+/// To test a new candidate, add an entry here with its `include_str!` path.
+const PROMPTS: &[(&str, &str)] = &[("cleanup.txt", PROMPT_CURRENT)];
 
 /// Per-combo aggregate scores.
 struct ComboResult {
