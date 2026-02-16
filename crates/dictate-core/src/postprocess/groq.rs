@@ -17,7 +17,7 @@ use crate::groq_error::api_error_from_failed_response;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_CHAT_URL: &str = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL: &str = "llama-3.1-8b-instant";
+const DEFAULT_MODEL: &str = "openai/gpt-oss-20b";
 
 /// HTTP timeout for chat completions (60s — text-only, much faster than audio).
 const CHAT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -71,7 +71,17 @@ impl PostProcessor for GroqPostProcessor {
         let client = chat_client()?;
 
         retry_chat_request(
-            || send_chat_request(client, url, config.api_key, model, text, system_prompt, temperature),
+            || {
+                send_chat_request(
+                    client,
+                    url,
+                    config.api_key,
+                    model,
+                    text,
+                    system_prompt,
+                    temperature,
+                )
+            },
             retry_builder(),
             |err, dur| {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");

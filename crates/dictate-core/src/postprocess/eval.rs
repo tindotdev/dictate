@@ -157,7 +157,11 @@ fn golden_eval_against_live_api() {
                 total_lev += lev;
                 total_rouge += rouge;
 
-                let verdict = if lev >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
+                let verdict = if lev >= PASS_THRESHOLD {
+                    "PASS"
+                } else {
+                    "FAIL"
+                };
                 if lev >= PASS_THRESHOLD {
                     pass += 1;
                 } else {
@@ -257,7 +261,10 @@ fn rouge1_filler_removal() {
         "um I think like we should you know use the API",
     );
     // All words in actual appear in expected → perfect precision, partial recall.
-    assert!(score > 0.7, "Expected decent ROUGE-1 after filler removal, got {score}");
+    assert!(
+        score > 0.7,
+        "Expected decent ROUGE-1 after filler removal, got {score}"
+    );
 }
 
 #[test]
@@ -276,7 +283,9 @@ const PROMPT_V2: &str = include_str!("prompts/candidates/2026-02-16-23:18:23+07:
 const MODELS: &[&str] = &[
     "llama-3.1-8b-instant",
     "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-20b",
     "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
 ];
 
 /// Prompt variants to evaluate in the matrix.
@@ -320,9 +329,13 @@ fn matrix_eval_models_x_prompts() {
 
     for &(prompt_name, prompt_text) in PROMPTS {
         for &model in MODELS {
-            eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+            eprintln!(
+                "\n╔═══════════════════════════════════════════════════════════════════════════╗"
+            );
             eprintln!("║  Model: {model:<30}  Prompt: {prompt_name:<20} ║");
-            eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+            eprintln!(
+                "╠═══════════════════════════════════════════════════════════════════════════╣"
+            );
 
             let mut pass = 0;
             let mut fail = 0;
@@ -347,7 +360,11 @@ fn matrix_eval_models_x_prompts() {
                         total_lev += lev;
                         total_rouge += rouge;
 
-                        let verdict = if lev >= PASS_THRESHOLD { "PASS" } else { "FAIL" };
+                        let verdict = if lev >= PASS_THRESHOLD {
+                            "PASS"
+                        } else {
+                            "FAIL"
+                        };
                         if lev >= PASS_THRESHOLD {
                             pass += 1;
                         } else {
@@ -383,11 +400,15 @@ fn matrix_eval_models_x_prompts() {
                 (total_lev / n, total_rouge / n)
             };
 
-            eprintln!("╠═══════════════════════════════════════════════════════════════════════════╣");
+            eprintln!(
+                "╠═══════════════════════════════════════════════════════════════════════════╣"
+            );
             eprintln!(
                 "║  Results: {pass} pass, {fail} fail — avg lev={avg_lev:.2}  avg rouge1={avg_rouge:.2}"
             );
-            eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+            eprintln!(
+                "╚═══════════════════════════════════════════════════════════════════════════╝"
+            );
 
             results.push(ComboResult {
                 model,
@@ -404,11 +425,21 @@ fn matrix_eval_models_x_prompts() {
     }
 
     // ── Summary comparison table ─────────────────────────────────────────
-    eprintln!("\n┌─────────────────────────────────────────────────────────────────────────────────────────┐");
-    eprintln!("│  MATRIX SUMMARY                                                                         │");
-    eprintln!("├──────────────────────────────────────┬────────────────┬──────┬──────┬────────┬───────────┤");
-    eprintln!("│ Model                                │ Prompt         │ Pass │ Fail │ Avg Lev│ Avg ROUGE │");
-    eprintln!("├──────────────────────────────────────┼────────────────┼──────┼──────┼────────┼───────────┤");
+    eprintln!(
+        "\n┌─────────────────────────────────────────────────────────────────────────────────────────┐"
+    );
+    eprintln!(
+        "│  MATRIX SUMMARY                                                                         │"
+    );
+    eprintln!(
+        "├──────────────────────────────────────┬────────────────┬──────┬──────┬────────┬───────────┤"
+    );
+    eprintln!(
+        "│ Model                                │ Prompt         │ Pass │ Fail │ Avg Lev│ Avg ROUGE │"
+    );
+    eprintln!(
+        "├──────────────────────────────────────┼────────────────┼──────┼──────┼────────┼───────────┤"
+    );
 
     for r in &results {
         eprintln!(
@@ -417,5 +448,7 @@ fn matrix_eval_models_x_prompts() {
         );
     }
 
-    eprintln!("└──────────────────────────────────────┴────────────────┴──────┴──────┴────────┴───────────┘\n");
+    eprintln!(
+        "└──────────────────────────────────────┴────────────────┴──────┴──────┴────────┴───────────┘\n"
+    );
 }
