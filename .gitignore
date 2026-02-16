@@ -36,5 +36,8 @@ CLAUDE.local.md
 # Local release / prep notes
 SUMMARY_*.md
 
+# Prompt evaluation candidates (temporary, local-only)
+crates/dictate-core/src/postprocess/prompts/candidates/
+
 tmp/
 .gitkeep
