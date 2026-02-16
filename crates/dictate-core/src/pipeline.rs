@@ -126,7 +126,7 @@ pub struct TranscriptionPipeline {
 /// Outcome of optional post-processing for a transcription result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostProcessOutcome {
-    /// No post-processor is configured.
+    /// Post-processing is not configured (disabled and/or no post-processor attached).
     NotConfigured,
     /// Input text was empty, so post-processing was skipped.
     SkippedEmptyText,
@@ -186,6 +186,10 @@ impl TranscriptionPipeline {
         &self,
         mut result: TranscriptionResult,
     ) -> (TranscriptionResult, PostProcessOutcome) {
+        if !self.config.post_process {
+            return (result, PostProcessOutcome::NotConfigured);
+        }
+
         let Some(ref pp) = self.post_processor else {
             return (result, PostProcessOutcome::NotConfigured);
         };
@@ -808,6 +812,33 @@ mod tests {
         let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
 
         assert_eq!(processed.text, "hello world");
+        assert_eq!(outcome, PostProcessOutcome::NotConfigured);
+    }
+
+    #[test]
+    fn post_process_disabled_skips_attached_processor() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                response_format: ResponseFormat::Json,
+                post_process: false,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+
+        let result = TranscriptionResult {
+            text: "hello world".into(),
+            segments: None,
+            words: None,
+        };
+
+        let (processed, outcome) = pipeline.post_process_result_with_outcome(result);
+
+        assert_eq!(processed.text, "hello world");
+        assert!(calls.lock().unwrap().is_empty());
         assert_eq!(outcome, PostProcessOutcome::NotConfigured);
     }
 
