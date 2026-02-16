@@ -353,11 +353,7 @@ fn load_candidate_prompts() -> Vec<(String, String)> {
 
     let mut candidates: Vec<(String, String)> = entries
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "txt")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
         .map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let text =
