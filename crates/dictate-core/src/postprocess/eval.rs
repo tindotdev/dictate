@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -337,15 +338,42 @@ const MODELS: &[&str] = &[
     "openai/gpt-oss-120b",
 ];
 
-/// Prompt variants to evaluate in the matrix.
+/// Load candidate prompt files from the `prompts/candidates/` directory.
 ///
-/// To test a new candidate, add an entry here with its `include_str!` path.
-const PROMPTS: &[(&str, &str)] = &[("cleanup.txt", PROMPT_CURRENT)];
+/// Returns an empty list when the directory is missing or empty — this is
+/// expected in CI where candidates are gitignored.  Drop a `.txt` file
+/// into `candidates/` and it will be automatically picked up by the next
+/// `just eval-matrix` run.
+fn load_candidate_prompts() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/postprocess/prompts/candidates");
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
+
+    let mut candidates: Vec<(String, String)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|ext| ext == "txt")
+        })
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let text =
+                std::fs::read_to_string(e.path()).expect("failed to read candidate prompt file");
+            (name, text)
+        })
+        .collect();
+
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates
+}
 
 /// Per-combo aggregate scores.
 struct ComboResult {
-    model: &'static str,
-    prompt_name: &'static str,
+    model: String,
+    prompt_name: String,
     pass: usize,
     fail: usize,
     avg_lev: f64,
@@ -379,8 +407,8 @@ fn combo_averages(total_lev: f64, total_rouge: f64, case_count: usize) -> (f64, 
 fn evaluate_combo(
     api_key: &str,
     cases: &[GoldenCase],
-    model: &'static str,
-    prompt_name: &'static str,
+    model: &str,
+    prompt_name: &str,
     prompt_text: &str,
 ) -> ComboResult {
     let pp = GroqPostProcessor;
@@ -442,8 +470,8 @@ fn evaluate_combo(
     print_matrix_combo_footer(pass, fail, avg_lev, avg_rouge);
 
     ComboResult {
-        model,
-        prompt_name,
+        model: model.to_owned(),
+        prompt_name: prompt_name.to_owned(),
         pass,
         fail,
         avg_lev,
@@ -452,9 +480,23 @@ fn evaluate_combo(
 }
 
 fn run_matrix_eval(api_key: &str, cases: &[GoldenCase]) -> Vec<ComboResult> {
+    let candidates = load_candidate_prompts();
+
+    // Production prompt is always first.
+    let mut prompts: Vec<(&str, &str)> = vec![("cleanup.txt", PROMPT_CURRENT)];
+    for (name, text) in &candidates {
+        prompts.push((name, text));
+    }
+
+    eprintln!(
+        "Evaluating {} prompt(s) × {} model(s)\n",
+        prompts.len(),
+        MODELS.len()
+    );
+
     let mut results = Vec::new();
 
-    for &(prompt_name, prompt_text) in PROMPTS {
+    for &(prompt_name, prompt_text) in &prompts {
         for &model in MODELS {
             let result = evaluate_combo(api_key, cases, model, prompt_name, prompt_text);
             results.push(result);
@@ -495,7 +537,10 @@ fn print_matrix_summary(results: &[ComboResult]) {
     );
 }
 
-/// Run all golden cases across 3 models × 2 prompts and print a comparison table.
+/// Run all golden cases across N models × M prompts and print a comparison table.
+///
+/// The production prompt (`cleanup.txt`) is always included.  Any `.txt` files
+/// in `prompts/candidates/` are automatically discovered and added to the matrix.
 ///
 /// Requires `GROQ_API_KEY` environment variable. Skipped in normal CI.
 ///
