@@ -186,8 +186,7 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
         let model = options
             .post_process_model
             .as_ref()
-            .map(|m| m.as_str())
-            .unwrap_or(DEFAULT_POST_PROCESS_MODEL);
+            .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
         eprintln!("[dictate] post-processing with {model}...");
     }
 

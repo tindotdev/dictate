@@ -26,7 +26,9 @@ pub use encoder::{AudioEncoder, EncodedAudio, WavEncoder};
 pub use error::{AudioError, ModelIdError, TranscriptionError};
 pub use model_id::{LLAMA_3_1_8B, LLAMA_3_3_70B, ModelId};
 pub use pipeline::{PipelineConfig, PostProcessOutcome, TranscriptionPipeline};
-pub use postprocess::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor, PostProcessConfig, PostProcessor};
+pub use postprocess::{
+    DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor, PostProcessConfig, PostProcessor,
+};
 pub use prompt::{PromptHint, format_hint_within_budget, merge_prompt_hints};
 pub use provider::{
     GroqProvider, ResponseFormat, Segment, TimestampGranularity, TranscriptionProvider,
