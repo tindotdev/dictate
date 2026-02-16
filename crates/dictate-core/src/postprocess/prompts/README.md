@@ -16,7 +16,8 @@ This directory contains the prompts, test cases, and evaluation infrastructure f
 ```
 prompts/
 ├── README.md                  # This file - methodology and guidance
-├── RESULTS-YYYY-MM-DD.md      # Dated evaluation results
+├── RESULTS-latest.md          # Stable pointer to latest results
+├── RESULTS-YYYY-MM-DD.md      # Dated evaluation results history
 ├── cleanup.txt                # Primary production prompt
 ├── golden_cases.json          # 14 test scenarios with expected outputs
 └── candidates/                # Experimental prompt variations
@@ -24,9 +25,9 @@ prompts/
 
 ## Evaluation Results
 
-| Date       | Models | Prompts | Best Config                           | Pass Rate   | Details                                          |
-| ---------- | ------ | ------- | ------------------------------------- | ----------- | ------------------------------------------------ |
-| 2026-02-17 | 3      | 2       | llama-3.3-70b-versatile + cleanup.txt | 12/14 (86%) | [RESULTS-2026-02-17.md](./RESULTS-2026-02-17.md) |
+| Date       | Models | Prompts | Best Config                     | Pass Rate    | Details                                  |
+| ---------- | ------ | ------- | ------------------------------- | ------------ | ---------------------------------------- |
+| 2026-02-17 | 5      | 2       | openai/gpt-oss-20b + cleanup_v2 | 14/14 (100%) | [RESULTS-latest.md](./RESULTS-latest.md) |
 
 ## Evaluation Methodology
 
