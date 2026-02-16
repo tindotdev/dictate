@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dictionary entries are automatically included in all transcription requests when available
 - Dictionary format uses deterministic ordering (`BTreeMap`) for consistent serialization
+- **CLI flags** — removed deprecated `--model`; use `--transcription-model`
 
 ## [1.1.0] - 2026-02-10
 
@@ -62,7 +63,7 @@ Complete rewrite from TypeScript/Bun to Rust.
 - **Actionable error messages** — permission-denied errors include troubleshooting steps for PipeWire/ALSA
 - **Device selection** — `dictate devices` to list inputs, `--device <query>` to select
 - **Timestamp support** — `--timestamps word,segment` with `--format verbose_json`
-- **Model selection** — `--model whisper-large-v3-turbo` (default) or `--model whisper-large-v3`
+- **Model selection** — `--transcription-model whisper-large-v3-turbo` (default) or `--transcription-model whisper-large-v3`
 
 ### Removed
 

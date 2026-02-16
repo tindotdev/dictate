@@ -119,6 +119,10 @@ pub enum TranscriptionError {
     #[error("network error: {0}")]
     Network(String),
 
+    /// HTTP client setup failed before any request was sent.
+    #[error("HTTP client initialization failed: {0}")]
+    HttpClientInitialization(String),
+
     /// The API returned a non-success HTTP status.
     #[error("API error ({status}): {message}")]
     Api {
@@ -151,4 +155,158 @@ pub enum TranscriptionError {
         /// Character count of the prompt.
         char_count: usize,
     },
+}
+
+// ─── Retry classification ───────────────────────────────────────────────────
+
+impl TranscriptionError {
+    /// Whether this error is worth retrying.
+    ///
+    /// Network errors are pre-classified as retryable at conversion time (timeout/connect only).
+    #[must_use]
+    pub const fn is_retryable(&self) -> bool {
+        match self {
+            Self::Network(_) | Self::RateLimitExhausted { .. } => true,
+            Self::Api { status, .. } => is_retryable_status(*status),
+            _ => false,
+        }
+    }
+
+    /// Whether this error originated from a 429 rate limit.
+    #[must_use]
+    pub const fn is_rate_limit_error(&self) -> bool {
+        matches!(
+            self,
+            Self::RateLimitExhausted { .. } | Self::Api { status: 429, .. }
+        )
+    }
+}
+
+/// HTTP status codes worth retrying.
+#[must_use]
+pub const fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+// ─── Model ID Errors ────────────────────────────────────────────────────────
+
+/// Errors that can occur when constructing a [`ModelId`](crate::model_id::ModelId).
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum ModelIdError {
+    /// The model ID string was empty.
+    #[error("model ID must not be empty")]
+    Empty,
+
+    /// The model ID exceeded the maximum length of 128 characters.
+    #[error("model ID is too long ({len} chars, max 128)")]
+    TooLong {
+        /// Actual length of the invalid model ID string.
+        len: usize,
+    },
+
+    /// The model ID contained characters outside `[a-zA-Z0-9._/-]`.
+    #[error("model ID contains invalid characters (allowed: a-zA-Z0-9._/-)")]
+    InvalidCharacters,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retryable_statuses() {
+        assert!(is_retryable_status(408));
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(500));
+        assert!(is_retryable_status(502));
+        assert!(is_retryable_status(503));
+        assert!(is_retryable_status(504));
+
+        assert!(!is_retryable_status(400));
+        assert!(!is_retryable_status(401));
+        assert!(!is_retryable_status(403));
+        assert!(!is_retryable_status(413));
+        assert!(!is_retryable_status(200));
+    }
+
+    #[test]
+    fn retryable_status_boundaries() {
+        // Below first retryable edge (408)
+        assert!(!is_retryable_status(407));
+        assert!(is_retryable_status(408));
+
+        // Around 429 edge
+        assert!(!is_retryable_status(428));
+        assert!(is_retryable_status(429));
+        assert!(!is_retryable_status(430));
+
+        // Around 5xx retryable set upper edge (504)
+        assert!(is_retryable_status(504));
+        assert!(!is_retryable_status(505));
+    }
+
+    #[test]
+    fn retryable_api_errors() {
+        let retryable = TranscriptionError::Api {
+            status: 500,
+            message: "internal".into(),
+        };
+        assert!(retryable.is_retryable());
+
+        let non_retryable = TranscriptionError::Api {
+            status: 401,
+            message: "unauthorized".into(),
+        };
+        assert!(!non_retryable.is_retryable());
+
+        let encoding = TranscriptionError::EncodingFailed("bad".into());
+        assert!(!encoding.is_retryable());
+    }
+
+    #[test]
+    fn retryable_network_errors() {
+        let err = TranscriptionError::Network("timeout".into());
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn http_client_initialization_is_not_retryable() {
+        let err = TranscriptionError::HttpClientInitialization("tls backend missing".into());
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn rate_limit_error_classification() {
+        let rate_limit = TranscriptionError::Api {
+            status: 429,
+            message: "rate limit".into(),
+        };
+        assert!(rate_limit.is_rate_limit_error());
+        assert!(rate_limit.is_retryable());
+
+        let exhausted = TranscriptionError::RateLimitExhausted { retries: 3 };
+        assert!(exhausted.is_rate_limit_error());
+        assert!(exhausted.is_retryable());
+
+        let server_error = TranscriptionError::Api {
+            status: 500,
+            message: "internal".into(),
+        };
+        assert!(!server_error.is_rate_limit_error());
+    }
+
+    #[test]
+    fn api_boundary_errors_classify_as_non_rate_limit() {
+        let below = TranscriptionError::Api {
+            status: 428,
+            message: "precondition required".into(),
+        };
+        assert!(!below.is_rate_limit_error());
+
+        let above = TranscriptionError::Api {
+            status: 430,
+            message: "request header fields too large".into(),
+        };
+        assert!(!above.is_rate_limit_error());
+    }
 }

@@ -1,19 +1,19 @@
 # dictate
 
-Voice-to-text for Linux. Speak → transcribe → clipboard.
+Voice-to-text for Linux and macOS. Speak -> transcribe -> clipboard.
 
 ![dictate demo](assets/demo.gif)
 
 ## Installation
 
-**Homebrew:**
+Homebrew:
 
 ```bash
 brew tap tindotdev/tap
 brew install tindotdev/tap/dictate-cli
 ```
 
-**From source:**
+From source:
 
 ```bash
 git clone https://github.com/tindotdev/dictate.git && cd dictate
@@ -23,9 +23,9 @@ just install
 ## Usage
 
 ```bash
-dictate                        # record → clipboard
-dictate --stdout               # record → stdout (+ clipboard)
-dictate --no-clipboard         # record → stdout only
+dictate                        # record -> clipboard
+dictate --stdout               # record -> stdout (+ clipboard)
+dictate --no-clipboard         # record -> stdout only
 dictate --language en          # language hint for accuracy
 dictate --device <query>       # select device by name or index
 dictate devices                # list audio input devices
@@ -34,9 +34,41 @@ dictate devices                # list audio input devices
 ### Output formats
 
 ```bash
-dictate --format verbose_json        # structured JSON
-dictate --timestamps word            # word-level timestamps (requires verbose_json)
+dictate --format verbose_json  # structured JSON
+dictate --timestamps word      # word-level timestamps (requires verbose_json)
 ```
+
+When `--post-process` is enabled with `--format json` or `--format verbose_json`, output includes:
+
+- `post_processed` (boolean)
+- `post_process_status` (`applied`, `failed_fallback`, `skipped_verbose_json`, `skipped_empty_text`, `not_configured`)
+
+### Post-processing (LLM cleanup)
+
+Optional post-processing cleans raw Whisper output (filler words, punctuation, capitalization).
+
+```bash
+dictate -p
+dictate -p --post-process-model openai/gpt-oss-120b
+```
+
+Notes:
+
+- Default post-processing model: `openai/gpt-oss-20b`
+- Fail-safe behavior: if post-processing fails, raw transcription text is still returned
+- `--format verbose_json` skips post-processing to avoid mismatches between top-level `text` and timestamped `segments`/`words`
+- `--post-process-base-url` is available for OpenAI-compatible chat endpoints, but this branch has only been validated against Groq API endpoints
+
+Quality is tracked with golden-case evaluations (`just eval-prompt`, `just eval-matrix`):
+
+- 14 golden scenarios (filler removal, technical terms, punctuation, mixed and edge cases)
+- Best tested matrix configuration: `openai/gpt-oss-20b` + `cleanup_v2.txt` = `14/14 (100%)`
+- Current built-in runtime configuration: `openai/gpt-oss-20b` + `cleanup.txt` = `13/14 (93%)`
+
+Detailed methodology and latest results:
+
+- `crates/dictate-core/src/postprocess/prompts/README.md`
+- `crates/dictate-core/src/postprocess/prompts/RESULTS-latest.md`
 
 ### Vocabulary
 
@@ -53,57 +85,85 @@ dictate vocab list
 Corrections for commonly misheard words. Interactive editor.
 
 ```bash
-dictate remember                     # add correction (interactive)
-dictate dictionary                   # list entries
+dictate remember   # add correction (interactive)
+dictate dictionary # list entries
 ```
 
-Both are injected into Whisper's prompt parameter. Stored at `~/.config/dictate/`.
+Both are injected into Whisper's prompt parameter and stored at `~/.config/dictate/`.
 
 ## Configuration
 
+Required:
+
 ```bash
 export GROQ_API_KEY="your-api-key"  # console.groq.com/keys
-export GROQ_BASE_URL="..."          # optional: override endpoint
 ```
 
-Add to shell profile for persistence. From source: `just add-secret`.
+Optional:
 
-## Requirements
+```bash
+export GROQ_BASE_URL="..."       # override transcription endpoint
+export GROQ_CHAT_BASE_URL="..."  # override post-process chat endpoint
+```
 
-- Linux audio (PipeWire or PulseAudio)
+Add to your shell profile for persistence. From source installs, `just add-secret` can help.
+
+## Platform requirements
+
+Linux:
+
+- Audio: PipeWire or PulseAudio
 - Clipboard: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11)
+
+macOS:
+
+- Grant microphone access to your terminal app
+- Clipboard uses built-in `pbcopy` (no extra clipboard package required)
 
 ## Global shortcut
 
-Bind `dictate` to a key in your compositor for desktop-wide activation.
+Linux compositor examples:
 
-**Sway:** `bindsym $mod+d exec foot -T "dictate" -- dictate`
-
-**Hyprland:** `bind = SUPER, D, exec, foot -T "dictate" -- dictate`
-
-**COSMIC:** `super + semicolon → foot -T "dictate" -- dictate`
+- Sway: `bindsym $mod+d exec foot -T "dictate" -- dictate`
+- Hyprland: `bind = SUPER, D, exec, foot -T "dictate" -- dictate`
+- COSMIC: `super + semicolon -> foot -T "dictate" -- dictate`
 
 Replace `foot` with your terminal of choice.
 
+On macOS, create a system shortcut (Shortcuts or Automator) that launches `dictate` in your terminal.
+
 ## Architecture
 
-```
-microphone → cpal → resample (16kHz mono) → chunking → Groq Whisper → clipboard
+```text
+microphone -> cpal -> resample (16kHz mono) -> chunking -> Groq Whisper -> optional LLM cleanup -> clipboard/stdout
 ```
 
-- **Audio capture** — cpal with real-time resampling
-- **Ring buffer** — lock-free SPSC for zero-allocation transfer
-- **Progressive chunking** — overlapping chunks for long recordings
-- **Transcription** — Groq Whisper API (OpenAI-compatible)
-- **Clipboard** — platform-aware with fallback to stderr
+- Audio capture: cpal with real-time resampling
+- Ring buffer: lock-free SPSC for zero-allocation transfer
+- Progressive chunking: overlapping chunks for long recordings
+- Transcription: Groq Whisper API (OpenAI-compatible)
+- Post-processing: optional Groq chat cleanup with fail-safe fallback
+- Clipboard: platform-aware with fallback to stderr
 
 ## Troubleshooting
 
-**Audio:** Check PipeWire status with `systemctl --user status pipewire`. List devices with `dictate devices`. Fix permissions with `sudo usermod -aG audio $USER` (requires re-login).
+Audio:
 
-**Clipboard:** Install `wl-clipboard` (Wayland) or `xclip` (X11). Verify with `echo "test" | wl-copy && wl-paste`.
+- Linux: check `systemctl --user status pipewire`, then run `dictate devices`
+- Linux: if needed, add your user to the `audio` group: `sudo usermod -aG audio $USER` (re-login required)
+- macOS: verify microphone permission in System Settings -> Privacy & Security -> Microphone
 
-**API errors:** 401 = invalid key. 429 = rate limited (retries automatically). 413 = recording too long.
+Clipboard:
+
+- Linux (Wayland): `echo "test" | wl-copy && wl-paste`
+- Linux (X11): verify `xclip` or `xsel` is installed
+- macOS: `echo "test" | pbcopy && pbpaste`
+
+API errors:
+
+- `401`: invalid API key
+- `429`: rate limited (retries automatically)
+- `413`: recording too long
 
 ## Privacy
 

@@ -27,9 +27,14 @@ coverage/
 .claude/
 .codex/
 .agents/
+CLAUDE.md
+CLAUDE.local.md
 
 # Backup directories
 .rewrite-backup/
 
 # Local release / prep notes
 SUMMARY_*.md
+
+tmp/
+.gitkeep

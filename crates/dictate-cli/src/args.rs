@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use dictate_core::{ResponseFormat, TimestampGranularity};
+use dictate_core::{ModelId, ResponseFormat, TimestampGranularity};
 
 /// Parse and validate temperature in the 0.0–1.0 range.
 fn parse_temperature(s: &str) -> Result<f32, String> {
@@ -101,9 +101,9 @@ pub struct RecordArgs {
     #[arg(long)]
     pub format: Option<ResponseFormat>,
 
-    /// Model selection: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
+    /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
     #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
-    pub model: Option<String>,
+    pub transcription_model: Option<String>,
 
     /// Sampling temperature (0.0-1.0). Default 0.0 is recommended for transcription
     #[arg(long, value_parser = parse_temperature)]
@@ -121,6 +121,18 @@ pub struct RecordArgs {
     /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
     #[arg(long, conflicts_with = "stdout")]
     pub no_clipboard: bool,
+
+    /// Post-process transcription with LLM for better punctuation and formatting
+    #[arg(long, short = 'p')]
+    pub post_process: bool,
+
+    /// Model for post-processing (default: openai/gpt-oss-20b)
+    #[arg(long, requires = "post_process")]
+    pub post_process_model: Option<ModelId>,
+
+    /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
+    #[arg(long, requires = "post_process")]
+    pub post_process_base_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -156,6 +168,31 @@ mod tests {
         };
 
         assert_eq!(args.base_url, None);
+    }
+
+    #[test]
+    fn record_accepts_transcription_model_flag() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--transcription-model",
+            "whisper-large-v3",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert_eq!(
+            args.transcription_model.as_deref(),
+            Some("whisper-large-v3")
+        );
+    }
+
+    #[test]
+    fn record_rejects_legacy_model_flag() {
+        let result = Cli::try_parse_from(["dictate", "record", "--model", "whisper-large-v3"]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -352,5 +389,114 @@ mod tests {
     fn parse_dict_alias() {
         let cli = Cli::parse_from(["dictate", "dict"]);
         assert!(matches!(cli.command, Some(Commands::Dictionary)));
+    }
+
+    // --- Post-processing flag tests ---
+
+    #[test]
+    fn post_process_flag_defaults_to_false() {
+        let cli = Cli::parse_from(["dictate", "record"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(!args.post_process);
+        assert!(args.post_process_model.is_none());
+    }
+
+    #[test]
+    fn post_process_long_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "--post-process"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+    }
+
+    #[test]
+    fn post_process_short_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "-p"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+    }
+
+    #[test]
+    fn post_process_model_requires_post_process() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "record",
+            "--post-process-model",
+            "llama-3.1-8b-instant",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn post_process_model_accepted_with_post_process() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--post-process",
+            "--post-process-model",
+            "llama-3.1-8b-instant",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+        assert_eq!(
+            args.post_process_model
+                .as_ref()
+                .map(dictate_core::ModelId::as_str),
+            Some("llama-3.1-8b-instant")
+        );
+    }
+
+    #[test]
+    fn top_level_post_process_flag() {
+        let cli = Cli::parse_from(["dictate", "-p"]);
+        assert!(cli.command.is_none());
+        assert!(cli.record_args.post_process);
+    }
+
+    #[test]
+    fn post_process_base_url_requires_post_process() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "record",
+            "--post-process-base-url",
+            "https://chat.example.com/v1/chat/completions",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn post_process_base_url_accepted_with_post_process() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--post-process",
+            "--post-process-base-url",
+            "https://chat.example.com/v1/chat/completions",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.post_process);
+        assert_eq!(
+            args.post_process_base_url.as_deref(),
+            Some("https://chat.example.com/v1/chat/completions")
+        );
     }
 }

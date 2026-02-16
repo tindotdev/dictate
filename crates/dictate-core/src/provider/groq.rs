@@ -8,11 +8,13 @@ use std::io::Cursor;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use backon::{BlockingRetryable, ExponentialBuilder};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
 use crate::error::TranscriptionError;
+use crate::groq_error::api_error_from_failed_response;
 use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -28,8 +30,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(16);
-/// Rate-limited responses (429) multiply the delay by this factor.
-const RATE_LIMIT_MULTIPLIER: u32 = 2;
 
 /// Validate that a prompt does not exceed the maximum token limit.
 ///
@@ -67,7 +67,7 @@ fn http_client() -> Result<&'static Client, TranscriptionError> {
                 .map_err(|e| format!("failed to initialize HTTP client: {e}"))
         })
         .as_ref()
-        .map_err(|e| TranscriptionError::Network(e.clone()))
+        .map_err(|e| TranscriptionError::HttpClientInitialization(e.clone()))
 }
 
 impl TranscriptionProvider for GroqProvider {
@@ -83,40 +83,27 @@ impl TranscriptionProvider for GroqProvider {
         let model = config.model.unwrap_or(DEFAULT_MODEL);
         let client = http_client()?;
 
-        let mut last_err = None;
-
-        for attempt in 0..=MAX_RETRIES {
-            if attempt > 0
-                && let Some(ref err) = last_err
-            {
-                let delay = backoff_delay(attempt - 1, is_rate_limit_error(err));
-                eprintln!(
-                    "[dictate] retry {attempt}/{MAX_RETRIES} after error: {err} (waiting {delay:?})"
-                );
-                std::thread::sleep(delay);
-            }
-
-            match send_request(client, url, &config, model) {
-                Ok(text) => {
-                    if attempt > 0 {
-                        eprintln!("[dictate] request succeeded after {attempt} retries");
+        (|| send_request(client, url, &config, model))
+            .retry(
+                ExponentialBuilder::default()
+                    .with_min_delay(BASE_DELAY)
+                    .with_max_delay(MAX_DELAY)
+                    .with_max_times(MAX_RETRIES as usize),
+            )
+            .when(super::super::error::TranscriptionError::is_retryable)
+            .notify(|err, dur| {
+                eprintln!("[dictate] retrying after {dur:?}: {err}");
+            })
+            .call()
+            .map_err(|e| {
+                if e.is_rate_limit_error() {
+                    TranscriptionError::RateLimitExhausted {
+                        retries: MAX_RETRIES,
                     }
-                    return Ok(text);
+                } else {
+                    e
                 }
-                Err(err) if is_retryable(&err) && attempt < MAX_RETRIES => {
-                    last_err = Some(err);
-                }
-                Err(err) => {
-                    if is_rate_limit_error(&err) {
-                        return Err(TranscriptionError::RateLimitExhausted { retries: attempt });
-                    }
-                    return Err(err);
-                }
-            }
-        }
-
-        // If we exhausted retries, the last error is always set.
-        Err(last_err.expect("retry loop completed without setting last_err"))
+            })
     }
 }
 
@@ -193,26 +180,7 @@ fn send_request(
     let status = response.status();
 
     if !status.is_success() {
-        let status_code = status.as_u16();
-        let body = response
-            .text()
-            .unwrap_or_else(|_| String::from("<failed to read body>"));
-
-        let message = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|v| v.get("error")?.get("message")?.as_str().map(String::from))
-            .unwrap_or_else(|| {
-                let mut truncated: String = body.chars().take(200).collect();
-                if body.chars().count() > 200 {
-                    truncated.push_str("...");
-                }
-                truncated
-            });
-
-        return Err(TranscriptionError::Api {
-            status: status_code,
-            message,
-        });
+        return Err(api_error_from_failed_response(response, "Groq error"));
     }
 
     let body = response
@@ -240,44 +208,6 @@ fn send_request(
             })
         }
     }
-}
-
-// ─── Retry helpers ───────────────────────────────────────────────────────────
-
-/// Compute the backoff delay for the given attempt (0-indexed).
-fn backoff_delay(attempt: u32, is_rate_limited: bool) -> Duration {
-    let delay = BASE_DELAY.saturating_mul(2_u32.saturating_pow(attempt));
-    let delay = delay.min(MAX_DELAY);
-
-    if is_rate_limited {
-        delay.saturating_mul(RATE_LIMIT_MULTIPLIER)
-    } else {
-        delay
-    }
-}
-
-/// Whether this error is worth retrying.
-///
-/// Network errors are pre-classified as retryable at conversion time (timeout/connect only).
-const fn is_retryable(err: &TranscriptionError) -> bool {
-    match err {
-        TranscriptionError::Network(_) | TranscriptionError::RateLimitExhausted { .. } => true,
-        TranscriptionError::Api { status, .. } => is_retryable_status(*status),
-        _ => false,
-    }
-}
-
-/// HTTP status codes worth retrying.
-const fn is_retryable_status(status: u16) -> bool {
-    matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
-}
-
-/// Whether this error originated from a 429 rate limit.
-const fn is_rate_limit_error(err: &TranscriptionError) -> bool {
-    matches!(
-        err,
-        TranscriptionError::RateLimitExhausted { .. } | TranscriptionError::Api { status: 429, .. }
-    )
 }
 
 #[cfg(test)]
@@ -360,64 +290,7 @@ mod tests {
         ));
     }
 
-    // ──── Backoff Tests ────────────────────────────────────────────────────
-
-    #[test]
-    fn backoff_delay_exponential() {
-        // attempt 0: 1s, attempt 1: 2s, attempt 2: 4s
-        assert_eq!(backoff_delay(0, false), Duration::from_secs(1));
-        assert_eq!(backoff_delay(1, false), Duration::from_secs(2));
-        assert_eq!(backoff_delay(2, false), Duration::from_secs(4));
-    }
-
-    #[test]
-    fn backoff_delay_capped() {
-        // attempt 5 would be 32s, but capped at 16s
-        assert_eq!(backoff_delay(5, false), Duration::from_secs(16));
-    }
-
-    #[test]
-    fn backoff_delay_rate_limited_doubles() {
-        // attempt 0 rate-limited: 1s * 2 = 2s
-        assert_eq!(backoff_delay(0, true), Duration::from_secs(2));
-        // attempt 1 rate-limited: 2s * 2 = 4s
-        assert_eq!(backoff_delay(1, true), Duration::from_secs(4));
-    }
-
-    #[test]
-    fn retryable_statuses() {
-        assert!(is_retryable_status(408));
-        assert!(is_retryable_status(429));
-        assert!(is_retryable_status(500));
-        assert!(is_retryable_status(502));
-        assert!(is_retryable_status(503));
-        assert!(is_retryable_status(504));
-
-        // Non-retryable
-        assert!(!is_retryable_status(400));
-        assert!(!is_retryable_status(401));
-        assert!(!is_retryable_status(403));
-        assert!(!is_retryable_status(413));
-        assert!(!is_retryable_status(200));
-    }
-
-    #[test]
-    fn retryable_api_errors() {
-        let retryable = TranscriptionError::Api {
-            status: 500,
-            message: "internal".into(),
-        };
-        assert!(is_retryable(&retryable));
-
-        let non_retryable = TranscriptionError::Api {
-            status: 401,
-            message: "unauthorized".into(),
-        };
-        assert!(!is_retryable(&non_retryable));
-
-        let encoding = TranscriptionError::EncodingFailed("bad".into());
-        assert!(!is_retryable(&encoding));
-    }
+    // ──── Retry classification is tested in error.rs ───────────────────────
 
     // ──── Test Helpers ────────────────────────────────────────────────────
 
@@ -531,9 +404,10 @@ mod tests {
             other => panic!("Expected RateLimitExhausted with 3 retries, got: {other:?}"),
         }
 
-        // Verify backoff timing: 2s + 4s + 8s = 14s minimum (rate limit doubled)
-        assert!(elapsed >= Duration::from_secs(14));
-        assert!(elapsed < Duration::from_secs(16)); // Allow margin
+        // Verify backoff timing: backon uses uniform exponential backoff
+        // 1s + 2s + 4s = 7s minimum (backon adds jitter, so allow margin)
+        assert!(elapsed >= Duration::from_secs(5));
+        assert!(elapsed < Duration::from_secs(12));
 
         // Note: We don't call mock.assert() because it expects 1 hit,
         // but we make 4 attempts (initial + 3 retries). The behavior

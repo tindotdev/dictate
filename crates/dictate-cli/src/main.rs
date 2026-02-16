@@ -67,12 +67,12 @@ fn run() -> Result<()> {
     if let Some(format) = args.format {
         options = options.response_format(format);
     }
-    if let Some(model_str) = args.model {
+    if let Some(model_str) = args.transcription_model {
         // clap's value_parser already validated this is a valid model name
         let model = model_str
             .parse::<dictate_core::WhisperModel>()
             .expect("clap-validated model should parse");
-        options = options.model(model);
+        options = options.transcription_model(model);
     }
     if let Some(temperature) = args.temperature {
         options = options.temperature(temperature);
@@ -85,6 +85,15 @@ fn run() -> Result<()> {
     }
     if args.no_clipboard {
         options = options.no_clipboard(true);
+    }
+    if args.post_process {
+        options = options.post_process(true);
+    }
+    if let Some(model) = args.post_process_model {
+        options = options.post_process_model(model);
+    }
+    if let Some(url) = args.post_process_base_url {
+        options = options.post_process_base_url(url);
     }
 
     commands::record::run(&options)?;

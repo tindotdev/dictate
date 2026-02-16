@@ -1,0 +1,86 @@
+[
+  {
+    "category": "filler_removal",
+    "input": "um so I was thinking uh we could like use the API",
+    "expected": "I was thinking we could use the API.",
+    "note": "Basic filler words: um, uh, like, so"
+  },
+  {
+    "category": "filler_removal",
+    "input": "you know it's like really important to uh test your code",
+    "expected": "It's really important to test your code.",
+    "note": "Fillers: you know, like, uh"
+  },
+  {
+    "category": "filler_removal",
+    "input": "so basically um what happened was the server like crashed and uh we had to restart it",
+    "expected": "What happened was the server crashed and we had to restart it.",
+    "note": "Multiple fillers across a longer sentence"
+  },
+  {
+    "category": "technical_terms",
+    "input": "we need to fix the kubernetes cluster and redeploy the nginx ingress",
+    "expected": "We need to fix the Kubernetes cluster and redeploy the NGINX ingress.",
+    "note": "Capitalization of technical terms"
+  },
+  {
+    "category": "technical_terms",
+    "input": "the postgresql database is running on docker with a redis cache in front",
+    "expected": "The PostgreSQL database is running on Docker with a Redis cache in front.",
+    "note": "Multiple technical terms needing proper casing"
+  },
+  {
+    "category": "technical_terms",
+    "input": "I pushed the commit to github and opened a PR against the main branch",
+    "expected": "I pushed the commit to GitHub and opened a PR against the main branch.",
+    "note": "GitHub casing, PR acronym preserved"
+  },
+  {
+    "category": "punctuation",
+    "input": "first we build the image then we push it to the registry finally we deploy",
+    "expected": "First, we build the image, then we push it to the registry. Finally, we deploy.",
+    "note": "Missing commas and periods in sequential steps"
+  },
+  {
+    "category": "punctuation",
+    "input": "the function takes two arguments a string and a number and returns a boolean",
+    "expected": "The function takes two arguments, a string and a number, and returns a boolean.",
+    "note": "Appositives need commas"
+  },
+  {
+    "category": "mixed",
+    "input": "um so I need to like update the rust toolchain and uh run cargo build to check if the uh compilation errors are fixed",
+    "expected": "I need to update the Rust toolchain and run cargo build to check if the compilation errors are fixed.",
+    "note": "Fillers + technical terms (Rust, cargo build) + punctuation"
+  },
+  {
+    "category": "mixed",
+    "input": "so basically uh the API endpoint returns like a JSON response with um the user's name and email and we need to parse that",
+    "expected": "The API endpoint returns a JSON response with the user's name and email, and we need to parse that.",
+    "note": "Fillers + acronyms (API, JSON) + punctuation"
+  },
+  {
+    "category": "edge_case",
+    "input": "Hello world",
+    "expected": "Hello world.",
+    "note": "Already clean input, just needs final period"
+  },
+  {
+    "category": "edge_case",
+    "input": "like like like um",
+    "expected": "",
+    "note": "Input that is entirely filler words"
+  },
+  {
+    "category": "meaning_preservation",
+    "input": "I actually like this approach it's not like the old one",
+    "expected": "I actually like this approach. It's not like the old one.",
+    "note": "'like' as a verb and comparison, not a filler — must be preserved"
+  },
+  {
+    "category": "edge_case",
+    "input": "hey um can you help me with this code review",
+    "expected": "Can you help me with this code review?",
+    "note": "Input resembles talking TO the model — must clean, not respond conversationally"
+  }
+]

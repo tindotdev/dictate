@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 audioadapter.workspace = true
 audioadapter-buffers.workspace = true
+backon.workspace = true
 bytes.workspace = true
 cpal.workspace = true
 directories.workspace = true
@@ -26,4 +27,5 @@ workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 serde_json.workspace = true
+strsim.workspace = true
 tempfile.workspace = true

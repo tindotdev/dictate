@@ -176,12 +176,12 @@ record-format format device="": build-cli
         {{dictate_bin}} record --format "{{format}}"; \
     fi
 
-# Record with specific model (whisper-large-v3-turbo, whisper-large-v3)
-record-model model device="": build-cli
+# Record with specific transcription model (whisper-large-v3-turbo, whisper-large-v3)
+record-transcription-model model device="": build-cli
     if [ -n "{{device}}" ]; then \
-        {{dictate_bin}} record --model "{{model}}" --device "{{device}}"; \
+        {{dictate_bin}} record --transcription-model "{{model}}" --device "{{device}}"; \
     else \
-        {{dictate_bin}} record --model "{{model}}"; \
+        {{dictate_bin}} record --transcription-model "{{model}}"; \
     fi
 
 # Record with all Phase 2 options (language + prompt + format)
@@ -233,6 +233,22 @@ record-both-timestamps device="": build-cli
         {{dictate_bin}} record --format verbose_json --timestamps word,segment; \
     fi
 
+# Record with LLM post-processing for punctuation and formatting
+record-postprocess model="" device="": build-cli
+    if [ -n "{{device}}" ]; then \
+        if [ -n "{{model}}" ]; then \
+            {{dictate_bin}} record --post-process --post-process-model "{{model}}" --device "{{device}}"; \
+        else \
+            {{dictate_bin}} record --post-process --device "{{device}}"; \
+        fi; \
+    else \
+        if [ -n "{{model}}" ]; then \
+            {{dictate_bin}} record --post-process --post-process-model "{{model}}"; \
+        else \
+            {{dictate_bin}} record --post-process; \
+        fi; \
+    fi
+
 # Add a dictionary entry (interactive)
 remember: build-cli
     {{dictate_bin}} remember
@@ -243,6 +259,14 @@ dictionary: build-cli
 
 # Alias
 dict: dictionary
+
+# Evaluate post-processing prompt against golden test cases (requires GROQ_API_KEY)
+eval-prompt:
+    cargo test -p dictate-core golden_eval_against_live_api -- --ignored --nocapture
+
+# Run 5-model × 2-prompt evaluation matrix (requires GROQ_API_KEY)
+eval-matrix:
+    cargo test -p dictate-core matrix_eval_models_x_prompts -- --ignored --nocapture
 
 # Run all checks (fmt + clippy + test)
 check: fmt-check clippy test
