@@ -28,11 +28,7 @@ const MAX_RETRIES: u32 = 3;
 const BASE_DELAY: Duration = Duration::from_secs(1);
 const MAX_DELAY: Duration = Duration::from_secs(16);
 
-const SYSTEM_PROMPT: &str = "\
-Clean up this voice transcript. Fix punctuation and capitalization. \
-Remove filler words (um, uh, like, you know). Keep the original \
-meaning and all technical terms intact. Output only the cleaned \
-text, nothing else.";
+const SYSTEM_PROMPT: &str = include_str!("prompts/cleanup.txt");
 
 // ─── Post-processor ─────────────────────────────────────────────────────────
 

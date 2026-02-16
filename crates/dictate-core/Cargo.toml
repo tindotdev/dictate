@@ -27,4 +27,5 @@ workspace = true
 [dev-dependencies]
 httpmock.workspace = true
 serde_json.workspace = true
+strsim.workspace = true
 tempfile.workspace = true

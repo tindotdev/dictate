@@ -260,5 +260,9 @@ dictionary: build-cli
 # Alias
 dict: dictionary
 
+# Evaluate post-processing prompt against golden test cases (requires GROQ_API_KEY)
+eval-prompt:
+    cargo test -p dictate-core golden_eval_against_live_api -- --ignored --nocapture
+
 # Run all checks (fmt + clippy + test)
 check: fmt-check clippy test

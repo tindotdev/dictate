@@ -3,6 +3,9 @@
 //! Provides an optional LLM-based cleanup step that fixes punctuation,
 //! capitalization, and filler words in raw Whisper output.
 
+#[cfg(test)]
+mod eval;
+
 pub mod groq;
 
 pub use groq::GroqPostProcessor;
