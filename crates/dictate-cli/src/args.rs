@@ -126,7 +126,7 @@ pub struct RecordArgs {
     #[arg(long, short = 'p')]
     pub post_process: bool,
 
-    /// Model for post-processing (default: llama-3.1-8b-instant)
+    /// Model for post-processing (default: openai/gpt-oss-20b)
     #[arg(long, requires = "post_process")]
     pub post_process_model: Option<ModelId>,
 

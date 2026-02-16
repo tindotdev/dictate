@@ -5,7 +5,7 @@
 //!
 //! Run with: `just eval-prompt` or `cargo test -p dictate-core golden -- --ignored --nocapture`
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -80,28 +80,47 @@ pub fn similarity(actual: &str, expected: &str) -> f64 {
 /// Levenshtein: removing filler words like "um" improves ROUGE (fewer wrong
 /// words) even though Levenshtein penalises the length change.
 ///
-/// Returns 0.0 when there is no word overlap and 1.0 for identical word sets.
+/// Uses multiset (frequency-count) intersection so that repeated tokens
+/// contribute correctly to precision and recall denominators.
+///
+/// Returns 0.0 when there is no word overlap and 1.0 for identical texts.
 #[allow(clippy::cast_precision_loss)]
 pub fn rouge1_f(actual: &str, expected: &str) -> f64 {
-    let actual_words: HashSet<&str> = actual.split_whitespace().collect();
-    let expected_words: HashSet<&str> = expected.split_whitespace().collect();
+    let actual_counts = unigram_counts(actual);
+    let expected_counts = unigram_counts(expected);
 
-    if actual_words.is_empty() && expected_words.is_empty() {
+    let actual_len: usize = actual_counts.values().sum();
+    let expected_len: usize = expected_counts.values().sum();
+
+    if actual_len == 0 && expected_len == 0 {
         return 1.0;
     }
-    if actual_words.is_empty() || expected_words.is_empty() {
+    if actual_len == 0 || expected_len == 0 {
         return 0.0;
     }
 
-    let overlap = actual_words.intersection(&expected_words).count() as f64;
-    let precision = overlap / actual_words.len() as f64;
-    let recall = overlap / expected_words.len() as f64;
+    let overlap: usize = actual_counts
+        .iter()
+        .filter_map(|(token, &count)| expected_counts.get(token).map(|&exp| count.min(exp)))
+        .sum();
+
+    let precision = overlap as f64 / actual_len as f64;
+    let recall = overlap as f64 / expected_len as f64;
 
     if precision + recall == 0.0 {
         0.0
     } else {
         2.0 * precision * recall / (precision + recall)
     }
+}
+
+/// Count unigram frequencies in whitespace-tokenised text.
+fn unigram_counts(text: &str) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for word in text.split_whitespace() {
+        *counts.entry(word).or_insert(0) += 1;
+    }
+    counts
 }
 
 /// Minimum similarity score for a golden case to pass.
@@ -272,6 +291,37 @@ fn rouge1_empty_strings() {
     assert!((rouge1_f("", "") - 1.0).abs() < f64::EPSILON);
     assert!(rouge1_f("hello", "") < f64::EPSILON);
     assert!(rouge1_f("", "hello") < f64::EPSILON);
+}
+
+#[test]
+fn rouge1_repetition_penalises_precision() {
+    // "foo foo foo" vs "foo": overlap = min(3,1) = 1, precision = 1/3, recall = 1/1, F1 = 0.5
+    let score = rouge1_f("foo foo foo", "foo");
+    assert!(
+        (score - 0.5).abs() < f64::EPSILON,
+        "Expected F1 = 0.5 for repeated hypothesis, got {score}"
+    );
+}
+
+#[test]
+fn rouge1_repetition_penalises_recall() {
+    // "foo" vs "foo foo foo": overlap = min(1,3) = 1, precision = 1/1, recall = 1/3, F1 = 0.5
+    let score = rouge1_f("foo", "foo foo foo");
+    assert!(
+        (score - 0.5).abs() < f64::EPSILON,
+        "Expected F1 = 0.5 for repeated reference, got {score}"
+    );
+}
+
+#[test]
+fn rouge1_mixed_repetition() {
+    // "a a b" vs "a b b": overlap = min(2,1)+min(1,2) = 1+1 = 2, prec = 2/3, rec = 2/3, F1 = 2/3
+    let score = rouge1_f("a a b", "a b b");
+    let expected = 2.0 / 3.0;
+    assert!(
+        (score - expected).abs() < 1e-10,
+        "Expected F1 ≈ {expected:.4}, got {score}"
+    );
 }
 
 // ──── Matrix evaluation ──────────────────────────────────────────────────
