@@ -1,5 +1,5 @@
 use clap::{Args, Parser, Subcommand};
-use dictate_core::{ModelId, ResponseFormat, TimestampGranularity};
+use dictate_core::ModelId;
 
 /// Parse and validate temperature in the 0.0–1.0 range.
 fn parse_temperature(s: &str) -> Result<f32, String> {
@@ -45,6 +45,10 @@ pub enum Commands {
 
     /// Manage vocabulary words for transcription biasing
     Vocab(VocabArgs),
+
+    /// Generate shell completions
+    #[command(hide = true)]
+    Completions(CompletionsArgs),
 }
 
 #[derive(Args)]
@@ -80,6 +84,12 @@ since they are already included in prompt hints."
 }
 
 #[derive(Args)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    pub shell: clap_complete::Shell,
+}
+
+#[derive(Args)]
 pub struct RecordArgs {
     /// Select a specific audio input device (index from `devices`, or case-insensitive partial name match)
     #[arg(long)]
@@ -98,8 +108,8 @@ pub struct RecordArgs {
     pub prompt: Option<String>,
 
     /// Response format: "json" (default), "`verbose_json`", or "text"
-    #[arg(long)]
-    pub format: Option<ResponseFormat>,
+    #[arg(long, value_parser = ["json", "verbose_json", "text"])]
+    pub format: Option<String>,
 
     /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
     #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
@@ -111,8 +121,8 @@ pub struct RecordArgs {
 
     /// Timestamp granularities: "segment", "word", or both (comma-separated).
     /// Requires --format `verbose_json`. Example: --timestamps word,segment
-    #[arg(long = "timestamps", value_delimiter = ',')]
-    pub timestamp_granularities: Option<Vec<TimestampGranularity>>,
+    #[arg(long = "timestamps", value_delimiter = ',', value_parser = ["word", "segment"])]
+    pub timestamp_granularities: Option<Vec<String>>,
 
     /// Print transcript to stdout instead of copying to clipboard
     #[arg(long, conflicts_with = "no_clipboard")]
@@ -498,5 +508,45 @@ mod tests {
             args.post_process_base_url.as_deref(),
             Some("https://chat.example.com/v1/chat/completions")
         );
+    }
+
+    // --- Completions subcommand tests ---
+
+    #[test]
+    fn parse_completions_fish() {
+        let cli = Cli::parse_from(["dictate", "completions", "fish"]);
+        let Some(Commands::Completions(args)) = cli.command else {
+            panic!("expected completions subcommand");
+        };
+        assert_eq!(args.shell, clap_complete::Shell::Fish);
+    }
+
+    #[test]
+    fn completions_requires_shell_argument() {
+        let result = Cli::try_parse_from(["dictate", "completions"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn completions_rejects_invalid_shell() {
+        let result = Cli::try_parse_from(["dictate", "completions", "nushell"]);
+        assert!(result.is_err());
+    }
+
+    // --- Format / timestamps value_parser tests ---
+
+    #[test]
+    fn format_rejects_invalid_value() {
+        let result = Cli::try_parse_from(["dictate", "record", "--format", "xml"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn format_accepts_verbose_json() {
+        let cli = Cli::parse_from(["dictate", "record", "--format", "verbose_json"]);
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+        assert_eq!(args.format.as_deref(), Some("verbose_json"));
     }
 }
