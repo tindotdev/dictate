@@ -108,6 +108,16 @@ export GROQ_CHAT_BASE_URL="..."  # override post-process chat endpoint
 
 Add to your shell profile for persistence. From source installs, `just add-secret` can help.
 
+## Shell completions
+
+Generate and install completions for your shell (fish, bash, zsh ):
+
+```bash
+dictate completions fish > ~/.config/fish/completions/dictate.fish
+dictate completions bash > ~/.local/share/bash-completion/completions/dictate
+dictate completions zsh > ~/.zfunc/_dictate  # then add ~/.zfunc to fpath
+```
+
 ## Platform requirements
 
 Linux:

@@ -46,6 +46,10 @@ fn run() -> Result<()> {
             commands::vocab::run(&args)?;
             return Ok(());
         }
+        Some(args::Commands::Completions(args)) => {
+            commands::completions::run(&args);
+            return Ok(());
+        }
         Some(args::Commands::Record(args)) => args,
         None => cli.record_args,
     };
@@ -64,7 +68,10 @@ fn run() -> Result<()> {
     if let Some(prompt) = args.prompt {
         options = options.prompt(prompt);
     }
-    if let Some(format) = args.format {
+    if let Some(format_str) = args.format {
+        let format = format_str
+            .parse::<dictate_core::ResponseFormat>()
+            .expect("clap-validated format should parse");
         options = options.response_format(format);
     }
     if let Some(model_str) = args.transcription_model {
@@ -77,8 +84,15 @@ fn run() -> Result<()> {
     if let Some(temperature) = args.temperature {
         options = options.temperature(temperature);
     }
-    if let Some(timestamp_granularities) = args.timestamp_granularities {
-        options = options.timestamp_granularities(timestamp_granularities);
+    if let Some(granularity_strs) = args.timestamp_granularities {
+        let granularities = granularity_strs
+            .iter()
+            .map(|s| {
+                s.parse::<dictate_core::TimestampGranularity>()
+                    .expect("clap-validated granularity should parse")
+            })
+            .collect();
+        options = options.timestamp_granularities(granularities);
     }
     if args.stdout {
         options = options.stdout(true);
