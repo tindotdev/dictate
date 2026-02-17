@@ -1,8 +1,105 @@
 #!/usr/bin/env bash
-# Launcher script for dictate with global keyboard shortcuts
+# Toggle voice-to-text recording with desktop notifications.
+# Bind to a global keyboard shortcut in your compositor.
+#
+#   First press  → start recording  (persistent notification)
+#   Second press → stop → transcribe → clipboard
+#   Auto-stops after DICTATE_TIMEOUT seconds (default: 300)
+#
+# Requires: dictate, notify-send (libnotify), gdbus (glib2)
 # GROQ_API_KEY should be configured via: just add-secret
 
-# Ensure ~/.cargo/bin is in PATH
+set -euo pipefail
+
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/dictate.pid"
+NOTIFY_ID_FILE="${XDG_RUNTIME_DIR:-/tmp}/dictate.notify-id"
+MAX_DURATION="${DICTATE_TIMEOUT:-300}"
 export PATH="$HOME/.cargo/bin:$PATH"
 
-exec foot -T "dictate" -- dictate "$@"
+# Send a desktop notification, replacing the previous one if possible.
+# Usage: notify <timeout_ms> <summary> <body>
+#   timeout_ms=0 → persistent (stays until replaced or closed)
+notify() {
+  local timeout="$1" summary="$2" body="$3"
+  local replace_id new_id
+  replace_id=$(cat "$NOTIFY_ID_FILE" 2>/dev/null) || replace_id=""
+
+  local args=(-t "$timeout" --app-name=dictate --icon=audio-input-microphone)
+  [[ -n "$replace_id" ]] && args+=(--replace-id="$replace_id")
+  args+=(--print-id "$summary" "$body")
+
+  if new_id=$(notify-send "${args[@]}" 2>/dev/null); then
+    [[ -n "$new_id" ]] && echo "$new_id" >"$NOTIFY_ID_FILE"
+  else
+    # Fallback: plain notification (no replace/tracking)
+    notify-send -t "$timeout" "$summary" "$body" 2>/dev/null || true
+  fi
+}
+
+# Close the current notification via D-Bus after a delay.
+# Usage: close_notification_after <seconds>
+# Daemons ignore timeout hints, so this is the reliable way to auto-dismiss.
+close_notification_after() {
+  local delay="$1"
+  local id
+  id=$(cat "$NOTIFY_ID_FILE" 2>/dev/null) || return 0
+  (
+    sleep "$delay"
+    gdbus call --session \
+      --dest org.freedesktop.Notifications \
+      --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.CloseNotification \
+      "$id" >/dev/null 2>&1 || true
+    rm -f "$NOTIFY_ID_FILE"
+  ) &
+}
+
+# ── Stop ──────────────────────────────────────────────
+if [[ -f "$PIDFILE" ]]; then
+  pid=$(<"$PIDFILE")
+  if kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PIDFILE" # remove first to prevent double-stop
+    kill -INT "$pid"
+    notify 0 "Dictate" "Transcribing…"
+    exit 0
+  fi
+  rm -f "$PIDFILE" # stale PID file — clean up
+fi
+
+# ── Start ─────────────────────────────────────────────
+notify 0 "Dictate" "Recording…"
+
+(
+  set +e
+  dictate "$@" &
+  dictate_pid=$!
+  echo "$dictate_pid" >"$PIDFILE"
+
+  # Watchdog: auto-stop after MAX_DURATION seconds
+  (
+    sleep "$MAX_DURATION"
+    if kill -INT "$dictate_pid" 2>/dev/null; then
+      notify 0 "Dictate" "Auto-stopped — transcribing…"
+    fi
+  ) &
+  watchdog_pid=$!
+
+  wait "$dictate_pid"
+  rc=$?
+
+  # Cancel watchdog if dictate finished before timeout
+  kill "$watchdog_pid" 2>/dev/null
+  wait "$watchdog_pid" 2>/dev/null
+  rm -f "$PIDFILE"
+
+  if [[ $rc -eq 0 ]]; then
+    notify 0 "Dictate" "Copied to clipboard"
+    close_notification_after 3
+  else
+    notify 0 "Dictate" "Transcription failed (exit $rc)"
+    close_notification_after 5
+  fi
+) &
+disown
+
+exit 0

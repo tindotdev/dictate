@@ -114,6 +114,7 @@ Linux:
 
 - Audio: PipeWire or PulseAudio
 - Clipboard: `wl-clipboard` (Wayland) or `xclip`/`xsel` (X11)
+- Launcher notifications: `libnotify` (`notify-send`) and `glib2` (`gdbus`)
 
 macOS:
 
@@ -122,15 +123,31 @@ macOS:
 
 ## Global shortcut
 
+Install the launcher script, then bind it to a keyboard shortcut:
+
+```bash
+just install-launcher
+```
+
+The launcher is a toggle — press once to start recording, press again to stop. It runs
+headlessly (no terminal window) and uses desktop notifications for feedback:
+
+- **Recording** — persistent notification stays visible while recording
+- **Transcribing** — replaces the recording notification on stop
+- **Done** — shows result for 3 seconds, then auto-dismisses
+
+Auto-stops after 5 minutes by default. Override with `DICTATE_TIMEOUT=120` (seconds).
+
 Linux compositor examples:
 
-- Sway: `bindsym $mod+d exec foot -T "dictate" -- dictate`
-- Hyprland: `bind = SUPER, D, exec, foot -T "dictate" -- dictate`
-- COSMIC: `super + semicolon -> foot -T "dictate" -- dictate`
+- Sway: `bindsym $mod+d exec dictate-launch -p`
+- Hyprland: `bind = SUPER, D, exec, dictate-launch -p`
+- COSMIC: `super + semicolon -> dictate-launch -p`
 
-Replace `foot` with your terminal of choice.
+All flags after `dictate-launch` are passed through to `dictate` (e.g. `-p` for post-processing,
+`--language en`, `--device "USB Mic"`).
 
-On macOS, create a system shortcut (Shortcuts or Automator) that launches `dictate` in your terminal.
+On macOS, create a system shortcut (Shortcuts or Automator) that runs `dictate` in your terminal.
 
 ## Architecture
 
