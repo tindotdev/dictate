@@ -28,8 +28,32 @@ dictate --stdout               # record -> stdout (+ clipboard)
 dictate --no-clipboard         # record -> stdout only
 dictate --language en          # language hint for accuracy
 dictate --device <query>       # select device by name or index
+dictate --save-last-audio      # save audio locally for retry
+dictate retry                  # rerun Whisper + post-process on saved audio
 dictate devices                # list audio input devices
 ```
+
+### Retry the last recording
+
+If a long dictation did not come out the way you wanted, save the audio once and
+rerun transcription without speaking again:
+
+```bash
+dictate --save-last-audio -p
+dictate retry
+dictate retry --transcription-model whisper-large-v3
+dictate retry --prompt "Keep the wording literal" -p
+dictate retry --no-post-process
+```
+
+Notes:
+
+- `dictate retry` reuses the last audio saved with `--save-last-audio`
+- Retry inherits the saved recording's transcription and post-process settings by default
+- Any flags passed to `dictate retry` override the saved settings for that run
+- Direct `dictate` recordings use shorter network timeouts and fewer retries so interactive/hotkey use stays bounded; `dictate retry` keeps longer, more persistent budgets
+- Use `dictate retry --no-post-process` to compare raw Whisper output against a previously cleaned-up run
+- The saved audio stays available until it is replaced by a later `--save-last-audio` recording
 
 ### Output formats
 
@@ -133,20 +157,23 @@ macOS:
 
 ## Global shortcut
 
-Install the launcher script, then bind it to a keyboard shortcut:
+Install the canonical launcher files from this repo, then bind them to keyboard shortcuts:
 
 ```bash
-just install-launcher
+just install-launchers
 ```
 
-The launcher is a toggle — press once to start recording, press again to stop. It runs
+The desktop launcher is a toggle — press once to start recording, press again to stop. It runs
 headlessly (no terminal window) and uses desktop notifications for feedback:
 
 - **Recording** — persistent notification stays visible while recording
 - **Transcribing** — replaces the recording notification on stop
+- **Cancelling** — pressing the shortcut again during transcription requests cancellation
 - **Done** — shows result for 3 seconds, then auto-dismisses
 
 Auto-stops after 5 minutes by default. Override with `DICTATE_TIMEOUT=120` (seconds).
+If transcription still hangs after stop, the launcher escalates after
+`DICTATE_TRANSCRIBE_TIMEOUT=45` seconds by default.
 
 Linux compositor examples:
 
@@ -157,7 +184,40 @@ Linux compositor examples:
 All flags after `dictate-launch` are passed through to `dictate` (e.g. `-p` for post-processing,
 `--language en`, `--device "USB Mic"`).
 
-On macOS, create a system shortcut (Shortcuts or Automator) that runs `dictate` in your terminal.
+Kitty adapter:
+
+- Install with `just install-launcher-kitty` or `just install-launchers`
+- Bind in Kitty with:
+
+```text
+map kitty_mod+d launch --type=background dictate-kitty
+map kitty_mod+shift+d launch --type=background dictate-kitty retry
+```
+
+The canonical launcher sources are:
+
+- [contrib/launchers/dictate-launch](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/contrib/launchers/dictate-launch)
+- [contrib/launchers/dictate-kitty](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/contrib/launchers/dictate-kitty)
+- [contrib/launchers/dictate-launch-common.sh](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/contrib/launchers/dictate-launch-common.sh)
+
+Repo-side launcher validation:
+
+- `just test-launchers` runs start/stop/retry smoke tests against fake `dictate`, notification, and Kitty binaries
+- `just lint-launchers` runs `shellcheck`
+
+Compatibility wrappers remain at:
+
+- [contrib/dictate-launch](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/contrib/dictate-launch)
+- [contrib/dictate-kitty](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/contrib/dictate-kitty)
+
+Debugging helpers:
+
+- `DICTATE_STATE_DIR=/tmp/dictate-test` overrides where pid/state/output files are written
+- `DICTATE_LAUNCH_LOG=/tmp/dictate-launch.log` appends launcher events and child exec lines
+- `DICTATE_LAUNCH_TRACE=1` enables Bash xtrace; if `DICTATE_LAUNCH_LOG` is set, trace output goes there
+- `DICTATE_BIN=/path/to/dictate` and `DICTATE_TRANSCRIPTION_MODEL=...` let you test alternate binaries/settings
+
+On macOS outside Kitty, create a system shortcut (Shortcuts or Automator) that runs `dictate` in your terminal.
 
 ## Architecture
 
@@ -191,10 +251,15 @@ API errors:
 - `401`: invalid API key
 - `429`: rate limited (retries automatically)
 - `413`: recording too long
+- `dictate retry`: first create a reusable recording with `dictate --save-last-audio`
 
 ## Privacy
 
-Audio is sent to [Groq](https://groq.com) for transcription. No audio is stored locally. See Groq's [privacy policy](https://groq.com/privacy-policy/) and [terms of use](https://groq.com/terms-of-use/).
+Audio is sent to [Groq](https://groq.com) for transcription. By default, audio is
+not stored locally. If you pass `--save-last-audio`, dictate stores one reusable
+local recording until it is replaced by a later saved recording. See Groq's
+[privacy policy](https://groq.com/privacy-policy/) and
+[terms of use](https://groq.com/terms-of-use/).
 
 ## Acknowledgments
 
