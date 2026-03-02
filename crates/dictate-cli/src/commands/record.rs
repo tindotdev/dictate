@@ -1358,6 +1358,10 @@ mod tests {
         }
     }
 
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
+
     #[allow(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,
@@ -1551,7 +1555,6 @@ mod tests {
     // ── offset_timestamps tests ─────────────────────────────────────
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn offset_timestamps_shifts_segments_and_words() {
         let mut result = TranscriptionResult {
             text: "hello world".to_string(),
@@ -1590,18 +1593,18 @@ mod tests {
         offset_timestamps(&mut result, 88.0);
 
         let segments = result.segments.unwrap();
-        assert_eq!(segments[0].start, 88.0);
-        assert_eq!(segments[0].end, 93.0);
-        assert_eq!(segments[0].words[0].start, 88.0);
-        assert_eq!(segments[0].words[0].end, 90.5);
-        assert_eq!(segments[0].words[1].start, 90.5);
-        assert_eq!(segments[0].words[1].end, 93.0);
+        assert_f64_eq(segments[0].start, 88.0);
+        assert_f64_eq(segments[0].end, 93.0);
+        assert_f64_eq(segments[0].words[0].start, 88.0);
+        assert_f64_eq(segments[0].words[0].end, 90.5);
+        assert_f64_eq(segments[0].words[1].start, 90.5);
+        assert_f64_eq(segments[0].words[1].end, 93.0);
 
         let words = result.words.unwrap();
-        assert_eq!(words[0].start, 88.0);
-        assert_eq!(words[0].end, 90.5);
-        assert_eq!(words[1].start, 90.5);
-        assert_eq!(words[1].end, 93.0);
+        assert_f64_eq(words[0].start, 88.0);
+        assert_f64_eq(words[0].end, 90.5);
+        assert_f64_eq(words[1].start, 90.5);
+        assert_f64_eq(words[1].end, 93.0);
     }
 
     #[test]
@@ -1780,7 +1783,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn merge_multi_chunk_preserves_offset_timestamps() {
         // Simulate two chunks where timestamps have already been offset
         // (as transcribe_chunks would do after fix 3c).
@@ -1796,19 +1798,19 @@ mod tests {
         let segments = merged.segments.unwrap();
         assert_eq!(segments.len(), 2);
         // Chunk 0 timestamps unchanged
-        assert_eq!(segments[0].start, 0.0);
-        assert_eq!(segments[0].end, 90.0);
+        assert_f64_eq(segments[0].start, 0.0);
+        assert_f64_eq(segments[0].end, 90.0);
         // Chunk 1 timestamps offset by 88.0
-        assert_eq!(segments[1].start, 88.0);
-        assert_eq!(segments[1].end, 178.0);
+        assert_f64_eq(segments[1].start, 88.0);
+        assert_f64_eq(segments[1].end, 178.0);
 
         // Verify monotonic ordering across chunks
         assert!(segments[0].end <= segments[1].start + 2.0); // Allow overlap window
 
         let words = merged.words.unwrap();
         assert_eq!(words.len(), 2);
-        assert_eq!(words[0].start, 0.0);
-        assert_eq!(words[1].start, 88.0);
+        assert_f64_eq(words[0].start, 0.0);
+        assert_f64_eq(words[1].start, 88.0);
     }
 
     // ── post-process metadata tests ───────────────────────────────────

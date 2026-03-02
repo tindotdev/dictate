@@ -850,7 +850,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::significant_drop_tightening)]
     fn post_process_uses_post_process_base_url_not_base_url() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let pipeline = TranscriptionPipeline::new(
@@ -874,16 +873,19 @@ mod tests {
         let _ = pipeline.post_process_result(result);
 
         let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
+        let recorded_len = recorded.len();
+        let recorded_base_url = recorded[0].1.clone();
+        drop(recorded);
+
+        assert_eq!(recorded_len, 1);
         assert_eq!(
-            recorded[0].1.as_deref(),
+            recorded_base_url.as_deref(),
             Some("https://chat.example.com/v1/chat"),
             "post-processor should receive post_process_base_url, not base_url"
         );
     }
 
     #[test]
-    #[allow(clippy::significant_drop_tightening)]
     fn post_process_base_url_defaults_to_none() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let pipeline = TranscriptionPipeline::new(
@@ -906,9 +908,13 @@ mod tests {
         let _ = pipeline.post_process_result(result);
 
         let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
+        let recorded_len = recorded.len();
+        let recorded_base_url = recorded[0].1.clone();
+        drop(recorded);
+
+        assert_eq!(recorded_len, 1);
         assert_eq!(
-            recorded[0].1, None,
+            recorded_base_url, None,
             "post-processor should get None when post_process_base_url is unset (not inherit base_url)"
         );
     }

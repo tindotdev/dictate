@@ -198,6 +198,10 @@ fn send_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_f64_eq(actual: f64, expected: f64) {
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
     use crate::encoder::EncodedAudio;
     use crate::provider::TimestampGranularity;
     use crate::request_policy::RequestPolicy;
@@ -670,7 +674,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn http_timestamp_granularities_word() {
         use httpmock::prelude::*;
         use serde_json::json;
@@ -713,13 +716,12 @@ mod tests {
         let words = res.words.unwrap();
         assert_eq!(words.len(), 2);
         assert_eq!(words[0].word, "Hello");
-        assert_eq!(words[0].start, 0.0);
-        assert_eq!(words[0].end, 0.5);
+        assert_f64_eq(words[0].start, 0.0);
+        assert_f64_eq(words[0].end, 0.5);
         mock.assert();
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn http_timestamp_granularities_segment() {
         use httpmock::prelude::*;
         use serde_json::json;
@@ -769,7 +771,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn http_timestamp_granularities_both() {
         use httpmock::prelude::*;
         use serde_json::json;

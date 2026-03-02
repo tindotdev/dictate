@@ -93,12 +93,18 @@ pub struct CompletionsArgs {
 }
 
 #[derive(Args)]
-#[allow(clippy::struct_excessive_bools)]
-pub struct RecordArgs {
-    /// Select a specific audio input device (index from `devices`, or case-insensitive partial name match)
-    #[arg(long)]
-    pub device: Option<String>,
+pub struct OutputArgs {
+    /// Print transcript to stdout instead of copying to clipboard
+    #[arg(long, conflicts_with = "no_clipboard")]
+    pub stdout: bool,
 
+    /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
+    #[arg(long, conflicts_with = "stdout")]
+    pub no_clipboard: bool,
+}
+
+#[derive(Args)]
+pub struct TranscriptionArgs {
     /// Override Groq transcription API URL (falls back to `GROQ_BASE_URL` when omitted)
     #[arg(long)]
     pub base_url: Option<String>,
@@ -128,25 +134,80 @@ pub struct RecordArgs {
     #[arg(long = "timestamps", value_delimiter = ',', value_parser = ["word", "segment"])]
     pub timestamp_granularities: Option<Vec<String>>,
 
-    /// Print transcript to stdout instead of copying to clipboard
-    #[arg(long, conflicts_with = "no_clipboard")]
-    pub stdout: bool,
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
 
-    /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
-    #[arg(long, conflicts_with = "stdout")]
-    pub no_clipboard: bool,
-
+#[derive(Args)]
+pub struct RecordPostProcessArgs {
     /// Post-process transcription with LLM for better punctuation and formatting
-    #[arg(long, short = 'p')]
-    pub post_process: bool,
+    #[arg(long = "post-process", short = 'p', id = "post_process")]
+    pub enabled: bool,
 
     /// Model for post-processing (default: openai/gpt-oss-20b)
-    #[arg(long, requires = "post_process")]
-    pub post_process_model: Option<ModelId>,
+    #[arg(
+        long = "post-process-model",
+        requires = "post_process",
+        id = "post_process_model"
+    )]
+    pub model: Option<ModelId>,
 
     /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
-    #[arg(long, requires = "post_process")]
-    pub post_process_base_url: Option<String>,
+    #[arg(
+        long = "post-process-base-url",
+        requires = "post_process",
+        id = "post_process_base_url"
+    )]
+    pub base_url: Option<String>,
+}
+
+#[derive(Args)]
+pub struct RetryPostProcessArgs {
+    /// Post-process transcription with LLM for better punctuation and formatting
+    #[arg(
+        long = "post-process",
+        short = 'p',
+        conflicts_with = "no_post_process",
+        id = "post_process"
+    )]
+    pub enabled: bool,
+
+    /// Skip post-processing even if the saved recording used it
+    #[arg(
+        long = "no-post-process",
+        conflicts_with = "post_process",
+        id = "no_post_process"
+    )]
+    pub disabled: bool,
+
+    /// Model for post-processing (default: openai/gpt-oss-20b)
+    #[arg(
+        long = "post-process-model",
+        conflicts_with = "no_post_process",
+        id = "post_process_model"
+    )]
+    pub model: Option<ModelId>,
+
+    /// Override post-processing chat API URL (falls back to saved settings, then `GROQ_CHAT_BASE_URL`)
+    #[arg(
+        long = "post-process-base-url",
+        conflicts_with = "no_post_process",
+        id = "post_process_base_url"
+    )]
+    pub base_url: Option<String>,
+}
+
+#[derive(Args)]
+pub struct RecordArgs {
+    /// Select a specific audio input device (index from `devices`, or case-insensitive partial name match)
+    #[arg(long)]
+    pub device: Option<String>,
+
+    #[command(flatten)]
+    pub transcription: TranscriptionArgs,
+
+    #[command(flatten)]
+    pub post_process: RecordPostProcessArgs,
 
     /// Save the captured audio locally so `dictate retry` can reuse it later
     #[arg(long)]
@@ -154,60 +215,12 @@ pub struct RecordArgs {
 }
 
 #[derive(Args)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct RetryArgs {
-    /// Override Groq transcription API URL (falls back to saved settings, then `GROQ_BASE_URL`)
-    #[arg(long)]
-    pub base_url: Option<String>,
+    #[command(flatten)]
+    pub transcription: TranscriptionArgs,
 
-    /// ISO-639-1 language code (e.g., "en", "es", "fr") to improve accuracy and latency
-    #[arg(long)]
-    pub language: Option<String>,
-
-    /// Text to guide transcription style or spelling (max 224 tokens)
-    #[arg(long)]
-    pub prompt: Option<String>,
-
-    /// Response format: "json" (default), "`verbose_json`", or "text"
-    #[arg(long, value_parser = ["json", "verbose_json", "text"])]
-    pub format: Option<String>,
-
-    /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
-    #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
-    pub transcription_model: Option<String>,
-
-    /// Sampling temperature (0.0-1.0). Default 0.0 is recommended for transcription
-    #[arg(long, value_parser = parse_temperature)]
-    pub temperature: Option<f32>,
-
-    /// Timestamp granularities: "segment", "word", or both (comma-separated).
-    /// Requires --format `verbose_json`. Example: --timestamps word,segment
-    #[arg(long = "timestamps", value_delimiter = ',', value_parser = ["word", "segment"])]
-    pub timestamp_granularities: Option<Vec<String>>,
-
-    /// Print transcript to stdout instead of copying to clipboard
-    #[arg(long, conflicts_with = "no_clipboard")]
-    pub stdout: bool,
-
-    /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
-    #[arg(long, conflicts_with = "stdout")]
-    pub no_clipboard: bool,
-
-    /// Post-process transcription with LLM for better punctuation and formatting
-    #[arg(long, short = 'p', conflicts_with = "no_post_process")]
-    pub post_process: bool,
-
-    /// Skip post-processing even if the saved recording used it
-    #[arg(long, conflicts_with = "post_process")]
-    pub no_post_process: bool,
-
-    /// Model for post-processing (default: openai/gpt-oss-20b)
-    #[arg(long, conflicts_with = "no_post_process")]
-    pub post_process_model: Option<ModelId>,
-
-    /// Override post-processing chat API URL (falls back to saved settings, then `GROQ_CHAT_BASE_URL`)
-    #[arg(long, conflicts_with = "no_post_process")]
-    pub post_process_base_url: Option<String>,
+    #[command(flatten)]
+    pub post_process: RetryPostProcessArgs,
 }
 
 #[cfg(test)]
@@ -229,7 +242,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.base_url.as_deref(),
+            args.transcription.base_url.as_deref(),
             Some("http://127.0.0.1:8080/openai/v1/audio/transcriptions")
         );
     }
@@ -242,7 +255,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert_eq!(args.base_url, None);
+        assert_eq!(args.transcription.base_url, None);
     }
 
     #[test]
@@ -270,7 +283,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.base_url.as_deref(),
+            args.transcription.base_url.as_deref(),
             Some("http://127.0.0.1:8080/openai/v1/audio/transcriptions")
         );
     }
@@ -289,8 +302,8 @@ mod tests {
             panic!("expected retry subcommand");
         };
 
-        assert!(args.no_post_process);
-        assert!(!args.post_process);
+        assert!(args.post_process.disabled);
+        assert!(!args.post_process.enabled);
     }
 
     #[test]
@@ -314,7 +327,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.post_process_model.as_ref().map(ModelId::as_str),
+            args.post_process.model.as_ref().map(ModelId::as_str),
             Some("openai/gpt-oss-20b")
         );
     }
@@ -333,7 +346,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.post_process_base_url.as_deref(),
+            args.post_process.base_url.as_deref(),
             Some("http://127.0.0.1:8080/openai/v1/chat/completions")
         );
     }
@@ -378,7 +391,7 @@ mod tests {
         };
 
         assert_eq!(
-            args.transcription_model.as_deref(),
+            args.transcription.transcription_model.as_deref(),
             Some("whisper-large-v3")
         );
     }
@@ -403,7 +416,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert_eq!(args.temperature, Some(0.5));
+        assert_eq!(args.transcription.temperature, Some(0.5));
     }
 
     #[test]
@@ -414,7 +427,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(!args.stdout);
+        assert!(!args.transcription.output.stdout);
     }
 
     #[test]
@@ -425,7 +438,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.stdout);
+        assert!(args.transcription.output.stdout);
     }
 
     #[test]
@@ -436,7 +449,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(!args.no_clipboard);
+        assert!(!args.transcription.output.no_clipboard);
     }
 
     #[test]
@@ -447,7 +460,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.no_clipboard);
+        assert!(args.transcription.output.no_clipboard);
     }
 
     #[test]
@@ -462,14 +475,14 @@ mod tests {
     fn top_level_stdout_flag() {
         let cli = Cli::parse_from(["dictate", "--stdout"]);
         assert!(cli.command.is_none());
-        assert!(cli.record_args.stdout);
+        assert!(cli.record_args.transcription.output.stdout);
     }
 
     #[test]
     fn top_level_no_clipboard_flag() {
         let cli = Cli::parse_from(["dictate", "--no-clipboard"]);
         assert!(cli.command.is_none());
-        assert!(cli.record_args.no_clipboard);
+        assert!(cli.record_args.transcription.output.no_clipboard);
     }
 
     #[test]
@@ -483,15 +496,21 @@ mod tests {
     fn top_level_language_flag() {
         let cli = Cli::parse_from(["dictate", "--language", "en"]);
         assert!(cli.command.is_none());
-        assert_eq!(cli.record_args.language.as_deref(), Some("en"));
+        assert_eq!(
+            cli.record_args.transcription.language.as_deref(),
+            Some("en")
+        );
     }
 
     #[test]
     fn top_level_multiple_flags() {
         let cli = Cli::parse_from(["dictate", "--stdout", "--language", "es", "--device", "mic"]);
         assert!(cli.command.is_none());
-        assert!(cli.record_args.stdout);
-        assert_eq!(cli.record_args.language.as_deref(), Some("es"));
+        assert!(cli.record_args.transcription.output.stdout);
+        assert_eq!(
+            cli.record_args.transcription.language.as_deref(),
+            Some("es")
+        );
         assert_eq!(cli.record_args.device.as_deref(), Some("mic"));
     }
 
@@ -499,8 +518,8 @@ mod tests {
     fn top_level_no_args_defaults_to_record() {
         let cli = Cli::parse_from(["dictate"]);
         assert!(cli.command.is_none());
-        assert!(!cli.record_args.stdout);
-        assert!(!cli.record_args.no_clipboard);
+        assert!(!cli.record_args.transcription.output.stdout);
+        assert!(!cli.record_args.transcription.output.no_clipboard);
         assert!(cli.record_args.device.is_none());
     }
 
@@ -595,8 +614,8 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(!args.post_process);
-        assert!(args.post_process_model.is_none());
+        assert!(!args.post_process.enabled);
+        assert!(args.post_process.model.is_none());
     }
 
     #[test]
@@ -607,7 +626,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.post_process);
+        assert!(args.post_process.enabled);
     }
 
     #[test]
@@ -618,7 +637,7 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.post_process);
+        assert!(args.post_process.enabled);
     }
 
     #[test]
@@ -646,9 +665,10 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.post_process);
+        assert!(args.post_process.enabled);
         assert_eq!(
-            args.post_process_model
+            args.post_process
+                .model
                 .as_ref()
                 .map(dictate_core::ModelId::as_str),
             Some("llama-3.1-8b-instant")
@@ -659,7 +679,7 @@ mod tests {
     fn top_level_post_process_flag() {
         let cli = Cli::parse_from(["dictate", "-p"]);
         assert!(cli.command.is_none());
-        assert!(cli.record_args.post_process);
+        assert!(cli.record_args.post_process.enabled);
     }
 
     #[test]
@@ -687,9 +707,9 @@ mod tests {
             panic!("expected record subcommand");
         };
 
-        assert!(args.post_process);
+        assert!(args.post_process.enabled);
         assert_eq!(
-            args.post_process_base_url.as_deref(),
+            args.post_process.base_url.as_deref(),
             Some("https://chat.example.com/v1/chat/completions")
         );
     }
@@ -731,6 +751,6 @@ mod tests {
         let Some(Commands::Record(args)) = cli.command else {
             panic!("expected record subcommand");
         };
-        assert_eq!(args.format.as_deref(), Some("verbose_json"));
+        assert_eq!(args.transcription.format.as_deref(), Some("verbose_json"));
     }
 }

@@ -162,6 +162,10 @@ impl ProgressiveChunker {
 mod tests {
     use super::*;
 
+    fn assert_f32_eq(actual: f32, expected: f32) {
+        assert!((actual - expected).abs() < f32::EPSILON);
+    }
+
     /// Generate `duration_secs` worth of silent 16kHz samples.
     #[allow(
         clippy::cast_precision_loss,
@@ -301,25 +305,23 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn leading_overlap_secs_returns_zero_for_first_chunk() {
         let chunk = AudioChunk {
             index: 0,
             samples: vec![0.0; 160_000],
             has_leading_overlap: false,
         };
-        assert_eq!(chunk.leading_overlap_secs(), 0.0);
+        assert_f32_eq(chunk.leading_overlap_secs(), 0.0);
     }
 
     #[test]
-    #[allow(clippy::float_cmp)]
     fn leading_overlap_secs_returns_overlap_for_subsequent_chunks() {
         let chunk = AudioChunk {
             index: 1,
             samples: vec![0.0; 160_000],
             has_leading_overlap: true,
         };
-        assert_eq!(chunk.leading_overlap_secs(), 2.0);
+        assert_f32_eq(chunk.leading_overlap_secs(), 2.0);
     }
 
     #[test]
