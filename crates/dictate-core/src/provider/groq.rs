@@ -5,7 +5,6 @@
 //! retry for transient failures and rate limits.
 
 use std::io::Cursor;
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use backon::{BlockingRetryable, ExponentialBuilder};
@@ -21,15 +20,6 @@ use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 const DEFAULT_API_URL: &str = "https://api.groq.com/openai/v1/audio/transcriptions";
 const DEFAULT_MODEL: &str = "whisper-large-v3-turbo";
-
-/// HTTP request timeout (5 minutes — large audio uploads can be slow).
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-
-// ─── Retry configuration ─────────────────────────────────────────────────────
-
-const MAX_RETRIES: u32 = 3;
-const BASE_DELAY: Duration = Duration::from_secs(1);
-const MAX_DELAY: Duration = Duration::from_secs(16);
 
 /// Validate that a prompt does not exceed the maximum token limit.
 ///
@@ -52,22 +42,22 @@ fn validate_prompt_length(prompt: &str) -> Result<(), TranscriptionError> {
 /// Groq Whisper transcription provider.
 ///
 /// Uses Groq's OpenAI-compatible API with the `whisper-large-v3-turbo` model.
-/// The HTTP client is lazily initialised and shared across all calls.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GroqProvider;
 
-/// Module-level shared HTTP client (created once, reused).
-fn http_client() -> Result<&'static Client, TranscriptionError> {
-    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            Client::builder()
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .map_err(|e| format!("failed to initialize HTTP client: {e}"))
-        })
-        .as_ref()
-        .map_err(|e| TranscriptionError::HttpClientInitialization(e.clone()))
+fn http_client(timeout: Duration) -> Result<Client, TranscriptionError> {
+    Client::builder().timeout(timeout).build().map_err(|e| {
+        TranscriptionError::HttpClientInitialization(format!(
+            "failed to initialize HTTP client: {e}"
+        ))
+    })
+}
+
+fn retry_builder(config: &TranscriptionConfig<'_>) -> ExponentialBuilder {
+    ExponentialBuilder::default()
+        .with_min_delay(config.request_policy.base_delay)
+        .with_max_delay(config.request_policy.max_delay)
+        .with_max_times(config.request_policy.max_retries as usize)
 }
 
 impl TranscriptionProvider for GroqProvider {
@@ -81,15 +71,10 @@ impl TranscriptionProvider for GroqProvider {
     ) -> Result<TranscriptionResult, TranscriptionError> {
         let url = config.base_url.unwrap_or(DEFAULT_API_URL);
         let model = config.model.unwrap_or(DEFAULT_MODEL);
-        let client = http_client()?;
+        let client = http_client(config.request_policy.timeout)?;
 
-        (|| send_request(client, url, &config, model))
-            .retry(
-                ExponentialBuilder::default()
-                    .with_min_delay(BASE_DELAY)
-                    .with_max_delay(MAX_DELAY)
-                    .with_max_times(MAX_RETRIES as usize),
-            )
+        (|| send_request(&client, url, &config, model))
+            .retry(retry_builder(&config))
             .when(super::super::error::TranscriptionError::is_retryable)
             .notify(|err, dur| {
                 eprintln!("[dictate] retrying after {dur:?}: {err}");
@@ -98,7 +83,7 @@ impl TranscriptionProvider for GroqProvider {
             .map_err(|e| {
                 if e.is_rate_limit_error() {
                     TranscriptionError::RateLimitExhausted {
-                        retries: MAX_RETRIES,
+                        retries: config.request_policy.max_retries,
                     }
                 } else {
                     e
@@ -215,6 +200,16 @@ mod tests {
     use super::*;
     use crate::encoder::EncodedAudio;
     use crate::provider::TimestampGranularity;
+    use crate::request_policy::RequestPolicy;
+
+    fn fast_request_policy() -> RequestPolicy {
+        RequestPolicy::new(
+            Duration::from_millis(200),
+            3,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+        )
+    }
 
     // ──── Prompt Validation Tests ────────────────────────────────────────
 
@@ -363,16 +358,15 @@ mod tests {
 
         let url = format!("{}/openai/v1/audio/transcriptions", server.base_url());
         let start = Instant::now();
-        let config = TranscriptionConfig::new("test-key", audio).with_base_url(&url);
+        let config = TranscriptionConfig::new("test-key", audio)
+            .with_base_url(&url)
+            .with_request_policy(fast_request_policy());
         let result = provider.transcribe(config);
         let elapsed = start.elapsed();
 
-        // Should eventually fail after retries (4 attempts with backoff: 0s + 1s + 2s = ~3s minimum)
+        // Should eventually fail after retries using the configured fast backoff.
         assert!(result.is_err(), "Expected error after retry exhaustion");
-        assert!(
-            elapsed.as_secs() >= 3,
-            "Expected at least 3s of retry backoff, got {elapsed:?}"
-        );
+        assert!(elapsed >= Duration::from_millis(3));
     }
 
     #[test]
@@ -394,7 +388,9 @@ mod tests {
 
         let url = format!("{}/openai/v1/audio/transcriptions", server.base_url());
         let start = Instant::now();
-        let config = TranscriptionConfig::new("test-key", audio).with_base_url(&url);
+        let config = TranscriptionConfig::new("test-key", audio)
+            .with_base_url(&url)
+            .with_request_policy(fast_request_policy());
         let result = provider.transcribe(config);
         let elapsed = start.elapsed();
 
@@ -404,10 +400,8 @@ mod tests {
             other => panic!("Expected RateLimitExhausted with 3 retries, got: {other:?}"),
         }
 
-        // Verify backoff timing: backon uses uniform exponential backoff
-        // 1s + 2s + 4s = 7s minimum (backon adds jitter, so allow margin)
-        assert!(elapsed >= Duration::from_secs(5));
-        assert!(elapsed < Duration::from_secs(12));
+        assert!(elapsed >= Duration::from_millis(3));
+        assert!(elapsed < Duration::from_secs(1));
 
         // Note: We don't call mock.assert() because it expects 1 hit,
         // but we make 4 attempts (initial + 3 retries). The behavior

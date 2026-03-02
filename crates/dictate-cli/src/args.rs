@@ -36,6 +36,9 @@ pub enum Commands {
     /// Record audio until Ctrl+C
     Record(RecordArgs),
 
+    /// Reuse the last saved recording and rerun transcription
+    Retry(RetryArgs),
+
     /// Add custom terms to dictionary (improves accuracy for technical terms, names, jargon)
     Remember,
 
@@ -90,6 +93,7 @@ pub struct CompletionsArgs {
 }
 
 #[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RecordArgs {
     /// Select a specific audio input device (index from `devices`, or case-insensitive partial name match)
     #[arg(long)]
@@ -143,6 +147,67 @@ pub struct RecordArgs {
     /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
     #[arg(long, requires = "post_process")]
     pub post_process_base_url: Option<String>,
+
+    /// Save the captured audio locally so `dictate retry` can reuse it later
+    #[arg(long)]
+    pub save_last_audio: bool,
+}
+
+#[derive(Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct RetryArgs {
+    /// Override Groq transcription API URL (falls back to saved settings, then `GROQ_BASE_URL`)
+    #[arg(long)]
+    pub base_url: Option<String>,
+
+    /// ISO-639-1 language code (e.g., "en", "es", "fr") to improve accuracy and latency
+    #[arg(long)]
+    pub language: Option<String>,
+
+    /// Text to guide transcription style or spelling (max 224 tokens)
+    #[arg(long)]
+    pub prompt: Option<String>,
+
+    /// Response format: "json" (default), "`verbose_json`", or "text"
+    #[arg(long, value_parser = ["json", "verbose_json", "text"])]
+    pub format: Option<String>,
+
+    /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
+    #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
+    pub transcription_model: Option<String>,
+
+    /// Sampling temperature (0.0-1.0). Default 0.0 is recommended for transcription
+    #[arg(long, value_parser = parse_temperature)]
+    pub temperature: Option<f32>,
+
+    /// Timestamp granularities: "segment", "word", or both (comma-separated).
+    /// Requires --format `verbose_json`. Example: --timestamps word,segment
+    #[arg(long = "timestamps", value_delimiter = ',', value_parser = ["word", "segment"])]
+    pub timestamp_granularities: Option<Vec<String>>,
+
+    /// Print transcript to stdout instead of copying to clipboard
+    #[arg(long, conflicts_with = "no_clipboard")]
+    pub stdout: bool,
+
+    /// Skip clipboard entirely (headless/scripted use). Prints to stdout.
+    #[arg(long, conflicts_with = "stdout")]
+    pub no_clipboard: bool,
+
+    /// Post-process transcription with LLM for better punctuation and formatting
+    #[arg(long, short = 'p', conflicts_with = "no_post_process")]
+    pub post_process: bool,
+
+    /// Skip post-processing even if the saved recording used it
+    #[arg(long, conflicts_with = "post_process")]
+    pub no_post_process: bool,
+
+    /// Model for post-processing (default: openai/gpt-oss-20b)
+    #[arg(long, conflicts_with = "no_post_process")]
+    pub post_process_model: Option<ModelId>,
+
+    /// Override post-processing chat API URL (falls back to saved settings, then `GROQ_CHAT_BASE_URL`)
+    #[arg(long, conflicts_with = "no_post_process")]
+    pub post_process_base_url: Option<String>,
 }
 
 #[cfg(test)]
@@ -178,6 +243,125 @@ mod tests {
         };
 
         assert_eq!(args.base_url, None);
+    }
+
+    #[test]
+    fn record_save_last_audio_flag_can_be_enabled() {
+        let cli = Cli::parse_from(["dictate", "record", "--save-last-audio"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.save_last_audio);
+    }
+
+    #[test]
+    fn retry_accepts_base_url_flag() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "retry",
+            "--base-url",
+            "http://127.0.0.1:8080/openai/v1/audio/transcriptions",
+        ]);
+
+        let Some(Commands::Retry(args)) = cli.command else {
+            panic!("expected retry subcommand");
+        };
+
+        assert_eq!(
+            args.base_url.as_deref(),
+            Some("http://127.0.0.1:8080/openai/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn retry_rejects_device_flag() {
+        let result = Cli::try_parse_from(["dictate", "retry", "--device", "USB"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retry_no_post_process_flag() {
+        let cli = Cli::parse_from(["dictate", "retry", "--no-post-process"]);
+
+        let Some(Commands::Retry(args)) = cli.command else {
+            panic!("expected retry subcommand");
+        };
+
+        assert!(args.no_post_process);
+        assert!(!args.post_process);
+    }
+
+    #[test]
+    fn retry_post_process_and_no_post_process_conflict() {
+        let result =
+            Cli::try_parse_from(["dictate", "retry", "--post-process", "--no-post-process"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retry_accepts_post_process_model_without_post_process_flag() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "retry",
+            "--post-process-model",
+            "openai/gpt-oss-20b",
+        ]);
+
+        let Some(Commands::Retry(args)) = cli.command else {
+            panic!("expected retry subcommand");
+        };
+
+        assert_eq!(
+            args.post_process_model.as_ref().map(ModelId::as_str),
+            Some("openai/gpt-oss-20b")
+        );
+    }
+
+    #[test]
+    fn retry_accepts_post_process_base_url_without_post_process_flag() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "retry",
+            "--post-process-base-url",
+            "http://127.0.0.1:8080/openai/v1/chat/completions",
+        ]);
+
+        let Some(Commands::Retry(args)) = cli.command else {
+            panic!("expected retry subcommand");
+        };
+
+        assert_eq!(
+            args.post_process_base_url.as_deref(),
+            Some("http://127.0.0.1:8080/openai/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn retry_rejects_post_process_model_when_no_post_process_is_set() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "retry",
+            "--no-post-process",
+            "--post-process-model",
+            "openai/gpt-oss-20b",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retry_rejects_post_process_base_url_when_no_post_process_is_set() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "retry",
+            "--no-post-process",
+            "--post-process-base-url",
+            "http://127.0.0.1:8080/openai/v1/chat/completions",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]

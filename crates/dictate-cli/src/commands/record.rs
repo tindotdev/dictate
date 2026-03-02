@@ -1,7 +1,7 @@
 use std::io::IsTerminal;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
@@ -9,14 +9,17 @@ use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
     DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor,
     GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker,
-    RecorderConfig, RecvResult, ResponseFormat, Segment, TimestampGranularity, TranscriptionError,
-    TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
-    format_hint_within_budget, merge_prompt_hints,
+    RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies, ResponseFormat,
+    SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment, TimestampGranularity,
+    TranscriptionError, TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore,
+    WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
 
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 const QUIESCENT_TIMEOUTS: u8 = 3;
+const DEFAULT_RETRY_CHUNK_OVERLAP_SAMPLES: usize =
+    2 * dictate_core::TRANSCRIPTION_SAMPLE_RATE as usize;
 
 /// Environment variable for the Groq API key.
 const GROQ_API_KEY_VAR: &str = "GROQ_API_KEY";
@@ -38,8 +41,27 @@ pub enum RecordError {
     #[error("clipboard error: {0}")]
     Clipboard(#[from] ClipboardError),
 
+    #[error("saved recording error: {0}")]
+    SavedRecording(#[from] dictate_core::SavedRecordingError),
+
     #[error("transcription worker disconnected unexpectedly")]
     TranscriptionWorkerDisconnected,
+
+    #[error("post-process worker disconnected unexpectedly")]
+    PostProcessWorkerDisconnected,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionState {
+    Completed,
+    InterruptedDuringTranscription,
+    InterruptedDuringPostProcess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Record,
+    Retry,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -49,6 +71,7 @@ pub enum RecordError {
 /// Configuration options for audio recording and transcription.
 /// Use the builder pattern to construct with only the options you need.
 #[derive(Default, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct RecordOptions {
     device: Option<String>,
     base_url: Option<String>,
@@ -60,9 +83,10 @@ pub struct RecordOptions {
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
     stdout: bool,
     no_clipboard: bool,
-    post_process: bool,
+    post_process_override: Option<bool>,
     post_process_model: Option<ModelId>,
     post_process_base_url: Option<String>,
+    save_last_audio: bool,
 }
 
 impl RecordOptions {
@@ -133,7 +157,7 @@ impl RecordOptions {
 
     /// Enable LLM post-processing for punctuation and formatting cleanup.
     pub const fn post_process(mut self, enabled: bool) -> Self {
-        self.post_process = enabled;
+        self.post_process_override = Some(enabled);
         self
     }
 
@@ -148,6 +172,12 @@ impl RecordOptions {
         self.post_process_base_url = Some(url.into());
         self
     }
+
+    /// Persist the captured audio locally for later reuse with `dictate retry`.
+    pub const fn save_last_audio(mut self, enabled: bool) -> Self {
+        self.save_last_audio = enabled;
+        self
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -155,8 +185,7 @@ impl RecordOptions {
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
-    // Parse and validate configuration
-    let (effective_format, pipeline) = parse_and_create_pipeline(options)?;
+    let resolved = resolve_run_config(options, None, RunMode::Record)?;
 
     // Fail fast if clipboard is requested but unavailable (missing tool / headless)
     if !options.stdout && !options.no_clipboard {
@@ -165,36 +194,117 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 
     // Set up interrupt handling
     let running = Arc::new(AtomicBool::new(true));
-    install_stop_handlers(Arc::clone(&running));
+    let active_recording_stop = Arc::new(Mutex::new(None));
+    install_stop_handlers(Arc::clone(&running), Arc::clone(&active_recording_stop));
 
     // Record audio chunks
-    let chunks = record_audio_chunks(options.device.as_deref(), &running)?;
+    let session = capture_recording_session(
+        options.device.as_deref(),
+        options.save_last_audio,
+        &running,
+        &active_recording_stop,
+    )?;
 
-    if chunks.is_empty() {
+    if session.chunks.is_empty() {
         eprintln!("[dictate] no audio captured");
         return Ok(());
     }
 
-    // Transcribe chunks
+    maybe_save_last_audio(options, &session, &resolved);
+
     running.store(true, Ordering::Relaxed); // Re-arm for transcription phase
-    let (results, interrupted) = transcribe_chunks(&pipeline, chunks, &running)?;
+    process_transcription_session(options, &resolved, session.chunks, &running)
+}
+
+/// Reuse the last saved recording and rerun transcription/post-processing.
+pub fn run_retry(options: &RecordOptions) -> Result<(), RecordError> {
+    if !options.stdout && !options.no_clipboard {
+        dictate_core::check_clipboard_available()?;
+    }
+
+    let saved = SavedRecordingStore::open()?.load()?;
+    let defaults = saved_defaults_from_manifest(&saved.manifest)?;
+    let resolved = resolve_run_config(options, Some(&defaults), RunMode::Retry)?;
+    let session = rechunk_saved_audio(saved.samples, saved.manifest.chunk_target_duration_secs);
+
+    if session.chunks.is_empty() {
+        eprintln!("[dictate] saved recording contains no audio");
+        return Ok(());
+    }
+
+    eprintln!("[dictate] reusing saved audio from last recording...");
+    let running = Arc::new(AtomicBool::new(true));
+    install_stop_handlers(Arc::clone(&running), Arc::new(Mutex::new(None)));
+    process_transcription_session(options, &resolved, session.chunks, &running)
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRunConfig {
+    effective_format: Option<ResponseFormat>,
+    effective_post_process: bool,
+    pipeline_config: PipelineConfig,
+    pipeline: Arc<TranscriptionPipeline>,
+}
+
+#[derive(Debug, Clone)]
+struct SavedDefaults {
+    output_format: Option<ResponseFormat>,
+    pipeline_config: PipelineConfig,
+}
+
+#[derive(Debug, Clone)]
+struct CapturedSession {
+    samples: Vec<f32>,
+    chunks: Vec<AudioChunk>,
+    chunker_config: ChunkerConfig,
+}
+
+fn process_transcription_session(
+    options: &RecordOptions,
+    resolved: &ResolvedRunConfig,
+    chunks: Vec<AudioChunk>,
+    running: &AtomicBool,
+) -> Result<(), RecordError> {
+    let (results, interrupted) = transcribe_chunks(&resolved.pipeline, chunks, running)?;
+    let mut state = if interrupted {
+        SessionState::InterruptedDuringTranscription
+    } else {
+        SessionState::Completed
+    };
 
     // Output results
     let merged = merge_results(results);
+    let post_process_requested = resolved.effective_post_process;
 
-    if options.post_process && !merged.text.is_empty() {
-        let model = options
-            .post_process_model
-            .as_ref()
-            .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
-        eprintln!("[dictate] post-processing with {model}...");
-    }
+    let (merged, post_process_outcome, post_process_requested) =
+        if post_process_requested && !merged.text.is_empty() && state == SessionState::Completed {
+            let model = resolved
+                .pipeline_config
+                .post_process_model
+                .as_ref()
+                .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
+            eprintln!("[dictate] post-processing with {model}...");
 
-    let (merged, post_process_outcome) = pipeline.post_process_result_with_outcome(merged);
+            if let Some((merged, outcome)) = post_process_result_interruptible(
+                Arc::clone(&resolved.pipeline),
+                merged.clone(),
+                running,
+            )? {
+                (merged, outcome, true)
+            } else {
+                eprintln!("[dictate] interrupted, skipping post-processing");
+                state = SessionState::InterruptedDuringPostProcess;
+                (merged, PostProcessOutcome::NotConfigured, false)
+            }
+        } else {
+            (merged, PostProcessOutcome::NotConfigured, false)
+        };
+
     output_result(
         &merged,
-        effective_format,
-        interrupted,
+        resolved.effective_format,
+        post_process_requested,
+        state,
         options,
         post_process_outcome,
     );
@@ -206,16 +316,21 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 //  Helper Functions
 // ══════════════════════════════════════════════════════════════════════════════
 
-/// Create the transcription pipeline from validated configuration options.
-fn parse_and_create_pipeline(
+/// Resolve the effective transcription configuration and build a pipeline.
+fn resolve_run_config(
     options: &RecordOptions,
-) -> Result<(Option<ResponseFormat>, Arc<TranscriptionPipeline>), RecordError> {
+    defaults: Option<&SavedDefaults>,
+    run_mode: RunMode,
+) -> Result<ResolvedRunConfig, RecordError> {
+    let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
+
     // Auto-upgrade format when timestamps are requested
-    let response_format = auto_upgrade_format(
-        options.response_format,
-        options.timestamp_granularities.as_ref(),
+    let effective_format = auto_upgrade_format(
+        options
+            .response_format
+            .or_else(|| defaults.and_then(|saved| saved.output_format)),
+        Some(&timestamp_granularities),
     );
-    let effective_format = response_format;
 
     // Validate API key upfront (fail fast)
     let api_key =
@@ -226,47 +341,120 @@ fn parse_and_create_pipeline(
     let base_url = options
         .base_url
         .clone()
+        .or_else(|| defaults.and_then(|saved| saved.pipeline_config.base_url.clone()))
         .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
 
     let post_process_base_url = options
         .post_process_base_url
         .clone()
+        .or_else(|| defaults.and_then(|saved| saved.pipeline_config.post_process_base_url.clone()))
         .or_else(|| std::env::var(GROQ_CHAT_BASE_URL_VAR).ok());
 
     // Load prompt hints (dictionary + vocabulary) for prompt injection.
     // Best-effort: warn and continue on store errors.
-    let effective_prompt = load_prompt_hints(options.prompt.as_deref());
+    let effective_prompt = if options.prompt.is_some() || defaults.is_none() {
+        load_prompt_hints(options.prompt.as_deref())
+    } else {
+        defaults.and_then(|saved| saved.pipeline_config.prompt.clone())
+    };
+
+    let inherited_response_format = defaults.map_or(ResponseFormat::Json, |saved| {
+        saved.pipeline_config.response_format
+    });
+    let inherited_post_process = defaults.is_some_and(|saved| saved.pipeline_config.post_process);
+    let effective_post_process =
+        resolve_post_process_enabled(options.post_process_override, inherited_post_process);
 
     let config = PipelineConfig {
         base_url,
-        language: options.language.clone(),
+        language: options
+            .language
+            .clone()
+            .or_else(|| defaults.and_then(|saved| saved.pipeline_config.language.clone())),
         prompt: effective_prompt,
-        response_format: response_format.unwrap_or_default(),
-        transcription_model: options.transcription_model,
-        temperature: options.temperature,
-        timestamp_granularities: options.timestamp_granularities.clone().unwrap_or_default(),
-        post_process: options.post_process,
-        post_process_model: options.post_process_model.clone(),
+        response_format: effective_format.unwrap_or(inherited_response_format),
+        transcription_model: options
+            .transcription_model
+            .or_else(|| defaults.and_then(|saved| saved.pipeline_config.transcription_model)),
+        temperature: options
+            .temperature
+            .or_else(|| defaults.and_then(|saved| saved.pipeline_config.temperature)),
+        timestamp_granularities,
+        post_process: effective_post_process,
+        post_process_model: options.post_process_model.clone().or_else(|| {
+            defaults.and_then(|saved| saved.pipeline_config.post_process_model.clone())
+        }),
         post_process_base_url,
+        request_policies: request_policies_for_mode(run_mode),
     };
 
-    let mut pipeline = TranscriptionPipeline::new(Box::new(GroqProvider), api_key, config);
+    let pipeline = build_pipeline(api_key, &config);
 
-    if options.post_process {
+    Ok(ResolvedRunConfig {
+        effective_format,
+        effective_post_process,
+        pipeline_config: config,
+        pipeline,
+    })
+}
+
+const fn request_policies_for_mode(run_mode: RunMode) -> RequestPolicies {
+    match run_mode {
+        RunMode::Record => RequestPolicies::interactive(),
+        RunMode::Retry => RequestPolicies::persistent(),
+    }
+}
+
+fn resolve_timestamp_granularities(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+) -> Vec<TimestampGranularity> {
+    if let Some(granularities) = options.timestamp_granularities.clone() {
+        return granularities;
+    }
+
+    match options.response_format {
+        Some(ResponseFormat::Json | ResponseFormat::Text) => Vec::new(),
+        Some(ResponseFormat::VerboseJson) | None => defaults
+            .map(|saved| saved.pipeline_config.timestamp_granularities.clone())
+            .unwrap_or_default(),
+    }
+}
+
+fn build_pipeline(api_key: String, config: &PipelineConfig) -> Arc<TranscriptionPipeline> {
+    let mut pipeline = TranscriptionPipeline::new(Box::new(GroqProvider), api_key, config.clone());
+
+    if config.post_process {
         let pp: Box<dyn PostProcessor> = Box::new(GroqPostProcessor);
         pipeline = pipeline.with_post_processor(pp);
     }
 
-    let pipeline = Arc::new(pipeline);
+    Arc::new(pipeline)
+}
 
-    Ok((effective_format, pipeline))
+const fn resolve_post_process_enabled(override_value: Option<bool>, inherited_value: bool) -> bool {
+    match override_value {
+        Some(enabled) => enabled,
+        None => inherited_value,
+    }
+}
+
+fn saved_defaults_from_manifest(
+    manifest: &SavedRecordingManifest,
+) -> Result<SavedDefaults, RecordError> {
+    Ok(SavedDefaults {
+        output_format: manifest.output_format()?,
+        pipeline_config: manifest.pipeline.to_pipeline_config()?,
+    })
 }
 
 /// Record audio from the specified device and collect chunks.
-fn record_audio_chunks(
+fn capture_recording_session(
     device: Option<&str>,
+    collect_samples: bool,
     running: &AtomicBool,
-) -> Result<Vec<AudioChunk>, RecordError> {
+    active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+) -> Result<CapturedSession, RecordError> {
     eprintln!("[dictate] recording... press Enter to stop (Ctrl+C also works)");
 
     let mut config = RecorderConfig::default();
@@ -275,6 +463,7 @@ fn record_audio_chunks(
     }
 
     let (mut recorder, mut rx, info) = AudioRecorder::start(config)?;
+    set_active_recording_stop(active_recording_stop, Some(recorder.stop_handle()));
     eprintln!(
         "[dictate] device: {} ({} Hz, {}ch) -> resampling to {} Hz mono",
         info.device_name,
@@ -285,10 +474,12 @@ fn record_audio_chunks(
 
     // Collect audio chunks
     let chunker_config = ChunkerConfig::default();
-    let mut chunker = ProgressiveChunker::new(chunker_config);
+    let mut chunker = ProgressiveChunker::new(chunker_config.clone());
     let mut chunks: Vec<AudioChunk> = Vec::new();
+    let mut samples = collect_samples.then(Vec::new);
 
-    consume_until_stopped(&mut rx, running, &mut chunker, &mut chunks);
+    consume_until_stopped(&mut rx, running, &mut chunker, &mut samples, &mut chunks);
+    set_active_recording_stop(active_recording_stop, None);
 
     recorder.stop()?;
 
@@ -313,11 +504,11 @@ fn record_audio_chunks(
         );
     }
 
-    drain_remaining(&mut rx, &mut chunker, &mut chunks);
+    drain_remaining(&mut rx, &mut chunker, &mut samples, &mut chunks);
 
     let tail = recorder.take_flushed_tail();
     if !tail.is_empty() {
-        push_and_collect(&mut chunker, &tail, &mut chunks);
+        push_samples_and_collect(&mut chunker, &tail, &mut samples, &mut chunks);
     }
 
     if let Some(chunk) = chunker.flush() {
@@ -329,7 +520,11 @@ fn record_audio_chunks(
         chunks.push(chunk);
     }
 
-    Ok(chunks)
+    Ok(CapturedSession {
+        samples: samples.unwrap_or_default(),
+        chunks,
+        chunker_config,
+    })
 }
 
 /// Transcribe all audio chunks, respecting interrupt signals.
@@ -416,11 +611,12 @@ fn offset_timestamps(result: &mut TranscriptionResult, offset: f64) {
 fn output_result(
     merged: &TranscriptionResult,
     format: Option<ResponseFormat>,
-    interrupted: bool,
+    post_process_requested: bool,
+    state: SessionState,
     options: &RecordOptions,
     post_process_outcome: PostProcessOutcome,
 ) {
-    if merged.text.is_empty() && !interrupted {
+    if merged.text.is_empty() && state == SessionState::Completed {
         eprintln!("[dictate] no speech detected");
         return;
     }
@@ -435,23 +631,13 @@ fn output_result(
     let use_clipboard = !options.stdout && !options.no_clipboard;
 
     // Format the result according to --format flag
-    let formatted = format_to_string(merged, format, options.post_process, post_process_outcome);
+    let formatted = format_to_string(merged, format, post_process_requested, post_process_outcome);
 
     if use_clipboard {
         // Default behavior: copy to clipboard
         match dictate_core::clipboard::copy_to_clipboard(&formatted) {
             Ok(()) => {
-                if interrupted {
-                    eprintln!(
-                        "[dictate] interrupted (partial transcript: {} chars, copied to clipboard)",
-                        merged.text.len()
-                    );
-                } else {
-                    eprintln!(
-                        "[dictate] done ({} chars, copied to clipboard)",
-                        merged.text.len()
-                    );
-                }
+                print_completion_message(state, merged.text.len(), true);
             }
             Err(err) => {
                 // Failure safety: never lose transcribed text
@@ -464,14 +650,28 @@ fn output_result(
     } else {
         // --stdout or --no-clipboard: print to stdout
         println!("{formatted}");
+        print_completion_message(state, merged.text.len(), false);
+    }
+}
 
-        if interrupted {
+fn print_completion_message(state: SessionState, char_count: usize, copied_to_clipboard: bool) {
+    let suffix = if copied_to_clipboard {
+        ", copied to clipboard"
+    } else {
+        ""
+    };
+
+    match state {
+        SessionState::Completed => {
+            eprintln!("[dictate] done ({char_count} chars{suffix})");
+        }
+        SessionState::InterruptedDuringTranscription => {
+            eprintln!("[dictate] interrupted (partial transcript: {char_count} chars{suffix})");
+        }
+        SessionState::InterruptedDuringPostProcess => {
             eprintln!(
-                "[dictate] interrupted (partial transcript: {} chars)",
-                merged.text.len()
+                "[dictate] interrupted during post-processing (raw transcript: {char_count} chars{suffix})"
             );
-        } else {
-            eprintln!("[dictate] done ({} chars)", merged.text.len());
         }
     }
 }
@@ -505,11 +705,46 @@ fn transcribe_chunk_interruptible(
     }
 }
 
-fn install_stop_handlers(running: Arc<AtomicBool>) {
+fn post_process_result_interruptible(
+    pipeline: Arc<TranscriptionPipeline>,
+    merged: TranscriptionResult,
+    running: &AtomicBool,
+) -> Result<Option<(TranscriptionResult, PostProcessOutcome)>, RecordError> {
+    let (tx, rx) = mpsc::sync_channel(1);
+
+    std::thread::spawn(move || {
+        let result = pipeline.post_process_result_with_outcome(merged);
+        if tx.send(result).is_err() {
+            eprintln!("[dictate] warning: post-process result dropped (receiver disconnected)");
+        }
+    });
+
+    loop {
+        if !running.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+
+        match rx.recv_timeout(RECV_TIMEOUT) {
+            Ok(result) => return Ok(Some(result)),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(RecordError::PostProcessWorkerDisconnected);
+            }
+        }
+    }
+}
+
+fn install_stop_handlers(
+    running: Arc<AtomicBool>,
+    active_recording_stop: Arc<Mutex<Option<RecorderStopHandle>>>,
+) {
     let running_ctrlc = Arc::clone(&running);
+    let active_recording_stop_ctrlc = Arc::clone(&active_recording_stop);
     if let Err(err) = ctrlc::set_handler(move || {
         // First press: cooperative shutdown. Second press: force exit.
-        if !running_ctrlc.swap(false, Ordering::Relaxed) {
+        if handle_stop_signal(&running_ctrlc, || {
+            request_active_recording_stop(&active_recording_stop_ctrlc);
+        }) {
             eprintln!("\n[dictate] forced exit");
             std::process::exit(130);
         }
@@ -519,11 +754,52 @@ fn install_stop_handlers(running: Arc<AtomicBool>) {
 
     // Only listen for Enter when stdin is interactive (not piped / closed).
     if std::io::stdin().is_terminal() {
+        let active_recording_stop_stdin = Arc::clone(&active_recording_stop);
         std::thread::spawn(move || {
             let mut input = String::new();
             let _ = std::io::stdin().read_line(&mut input);
-            running.store(false, Ordering::Relaxed);
+            let _ = handle_stop_signal(&running, || {
+                request_active_recording_stop(&active_recording_stop_stdin);
+            });
         });
+    }
+}
+
+fn handle_stop_signal<F>(running: &AtomicBool, request_recording_stop: F) -> bool
+where
+    F: FnOnce(),
+{
+    if !running.swap(false, Ordering::Relaxed) {
+        return true;
+    }
+
+    request_recording_stop();
+    false
+}
+
+fn set_active_recording_stop(
+    active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+    stop_handle: Option<RecorderStopHandle>,
+) {
+    match active_recording_stop.lock() {
+        Ok(mut guard) => *guard = stop_handle,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = stop_handle;
+        }
+    }
+}
+
+fn request_active_recording_stop(active_recording_stop: &Mutex<Option<RecorderStopHandle>>) {
+    let stop_handle = match active_recording_stop.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+
+    if let Some(stop_handle) = stop_handle
+        && let Err(err) = stop_handle.request_stop()
+    {
+        eprintln!("[dictate] warning: failed to stop recording promptly: {err}");
     }
 }
 
@@ -543,15 +819,30 @@ fn push_and_collect(
     }
 }
 
+fn push_samples_and_collect(
+    chunker: &mut ProgressiveChunker,
+    samples: &[f32],
+    all_samples: &mut Option<Vec<f32>>,
+    chunks: &mut Vec<AudioChunk>,
+) {
+    if let Some(all_samples) = all_samples.as_mut() {
+        all_samples.extend_from_slice(samples);
+    }
+    push_and_collect(chunker, samples, chunks);
+}
+
 fn consume_until_stopped(
     rx: &mut AudioReceiver,
     running: &AtomicBool,
     chunker: &mut ProgressiveChunker,
+    all_samples: &mut Option<Vec<f32>>,
     chunks: &mut Vec<AudioChunk>,
 ) {
     while running.load(Ordering::Relaxed) {
         match rx.recv_timeout(RECV_TIMEOUT) {
-            RecvResult::Data(samples) => push_and_collect(chunker, samples, chunks),
+            RecvResult::Data(samples) => {
+                push_samples_and_collect(chunker, samples, all_samples, chunks);
+            }
             RecvResult::Timeout => {}
             RecvResult::Disconnected => break,
         }
@@ -565,6 +856,7 @@ fn consume_until_stopped(
 fn drain_remaining(
     rx: &mut AudioReceiver,
     chunker: &mut ProgressiveChunker,
+    all_samples: &mut Option<Vec<f32>>,
     chunks: &mut Vec<AudioChunk>,
 ) {
     let mut consecutive_timeouts = 0_u8;
@@ -572,7 +864,7 @@ fn drain_remaining(
     loop {
         while let Some(samples) = rx.try_recv() {
             consecutive_timeouts = 0;
-            push_and_collect(chunker, samples, chunks);
+            push_samples_and_collect(chunker, samples, all_samples, chunks);
         }
 
         if rx.is_disconnected() {
@@ -582,7 +874,7 @@ fn drain_remaining(
         match rx.recv_timeout(RECV_TIMEOUT) {
             RecvResult::Data(samples) => {
                 consecutive_timeouts = 0;
-                push_and_collect(chunker, samples, chunks);
+                push_samples_and_collect(chunker, samples, all_samples, chunks);
             }
             RecvResult::Timeout => {
                 consecutive_timeouts += 1;
@@ -592,6 +884,76 @@ fn drain_remaining(
             }
             RecvResult::Disconnected => break,
         }
+    }
+}
+
+fn maybe_save_last_audio(
+    options: &RecordOptions,
+    session: &CapturedSession,
+    resolved: &ResolvedRunConfig,
+) {
+    if !options.save_last_audio || session.samples.is_empty() {
+        return;
+    }
+
+    let recording = SavedRecording {
+        manifest: SavedRecordingManifest::new(
+            session.samples.len(),
+            session.chunker_config.target_duration_secs,
+            resolved.effective_format,
+            &resolved.pipeline_config,
+        ),
+        samples: session.samples.clone(),
+    };
+
+    match SavedRecordingStore::open().and_then(|store| store.save(&recording)) {
+        Ok(()) => eprintln!("[dictate] saved audio for later reuse"),
+        Err(err) => eprintln!("[dictate] warning: could not save audio for retry: {err}"),
+    }
+}
+
+fn rechunk_saved_audio(samples: Vec<f32>, target_duration_secs: u64) -> CapturedSession {
+    let mut chunks = Vec::new();
+    let target_samples = usize::try_from(target_duration_secs)
+        .ok()
+        .and_then(|secs| secs.checked_mul(dictate_core::TRANSCRIPTION_SAMPLE_RATE as usize))
+        .unwrap_or(usize::MAX);
+
+    if target_samples == 0 || samples.is_empty() {
+        return CapturedSession {
+            samples,
+            chunks,
+            chunker_config: ChunkerConfig {
+                target_duration_secs,
+            },
+        };
+    }
+
+    let mut index = 0_usize;
+    let mut start = 0_usize;
+    while start < samples.len() {
+        let end = (start + target_samples).min(samples.len());
+        let has_leading_overlap = index > 0;
+        chunks.push(AudioChunk {
+            index,
+            samples: samples[start..end].to_vec(),
+            has_leading_overlap,
+        });
+
+        if end == samples.len() {
+            break;
+        }
+
+        start = end.saturating_sub(DEFAULT_RETRY_CHUNK_OVERLAP_SAMPLES);
+        index += 1;
+    }
+
+    CapturedSession {
+        samples,
+        chunks,
+        chunker_config: ChunkerConfig {
+            target_duration_secs,
+        },
     }
 }
 
@@ -851,6 +1213,8 @@ const fn post_process_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::thread;
 
     fn make_result(text: &str) -> TranscriptionResult {
         TranscriptionResult {
@@ -858,6 +1222,121 @@ mod tests {
             segments: None,
             words: None,
         }
+    }
+
+    #[derive(Default)]
+    struct StubProvider {
+        response: String,
+        calls: Arc<AtomicUsize>,
+        stop_after_first: Option<Arc<AtomicBool>>,
+    }
+
+    impl StubProvider {
+        fn new(response: impl Into<String>) -> Self {
+            Self {
+                response: response.into(),
+                calls: Arc::new(AtomicUsize::new(0)),
+                stop_after_first: None,
+            }
+        }
+
+        fn with_stop_after_first(mut self, running: Arc<AtomicBool>) -> Self {
+            self.stop_after_first = Some(running);
+            self
+        }
+    }
+
+    impl dictate_core::TranscriptionProvider for StubProvider {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+
+        fn transcribe(
+            &self,
+            _config: dictate_core::provider::TranscriptionConfig<'_>,
+        ) -> Result<TranscriptionResult, TranscriptionError> {
+            let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if call == 0
+                && let Some(running) = &self.stop_after_first
+            {
+                running.store(false, Ordering::Relaxed);
+            }
+
+            Ok(make_result(&self.response))
+        }
+    }
+
+    struct CountingPostProcessor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingPostProcessor {
+        fn new(calls: Arc<AtomicUsize>) -> Self {
+            Self { calls }
+        }
+    }
+
+    impl PostProcessor for CountingPostProcessor {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn process(
+            &self,
+            text: &str,
+            _config: dictate_core::PostProcessConfig<'_>,
+        ) -> Result<String, TranscriptionError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(format!("{text}!"))
+        }
+    }
+
+    struct BlockingPostProcessor {
+        calls: Arc<AtomicUsize>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl BlockingPostProcessor {
+        fn new(calls: Arc<AtomicUsize>, release: Arc<AtomicBool>) -> Self {
+            Self { calls, release }
+        }
+    }
+
+    impl PostProcessor for BlockingPostProcessor {
+        fn name(&self) -> &'static str {
+            "blocking"
+        }
+
+        fn process(
+            &self,
+            text: &str,
+            _config: dictate_core::PostProcessConfig<'_>,
+        ) -> Result<String, TranscriptionError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            while !self.release.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            Ok(format!("{text}!"))
+        }
+    }
+
+    fn test_pipeline(
+        provider: StubProvider,
+        post_processor: Option<Box<dyn PostProcessor>>,
+    ) -> Arc<TranscriptionPipeline> {
+        let config = PipelineConfig {
+            post_process: post_processor.is_some(),
+            ..PipelineConfig::default()
+        };
+
+        let mut pipeline =
+            TranscriptionPipeline::new(Box::new(provider), "test-key".into(), config);
+        if let Some(post_processor) = post_processor {
+            pipeline = pipeline.with_post_processor(post_processor);
+        }
+
+        Arc::new(pipeline)
     }
 
     fn make_verbose_result(text: &str, seg_id: u32, start: f64, end: f64) -> TranscriptionResult {
@@ -875,6 +1354,20 @@ mod tests {
                 start,
                 end,
             }]),
+        }
+    }
+
+    #[allow(
+        clippy::cast_sign_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss
+    )]
+    fn test_chunk(index: usize, duration_secs: f32) -> AudioChunk {
+        let num_samples = (dictate_core::TRANSCRIPTION_SAMPLE_RATE as f32 * duration_secs) as usize;
+        AudioChunk {
+            index,
+            samples: vec![0.0; num_samples],
+            has_leading_overlap: index > 0,
         }
     }
 
@@ -989,6 +1482,71 @@ mod tests {
         );
     }
 
+    // ── resolve_timestamp_granularities tests ──────────────────────
+
+    fn saved_defaults_with_timestamps(
+        timestamp_granularities: Vec<TimestampGranularity>,
+    ) -> SavedDefaults {
+        SavedDefaults {
+            output_format: Some(ResponseFormat::VerboseJson),
+            pipeline_config: PipelineConfig {
+                timestamp_granularities,
+                ..PipelineConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn explicit_retry_format_clears_inherited_timestamps() {
+        let options = RecordOptions::new().response_format(ResponseFormat::Json);
+        let defaults = saved_defaults_with_timestamps(vec![TimestampGranularity::Word]);
+
+        assert_eq!(
+            resolve_timestamp_granularities(&options, Some(&defaults)),
+            Vec::<TimestampGranularity>::new()
+        );
+    }
+
+    #[test]
+    fn explicit_retry_timestamps_override_saved_timestamps() {
+        let options = RecordOptions::new()
+            .response_format(ResponseFormat::Json)
+            .timestamp_granularities(vec![TimestampGranularity::Segment]);
+        let defaults = saved_defaults_with_timestamps(vec![TimestampGranularity::Word]);
+
+        assert_eq!(
+            resolve_timestamp_granularities(&options, Some(&defaults)),
+            vec![TimestampGranularity::Segment]
+        );
+    }
+
+    #[test]
+    fn verbose_json_without_retry_timestamps_keeps_saved_timestamps() {
+        let options = RecordOptions::new().response_format(ResponseFormat::VerboseJson);
+        let defaults = saved_defaults_with_timestamps(vec![TimestampGranularity::Word]);
+
+        assert_eq!(
+            resolve_timestamp_granularities(&options, Some(&defaults)),
+            vec![TimestampGranularity::Word]
+        );
+    }
+
+    #[test]
+    fn record_mode_uses_interactive_request_policies() {
+        assert_eq!(
+            request_policies_for_mode(RunMode::Record),
+            RequestPolicies::interactive()
+        );
+    }
+
+    #[test]
+    fn retry_mode_uses_persistent_request_policies() {
+        assert_eq!(
+            request_policies_for_mode(RunMode::Retry),
+            RequestPolicies::persistent()
+        );
+    }
+
     // ── offset_timestamps tests ─────────────────────────────────────
 
     #[test]
@@ -1056,6 +1614,134 @@ mod tests {
         let msg = record_err.to_string();
         assert!(msg.contains("clipboard error"));
         assert!(msg.contains("no display environment"));
+    }
+
+    #[test]
+    fn push_samples_and_collect_appends_when_enabled() {
+        let mut chunker = ProgressiveChunker::new(ChunkerConfig::default());
+        let input = vec![0.25_f32, -0.5, 0.75];
+        let mut all_samples = Some(Vec::new());
+        let mut chunks = Vec::new();
+
+        push_samples_and_collect(&mut chunker, &input, &mut all_samples, &mut chunks);
+
+        assert_eq!(all_samples.unwrap(), input);
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn push_samples_and_collect_skips_buffer_when_disabled() {
+        let mut chunker = ProgressiveChunker::new(ChunkerConfig::default());
+        let input = vec![0.25_f32, -0.5, 0.75];
+        let mut all_samples = None;
+        let mut chunks = Vec::new();
+
+        push_samples_and_collect(&mut chunker, &input, &mut all_samples, &mut chunks);
+
+        assert!(all_samples.is_none());
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn interrupted_after_partial_transcription_returns_partial_results() {
+        let running = Arc::new(AtomicBool::new(true));
+        let provider = StubProvider::new("partial").with_stop_after_first(Arc::clone(&running));
+        let pipeline = test_pipeline(provider, None);
+        let chunks = vec![test_chunk(0, 1.0), test_chunk(1, 1.0)];
+
+        let (results, interrupted) = transcribe_chunks(&pipeline, chunks, &running).unwrap();
+
+        assert!(interrupted);
+        assert_eq!(results, vec![make_result("partial")]);
+    }
+
+    #[test]
+    fn interrupted_before_post_process_skips_post_processor() {
+        let running = Arc::new(AtomicBool::new(true));
+        let provider = StubProvider::new("partial").with_stop_after_first(Arc::clone(&running));
+        let post_process_calls = Arc::new(AtomicUsize::new(0));
+        let pipeline = test_pipeline(
+            provider,
+            Some(Box::new(CountingPostProcessor::new(Arc::clone(
+                &post_process_calls,
+            )))),
+        );
+        let resolved = ResolvedRunConfig {
+            effective_format: None,
+            effective_post_process: true,
+            pipeline_config: PipelineConfig {
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+            pipeline,
+        };
+        let options = RecordOptions::new().no_clipboard(true);
+
+        process_transcription_session(
+            &options,
+            &resolved,
+            vec![test_chunk(0, 1.0), test_chunk(1, 1.0)],
+            &running,
+        )
+        .unwrap();
+
+        assert_eq!(post_process_calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn interrupted_during_post_process_returns_raw_text() {
+        let running = Arc::new(AtomicBool::new(true));
+        let release = Arc::new(AtomicBool::new(false));
+        let post_process_calls = Arc::new(AtomicUsize::new(0));
+        let pipeline = test_pipeline(
+            StubProvider::new("raw text"),
+            Some(Box::new(BlockingPostProcessor::new(
+                Arc::clone(&post_process_calls),
+                Arc::clone(&release),
+            ))),
+        );
+        let running_for_cancel = Arc::clone(&running);
+
+        let cancel_thread = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            running_for_cancel.store(false, Ordering::Relaxed);
+        });
+
+        let result =
+            post_process_result_interruptible(pipeline, make_result("raw text"), &running).unwrap();
+
+        release.store(true, Ordering::Relaxed);
+        cancel_thread.join().unwrap();
+
+        assert!(result.is_none());
+        assert_eq!(post_process_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn first_stop_signal_requests_recording_stop() {
+        let running = AtomicBool::new(true);
+        let stop_requests = AtomicUsize::new(0);
+
+        let forced_exit = handle_stop_signal(&running, || {
+            stop_requests.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        assert!(!forced_exit);
+        assert!(!running.load(Ordering::Relaxed));
+        assert_eq!(stop_requests.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn second_stop_signal_forces_exit_without_repeating_stop_request() {
+        let running = AtomicBool::new(false);
+        let stop_requests = AtomicUsize::new(0);
+
+        let forced_exit = handle_stop_signal(&running, || {
+            stop_requests.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        assert!(forced_exit);
+        assert_eq!(stop_requests.load(AtomicOrdering::SeqCst), 0);
     }
 
     // ── build_effective_prompt tests ──────────────────────────────────
@@ -1177,5 +1863,17 @@ mod tests {
         assert_eq!(json["post_process_status"], "skipped_verbose_json");
         assert!(json.get("segments").is_some());
         assert!(json.get("words").is_some());
+    }
+
+    #[test]
+    fn post_process_override_inherits_when_unset() {
+        assert!(resolve_post_process_enabled(None, true));
+        assert!(!resolve_post_process_enabled(None, false));
+    }
+
+    #[test]
+    fn post_process_override_can_force_disable_or_enable() {
+        assert!(!resolve_post_process_enabled(Some(false), true));
+        assert!(resolve_post_process_enabled(Some(true), false));
     }
 }

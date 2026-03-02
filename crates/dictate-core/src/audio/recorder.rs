@@ -292,10 +292,78 @@ impl AudioReceiver {
 /// downstream consumption (e.g. by a
 /// [`ProgressiveChunker`](super::chunker::ProgressiveChunker)).
 pub struct AudioRecorder {
-    stream: Option<cpal::Stream>,
+    inner: Arc<RecorderInner>,
+}
+
+struct RecorderInner {
+    stream: Mutex<Option<cpal::Stream>>,
     resampler: Arc<Mutex<FrameResampler>>,
     stats: RecorderStats,
-    flushed_tail: Vec<f32>,
+    flushed_tail: Mutex<Vec<f32>>,
+    stopped: AtomicBool,
+}
+
+/// Handle that can stop an active recorder from another thread.
+#[derive(Clone)]
+pub struct RecorderStopHandle {
+    inner: Arc<RecorderInner>,
+}
+
+impl RecorderStopHandle {
+    /// Request that the active recorder stop capturing immediately.
+    ///
+    /// This is idempotent; repeated calls after the first are harmless.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError`] if flushing buffered resampler state fails.
+    pub fn request_stop(&self) -> Result<(), AudioError> {
+        self.inner.stop()
+    }
+}
+
+impl RecorderInner {
+    fn stop(&self) -> Result<(), AudioError> {
+        if self.stopped.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        match self.stream.lock() {
+            Ok(mut guard) => {
+                let _ = guard.take();
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                let _ = guard.take();
+            }
+        }
+
+        let tail = match self.resampler.lock() {
+            Ok(mut guard) => guard.flush()?,
+            Err(poisoned) => {
+                self.stats
+                    .inner
+                    .resampler_lock_poisoned
+                    .fetch_add(1, Ordering::Relaxed);
+                let mut guard = poisoned.into_inner();
+                guard.flush()?
+            }
+        };
+
+        if !tail.is_empty() {
+            match self.flushed_tail.lock() {
+                Ok(mut flushed_tail) => {
+                    *flushed_tail = tail;
+                }
+                Err(poisoned) => {
+                    let mut flushed_tail = poisoned.into_inner();
+                    *flushed_tail = tail;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl AudioRecorder {
@@ -386,19 +454,30 @@ impl AudioRecorder {
 
         Ok((
             Self {
-                stream: Some(stream),
-                resampler,
-                stats,
-                flushed_tail: Vec::new(),
+                inner: Arc::new(RecorderInner {
+                    stream: Mutex::new(Some(stream)),
+                    resampler,
+                    stats,
+                    flushed_tail: Mutex::new(Vec::new()),
+                    stopped: AtomicBool::new(false),
+                }),
             },
             receiver,
             info,
         ))
     }
 
+    /// Return a handle that can stop this recorder from another thread.
+    #[must_use]
+    pub fn stop_handle(&self) -> RecorderStopHandle {
+        RecorderStopHandle {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
     #[must_use]
     pub fn stats(&self) -> RecorderStats {
-        self.stats.clone()
+        self.inner.stats.clone()
     }
 
     /// Take the resampler tail samples that were flushed during [`stop`](Self::stop).
@@ -409,7 +488,13 @@ impl AudioRecorder {
     /// after draining any queued ring buffer samples.
     #[must_use]
     pub fn take_flushed_tail(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.flushed_tail)
+        match self.inner.flushed_tail.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                std::mem::take(&mut *guard)
+            }
+        }
     }
 
     /// Stop recording and release the audio device.
@@ -419,25 +504,7 @@ impl AudioRecorder {
     /// Currently does not return an error; this is kept as a `Result` for
     /// forward compatibility.
     pub fn stop(&mut self) -> Result<(), AudioError> {
-        // Dropping the stream stops audio capture. Flush the resampler to avoid
-        // losing any buffered trailing samples when resampling is active.
-        self.stream = None;
-
-        let tail = match self.resampler.lock() {
-            Ok(mut guard) => guard.flush()?,
-            Err(poisoned) => {
-                self.stats
-                    .inner
-                    .resampler_lock_poisoned
-                    .fetch_add(1, Ordering::Relaxed);
-                let mut guard = poisoned.into_inner();
-                guard.flush()?
-            }
-        };
-        if !tail.is_empty() {
-            self.flushed_tail = tail;
-        }
-        Ok(())
+        self.inner.stop()
     }
 }
 

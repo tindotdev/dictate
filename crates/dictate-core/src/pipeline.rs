@@ -16,6 +16,7 @@ use crate::postprocess::{PostProcessConfig, PostProcessor};
 use crate::provider::{
     ResponseFormat, TimestampGranularity, TranscriptionProvider, TranscriptionResult, WhisperModel,
 };
+use crate::request_policy::RequestPolicies;
 use crate::resampler::TRANSCRIPTION_SAMPLE_RATE;
 
 // Re-export provider types for convenience
@@ -95,6 +96,8 @@ pub struct PipelineConfig {
     /// Optional base URL for the post-processing chat endpoint.
     /// Separate from `base_url` (transcription) because they hit different APIs.
     pub post_process_base_url: Option<String>,
+    /// Timeout and retry settings for transcription and post-processing requests.
+    pub request_policies: RequestPolicies,
 }
 
 impl Default for PipelineConfig {
@@ -110,6 +113,7 @@ impl Default for PipelineConfig {
             post_process: false,
             post_process_model: None,
             post_process_base_url: None,
+            request_policies: RequestPolicies::default(),
         }
     }
 }
@@ -212,6 +216,7 @@ impl TranscriptionPipeline {
             model: self.config.post_process_model.as_ref().map(ModelId::as_str),
             system_prompt: None,
             temperature: None,
+            request_policy: self.config.request_policies.post_process,
         };
 
         match pp.process(&result.text, config) {
@@ -283,6 +288,8 @@ impl TranscriptionPipeline {
             provider_config = provider_config
                 .with_timestamp_granularities(self.config.timestamp_granularities.clone());
         }
+        provider_config =
+            provider_config.with_request_policy(self.config.request_policies.transcription);
 
         self.provider.transcribe(provider_config)
     }

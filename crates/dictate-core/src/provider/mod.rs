@@ -9,6 +9,7 @@ pub use groq::GroqProvider;
 
 use crate::encoder::EncodedAudio;
 use crate::error::TranscriptionError;
+use crate::request_policy::{RequestPolicies, RequestPolicy};
 use serde::{Deserialize, Serialize};
 
 /// Response format for transcription output.
@@ -100,6 +101,8 @@ pub struct TranscriptionConfig<'a> {
     pub temperature: Option<f32>,
     /// Optional timestamp granularities. Requires `ResponseFormat::VerboseJson`.
     pub timestamp_granularities: Vec<TimestampGranularity>,
+    /// Timeout and retry settings for this request.
+    pub request_policy: RequestPolicy,
 }
 
 impl<'a> TranscriptionConfig<'a> {
@@ -115,6 +118,7 @@ impl<'a> TranscriptionConfig<'a> {
             model: None,
             temperature: None,
             timestamp_granularities: Vec::new(),
+            request_policy: RequestPolicies::persistent().transcription,
         }
     }
 
@@ -167,6 +171,13 @@ impl<'a> TranscriptionConfig<'a> {
         granularities: Vec<TimestampGranularity>,
     ) -> Self {
         self.timestamp_granularities = granularities;
+        self
+    }
+
+    /// Set timeout and retry settings for this request.
+    #[must_use]
+    pub const fn with_request_policy(mut self, request_policy: RequestPolicy) -> Self {
+        self.request_policy = request_policy;
         self
     }
 }

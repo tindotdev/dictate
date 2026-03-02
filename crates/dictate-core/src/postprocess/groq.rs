@@ -3,7 +3,6 @@
 //! Sends transcribed text to Groq's OpenAI-compatible chat completion API
 //! for punctuation, capitalization, and filler-word cleanup.
 
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use backon::{BlockingRetryable, ExponentialBuilder};
@@ -21,15 +20,6 @@ const DEFAULT_CHAT_URL: &str = "https://api.groq.com/openai/v1/chat/completions"
 /// Default LLM model used for post-processing when no override is provided.
 pub const DEFAULT_POST_PROCESS_MODEL: &str = "openai/gpt-oss-20b";
 
-/// HTTP timeout for chat completions (60s — text-only, much faster than audio).
-const CHAT_TIMEOUT: Duration = Duration::from_secs(60);
-
-// ─── Retry configuration (mirrors Whisper provider) ─────────────────────────
-
-const MAX_RETRIES: u32 = 3;
-const BASE_DELAY: Duration = Duration::from_secs(1);
-const MAX_DELAY: Duration = Duration::from_secs(16);
-
 const SYSTEM_PROMPT: &str = include_str!("prompts/cleanup.txt");
 
 // ─── Post-processor ─────────────────────────────────────────────────────────
@@ -38,18 +28,12 @@ const SYSTEM_PROMPT: &str = include_str!("prompts/cleanup.txt");
 #[derive(Debug, Default, Clone, Copy)]
 pub struct GroqPostProcessor;
 
-/// Lazily-initialised HTTP client for chat completions (separate from Whisper).
-fn chat_client() -> Result<&'static Client, TranscriptionError> {
-    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            Client::builder()
-                .timeout(CHAT_TIMEOUT)
-                .build()
-                .map_err(|e| format!("failed to initialize chat HTTP client: {e}"))
-        })
-        .as_ref()
-        .map_err(|e| TranscriptionError::HttpClientInitialization(e.clone()))
+fn chat_client(timeout: Duration) -> Result<Client, TranscriptionError> {
+    Client::builder().timeout(timeout).build().map_err(|e| {
+        TranscriptionError::HttpClientInitialization(format!(
+            "failed to initialize chat HTTP client: {e}"
+        ))
+    })
 }
 
 impl PostProcessor for GroqPostProcessor {
@@ -70,12 +54,12 @@ impl PostProcessor for GroqPostProcessor {
         let model = config.model.unwrap_or(DEFAULT_POST_PROCESS_MODEL);
         let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
         let temperature = config.temperature;
-        let client = chat_client()?;
+        let client = chat_client(config.request_policy.timeout)?;
 
         retry_chat_request(
             || {
                 send_chat_request(
-                    client,
+                    &client,
                     url,
                     config.api_key,
                     model,
@@ -84,7 +68,8 @@ impl PostProcessor for GroqPostProcessor {
                     temperature,
                 )
             },
-            retry_builder(),
+            retry_builder(config.request_policy),
+            config.request_policy.max_retries,
             |err, dur| {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
             },
@@ -92,16 +77,17 @@ impl PostProcessor for GroqPostProcessor {
     }
 }
 
-fn retry_builder() -> ExponentialBuilder {
+fn retry_builder(request_policy: crate::request_policy::RequestPolicy) -> ExponentialBuilder {
     ExponentialBuilder::default()
-        .with_min_delay(BASE_DELAY)
-        .with_max_delay(MAX_DELAY)
-        .with_max_times(MAX_RETRIES as usize)
+        .with_min_delay(request_policy.base_delay)
+        .with_max_delay(request_policy.max_delay)
+        .with_max_times(request_policy.max_retries as usize)
 }
 
 fn retry_chat_request<Op, Notify>(
     mut operation: Op,
     retry: ExponentialBuilder,
+    max_retries: u32,
     mut notify: Notify,
 ) -> Result<String, TranscriptionError>
 where
@@ -118,7 +104,7 @@ where
         .map_err(|e| {
             if e.is_rate_limit_error() {
                 TranscriptionError::RateLimitExhausted {
-                    retries: MAX_RETRIES,
+                    retries: max_retries,
                 }
             } else {
                 e
@@ -224,12 +210,19 @@ fn send_chat_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::request_policy::RequestPolicy;
+
+    fn fast_request_policy() -> RequestPolicy {
+        RequestPolicy::new(
+            Duration::from_millis(200),
+            3,
+            Duration::from_millis(1),
+            Duration::from_millis(2),
+        )
+    }
 
     fn fast_retry_builder() -> ExponentialBuilder {
-        ExponentialBuilder::default()
-            .with_min_delay(Duration::from_millis(1))
-            .with_max_delay(Duration::from_millis(2))
-            .with_max_times(MAX_RETRIES as usize)
+        retry_builder(fast_request_policy())
     }
 
     #[test]
@@ -246,6 +239,7 @@ mod tests {
                 })
             },
             fast_retry_builder(),
+            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -255,8 +249,8 @@ mod tests {
             result,
             Err(TranscriptionError::Api { status: 503, .. })
         ));
-        assert_eq!(attempts, (MAX_RETRIES + 1) as usize);
-        assert_eq!(notifications, MAX_RETRIES as usize);
+        assert_eq!(attempts, (fast_request_policy().max_retries + 1) as usize);
+        assert_eq!(notifications, fast_request_policy().max_retries as usize);
     }
 
     #[test]
@@ -273,6 +267,7 @@ mod tests {
                 })
             },
             fast_retry_builder(),
+            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -280,12 +275,10 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(TranscriptionError::RateLimitExhausted {
-                retries: MAX_RETRIES
-            })
+            Err(TranscriptionError::RateLimitExhausted { retries: 3 })
         ));
-        assert_eq!(attempts, (MAX_RETRIES + 1) as usize);
-        assert_eq!(notifications, MAX_RETRIES as usize);
+        assert_eq!(attempts, (fast_request_policy().max_retries + 1) as usize);
+        assert_eq!(notifications, fast_request_policy().max_retries as usize);
     }
 
     #[test]
@@ -302,6 +295,7 @@ mod tests {
                 })
             },
             fast_retry_builder(),
+            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -326,13 +320,17 @@ mod tests {
                 ))
             },
             fast_retry_builder(),
+            fast_request_policy().max_retries,
             |err, dur| {
                 notifications.push((err.to_string(), dur));
             },
         );
 
         assert!(matches!(result, Err(TranscriptionError::Network(_))));
-        assert_eq!(notifications.len(), MAX_RETRIES as usize);
+        assert_eq!(
+            notifications.len(),
+            fast_request_policy().max_retries as usize
+        );
         assert!(
             notifications
                 .iter()
@@ -349,6 +347,7 @@ mod tests {
             model: None,
             system_prompt: None,
             temperature: None,
+            request_policy: fast_request_policy(),
         };
         let result = pp.process("", config).unwrap();
         assert_eq!(result, "");
@@ -383,6 +382,7 @@ mod tests {
             model: None,
             system_prompt: None,
             temperature: None,
+            request_policy: fast_request_policy(),
         };
 
         let result = pp.process("um hello how are you uh doing today", config);
@@ -411,6 +411,7 @@ mod tests {
             model: None,
             system_prompt: None,
             temperature: None,
+            request_policy: fast_request_policy(),
         };
 
         let result = pp.process("hello", config);
@@ -449,6 +450,7 @@ mod tests {
             model: Some("llama-3.1-8b-instant"),
             system_prompt: None,
             temperature: None,
+            request_policy: fast_request_policy(),
         };
 
         let result = pp.process("some text", config);
