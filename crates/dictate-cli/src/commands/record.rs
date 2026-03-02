@@ -195,7 +195,7 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
     // Set up interrupt handling
     let running = Arc::new(AtomicBool::new(true));
     let active_recording_stop = Arc::new(Mutex::new(None));
-    install_stop_handlers(Arc::clone(&running), Arc::clone(&active_recording_stop));
+    install_stop_handlers(Arc::clone(&running), &active_recording_stop);
 
     // Record audio chunks
     let session = capture_recording_session(
@@ -234,7 +234,8 @@ pub fn run_retry(options: &RecordOptions) -> Result<(), RecordError> {
 
     eprintln!("[dictate] reusing saved audio from last recording...");
     let running = Arc::new(AtomicBool::new(true));
-    install_stop_handlers(Arc::clone(&running), Arc::new(Mutex::new(None)));
+    let active_recording_stop = Arc::new(Mutex::new(None));
+    install_stop_handlers(Arc::clone(&running), &active_recording_stop);
     process_transcription_session(options, &resolved, session.chunks, &running)
 }
 
@@ -736,10 +737,10 @@ fn post_process_result_interruptible(
 
 fn install_stop_handlers(
     running: Arc<AtomicBool>,
-    active_recording_stop: Arc<Mutex<Option<RecorderStopHandle>>>,
+    active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
 ) {
     let running_ctrlc = Arc::clone(&running);
-    let active_recording_stop_ctrlc = Arc::clone(&active_recording_stop);
+    let active_recording_stop_ctrlc = Arc::clone(active_recording_stop);
     if let Err(err) = ctrlc::set_handler(move || {
         // First press: cooperative shutdown. Second press: force exit.
         if handle_stop_signal(&running_ctrlc, || {
@@ -754,7 +755,7 @@ fn install_stop_handlers(
 
     // Only listen for Enter when stdin is interactive (not piped / closed).
     if std::io::stdin().is_terminal() {
-        let active_recording_stop_stdin = Arc::clone(&active_recording_stop);
+        let active_recording_stop_stdin = Arc::clone(active_recording_stop);
         std::thread::spawn(move || {
             let mut input = String::new();
             let _ = std::io::stdin().read_line(&mut input);
