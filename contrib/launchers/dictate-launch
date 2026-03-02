@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Toggle voice-to-text recording with desktop notifications.
+# Bind to a global keyboard shortcut in your compositor.
+#
+#   First press  -> start recording  (persistent notification)
+#   Second press -> stop -> transcribe -> clipboard
+#   Auto-stops after DICTATE_TIMEOUT seconds (default: 180)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=contrib/launchers/dictate-launch-common.sh
+source "$SCRIPT_DIR/dictate-launch-common.sh"
+
+launcher_init "dictate"
+
+clipboard_has_text() {
+	if command -v wl-paste >/dev/null 2>&1; then
+		[[ -n "$(wl-paste --no-newline 2>/dev/null || true)" ]]
+		return
+	fi
+	return 0
+}
+
+notify() {
+	local timeout="$1" summary="$2" body="$3"
+	local replace_id new_id
+	replace_id=$(cat "$NOTIFY_ID_FILE" 2>/dev/null) || replace_id=""
+
+	local args=(-t "$timeout" --app-name=dictate --icon=audio-input-microphone)
+	[[ -n "$replace_id" ]] && args+=(--replace-id="$replace_id")
+	args+=(--print-id "$summary" "$body")
+
+	log "notify timeout=$timeout summary=$summary body=$body"
+	if new_id=$(notify-send "${args[@]}" 2>/dev/null); then
+		[[ -n "$new_id" ]] && echo "$new_id" >"$NOTIFY_ID_FILE"
+	else
+		notify-send -t "$timeout" "$summary" "$body" 2>/dev/null || true
+	fi
+}
+
+close_notification_after() {
+	local delay="$1"
+	local id
+	id=$(cat "$NOTIFY_ID_FILE" 2>/dev/null) || return 0
+	(
+		sleep "$delay"
+		gdbus call --session \
+			--dest org.freedesktop.Notifications \
+			--object-path /org/freedesktop/Notifications \
+			--method org.freedesktop.Notifications.CloseNotification \
+			"$id" >/dev/null 2>&1 || true
+		rm -f "$NOTIFY_ID_FILE"
+	) &
+}
+
+parse_mode "$@"
+clear_stale_state_if_needed
+log "mode=$MODE args=${REMAINING_ARGS[*]:-}"
+
+if [[ "$MODE" == "retry" ]]; then
+	if [[ -f "$PIDFILE" ]]; then
+		pid=$(<"$PIDFILE")
+		if kill -0 "$pid" 2>/dev/null; then
+			if [[ "$(get_state)" == "transcribing" ]]; then
+				notify 1200 "Dictate" "Transcribing…"
+			else
+				notify 1200 "Dictate" "Recording in progress…"
+			fi
+			exit 0
+		fi
+		clear_runtime_files
+	fi
+
+	if [[ "$(get_state)" == "transcribing" ]]; then
+		notify 1200 "Dictate" "Transcribing…"
+		exit 0
+	fi
+
+	notify 0 "Dictate" "Retrying transcription…"
+	set_state "transcribing"
+
+	(
+		set +e
+		echo "$BASHPID" >"$WORKER_PID_FILE"
+		run_transcription_command retry -p "${REMAINING_ARGS[@]}"
+		rc=$?
+
+		if [[ $rc -eq 0 ]]; then
+			if ! clipboard_has_text; then
+				notify 0 "Dictate" "Nothing transcribed"
+				close_notification_after 3
+				clear_runtime_files
+				exit 0
+			fi
+			notify 0 "Dictate" "Copied to clipboard"
+			close_notification_after 3
+		else
+			notify 0 "Dictate" "Retry failed (exit $rc)"
+			close_notification_after 5
+		fi
+		clear_runtime_files
+	) &
+	disown
+
+	exit 0
+fi
+
+if [[ -f "$PIDFILE" ]]; then
+	pid=$(<"$PIDFILE")
+	if kill -0 "$pid" 2>/dev/null; then
+		state=$(get_state)
+		if [[ "$state" == "transcribing" ]]; then
+			signal_dictate INT "$pid"
+			notify 0 "Dictate" "Cancelling transcription…"
+			exit 0
+		fi
+		started_at=$(cat "$STARTED_AT_FILE" 2>/dev/null || echo 0)
+		now=$(date +%s)
+		if [[ "$started_at" =~ ^[0-9]+$ ]] && ((now - started_at < MIN_RECORD_SECONDS)); then
+			notify 1200 "Dictate" "Still recording…"
+			exit 0
+		fi
+		rm -f "$STARTED_AT_FILE"
+		set_state "transcribing"
+		signal_dictate INT "$pid"
+		notify 0 "Dictate" "Transcribing…"
+		exit 0
+	fi
+	clear_runtime_files
+fi
+
+if [[ "$(get_state)" == "transcribing" ]]; then
+	notify 1200 "Dictate" "Transcribing…"
+	exit 0
+fi
+
+notify 0 "Dictate" "Recording…"
+set_state "recording"
+
+(
+	set +e
+	echo "$BASHPID" >"$WORKER_PID_FILE"
+	run_transcription_command -p "${REMAINING_ARGS[@]}" &
+	dictate_pid=$!
+	echo "$dictate_pid" >"$PIDFILE"
+	date +%s >"$STARTED_AT_FILE"
+	log "spawned dictate pid=$dictate_pid"
+
+	(
+		sleep "$MAX_DURATION"
+		if kill -0 "$dictate_pid" 2>/dev/null && [[ "$(get_state)" == "recording" ]]; then
+			rm -f "$STARTED_AT_FILE"
+			set_state "transcribing"
+			signal_dictate INT "$dictate_pid"
+			notify 0 "Dictate" "Auto-stopped — transcribing…"
+		fi
+	) &
+	watchdog_pid=$!
+
+	(
+		while kill -0 "$dictate_pid" 2>/dev/null; do
+			if [[ "$(get_state)" == "transcribing" ]]; then
+				sleep "$TRANSCRIBE_TIMEOUT"
+				if ! kill -0 "$dictate_pid" 2>/dev/null || [[ "$(get_state)" != "transcribing" ]]; then
+					exit 0
+				fi
+				notify 0 "Dictate" "Transcription timed out — cancelling…"
+				signal_dictate INT "$dictate_pid" || exit 0
+				sleep 2
+				if kill -0 "$dictate_pid" 2>/dev/null; then
+					notify 0 "Dictate" "Transcription hung — force stopping…"
+					signal_dictate TERM "$dictate_pid" || exit 0
+					sleep 2
+				fi
+				signal_dictate KILL "$dictate_pid" || true
+				exit 0
+			fi
+			sleep 1
+		done
+	) &
+	transcribe_watchdog_pid=$!
+
+	wait "$dictate_pid"
+	rc=$?
+	log "dictate exited rc=$rc"
+
+	kill "$watchdog_pid" 2>/dev/null
+	wait "$watchdog_pid" 2>/dev/null
+	kill "$transcribe_watchdog_pid" 2>/dev/null
+	wait "$transcribe_watchdog_pid" 2>/dev/null
+
+	if [[ $rc -eq 0 ]]; then
+		if ! clipboard_has_text; then
+			notify 0 "Dictate" "Nothing transcribed"
+			close_notification_after 3
+			clear_runtime_files
+			exit 0
+		fi
+		notify 0 "Dictate" "Copied to clipboard"
+		close_notification_after 3
+	else
+		notify 0 "Dictate" "Transcription failed (exit $rc)"
+		close_notification_after 5
+	fi
+	clear_runtime_files
+) &
+disown
+
+exit 0

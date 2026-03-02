@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# Toggle voice-to-text recording for Kitty.
+# Bind to a Kitty keybinding:
+#   map kitty_mod+d launch --type=background ~/.local/bin/dictate-kitty
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=contrib/launchers/dictate-launch-common.sh
+source "$SCRIPT_DIR/dictate-launch-common.sh"
+
+launcher_init "dictate-kitty"
+
+export PATH="$HOME/repos/brew/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+notify() {
+	local summary="$1" body="$2"
+	log "notify summary=$summary body=$body"
+	if command -v osascript >/dev/null 2>&1; then
+		osascript -e "display notification \"$body\" with title \"$summary\"" 2>/dev/null || true
+	else
+		notify-send -t 3000 "$summary" "$body" 2>/dev/null || true
+	fi
+}
+
+resolve_kitty_socket() {
+	if [[ -n "${KITTY_LISTEN_ON:-}" ]]; then
+		printf '%s\n' "$KITTY_LISTEN_ON"
+		return
+	fi
+
+	if [[ -S "/tmp/mykitty-$PPID" ]]; then
+		printf 'unix:/tmp/mykitty-%s\n' "$PPID"
+		return
+	fi
+
+	local sock
+	for sock in /tmp/mykitty-*; do
+		[[ -S "$sock" ]] || continue
+		printf 'unix:%s\n' "$sock"
+		return
+	done
+
+	echo "Could not find kitty socket" >&2
+	exit 1
+}
+
+KITTY_SOCKET="$(resolve_kitty_socket)"
+parse_mode "$@"
+clear_stale_state_if_needed
+log "mode=$MODE socket=$KITTY_SOCKET args=${REMAINING_ARGS[*]:-}"
+
+if [[ "$MODE" == "retry" ]]; then
+	if [[ -f "$PIDFILE" ]]; then
+		pid=$(<"$PIDFILE")
+		if kill -0 "$pid" 2>/dev/null; then
+			notify "Dictate" "Recording in progress…"
+			exit 0
+		fi
+		rm -f "$PIDFILE"
+	fi
+
+	if [[ "$(get_state)" == "transcribing" ]]; then
+		notify "Dictate" "Transcribing…"
+		exit 0
+	fi
+
+	notify "Dictate" "Retrying transcription…"
+	set_state "transcribing"
+
+	(
+		set +e
+		echo "$BASHPID" >"$WORKER_PID_FILE"
+		run_transcription_command retry --stdout -p "${REMAINING_ARGS[@]}" >"$OUTFILE" 2>/dev/null
+		rc=$?
+		log "retry rc=$rc outfile=$OUTFILE"
+
+		if [[ $rc -eq 0 && -s "$OUTFILE" ]]; then
+			kitten @ --to "$KITTY_SOCKET" send-text \
+				--bracketed-paste=enable --from-file "$OUTFILE"
+			rm -f "$OUTFILE"
+			notify "Dictate" "Typed into terminal"
+		elif [[ $rc -eq 0 ]]; then
+			rm -f "$OUTFILE"
+			notify "Dictate" "Nothing transcribed"
+		else
+			rm -f "$OUTFILE"
+			notify "Dictate" "Retry failed (exit $rc)"
+		fi
+		clear_runtime_files
+	) &
+	disown
+
+	exit 0
+fi
+
+if [[ -f "$PIDFILE" ]]; then
+	pid=$(<"$PIDFILE")
+	if kill -0 "$pid" 2>/dev/null; then
+		rm -f "$PIDFILE"
+		set_state "transcribing"
+		signal_dictate INT "$pid"
+		notify "Dictate" "Transcribing…"
+		exit 0
+	fi
+	clear_runtime_files
+fi
+
+if [[ "$(get_state)" == "transcribing" ]]; then
+	notify "Dictate" "Transcribing…"
+	exit 0
+fi
+
+notify "Dictate" "Recording…"
+set_state "recording"
+
+(
+	set +e
+	echo "$BASHPID" >"$WORKER_PID_FILE"
+
+	run_transcription_command --stdout -p "${REMAINING_ARGS[@]}" >"$OUTFILE" 2>/dev/null &
+	dictate_pid=$!
+	echo "$dictate_pid" >"$PIDFILE"
+	log "spawned dictate pid=$dictate_pid"
+
+	(
+		sleep "$MAX_DURATION"
+		if signal_dictate INT "$dictate_pid"; then
+			notify "Dictate" "Auto-stopped — transcribing…"
+		fi
+	) &
+	watchdog_pid=$!
+
+	wait "$dictate_pid"
+	rc=$?
+	log "dictate exited rc=$rc"
+
+	kill "$watchdog_pid" 2>/dev/null
+	wait "$watchdog_pid" 2>/dev/null
+	rm -f "$PIDFILE"
+
+	if [[ $rc -eq 0 && -s "$OUTFILE" ]]; then
+		kitten @ --to "$KITTY_SOCKET" send-text \
+			--bracketed-paste=enable --from-file "$OUTFILE"
+		rm -f "$OUTFILE"
+		notify "Dictate" "Typed into terminal"
+	elif [[ $rc -eq 0 ]]; then
+		rm -f "$OUTFILE"
+		notify "Dictate" "Nothing transcribed"
+	else
+		rm -f "$OUTFILE"
+		notify "Dictate" "Failed (exit $rc)"
+	fi
+	clear_runtime_files
+) &
+disown
+
+exit 0
