@@ -70,8 +70,68 @@ enum RunMode {
 
 /// Configuration options for audio recording and transcription.
 /// Use the builder pattern to construct with only the options you need.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputOptions {
+    stdout: bool,
+    no_clipboard: bool,
+}
+
+impl OutputOptions {
+    /// Create a new output configuration with default destinations.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Print transcript to stdout instead of clipboard.
+    pub const fn stdout(mut self, enabled: bool) -> Self {
+        self.stdout = enabled;
+        self
+    }
+
+    /// Skip clipboard entirely (headless/scripted use).
+    pub const fn no_clipboard(mut self, enabled: bool) -> Self {
+        self.no_clipboard = enabled;
+        self
+    }
+
+    const fn use_clipboard(self) -> bool {
+        !self.stdout && !self.no_clipboard
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
+pub struct PostProcessOptions {
+    enabled: Option<bool>,
+    model: Option<ModelId>,
+    base_url: Option<String>,
+}
+
+impl PostProcessOptions {
+    /// Create a new post-process configuration with inherited defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enable or disable LLM post-processing.
+    pub const fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
+
+    /// Set the model for post-processing.
+    pub fn model(mut self, model: ModelId) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    /// Override the post-processing chat API base URL.
+    pub fn base_url(mut self, url: impl Into<String>) -> Self {
+        self.base_url = Some(url.into());
+        self
+    }
+}
+
 #[derive(Default, Debug)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct RecordOptions {
     device: Option<String>,
     base_url: Option<String>,
@@ -81,11 +141,8 @@ pub struct RecordOptions {
     transcription_model: Option<WhisperModel>,
     temperature: Option<f32>,
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
-    stdout: bool,
-    no_clipboard: bool,
-    post_process_override: Option<bool>,
-    post_process_model: Option<ModelId>,
-    post_process_base_url: Option<String>,
+    output: OutputOptions,
+    post_process: PostProcessOptions,
     save_last_audio: bool,
 }
 
@@ -143,33 +200,15 @@ impl RecordOptions {
         self
     }
 
-    /// Print transcript to stdout instead of clipboard.
-    pub const fn stdout(mut self, enabled: bool) -> Self {
-        self.stdout = enabled;
+    /// Set grouped output options.
+    pub const fn output(mut self, output: OutputOptions) -> Self {
+        self.output = output;
         self
     }
 
-    /// Skip clipboard entirely (headless/scripted use).
-    pub const fn no_clipboard(mut self, enabled: bool) -> Self {
-        self.no_clipboard = enabled;
-        self
-    }
-
-    /// Enable LLM post-processing for punctuation and formatting cleanup.
-    pub const fn post_process(mut self, enabled: bool) -> Self {
-        self.post_process_override = Some(enabled);
-        self
-    }
-
-    /// Set the model for post-processing.
-    pub fn post_process_model(mut self, model: ModelId) -> Self {
-        self.post_process_model = Some(model);
-        self
-    }
-
-    /// Override the post-processing chat API base URL.
-    pub fn post_process_base_url(mut self, url: impl Into<String>) -> Self {
-        self.post_process_base_url = Some(url.into());
+    /// Set grouped post-process options.
+    pub fn post_process_options(mut self, post_process: PostProcessOptions) -> Self {
+        self.post_process = post_process;
         self
     }
 
@@ -188,7 +227,7 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
     let resolved = resolve_run_config(options, None, RunMode::Record)?;
 
     // Fail fast if clipboard is requested but unavailable (missing tool / headless)
-    if !options.stdout && !options.no_clipboard {
+    if options.output.use_clipboard() {
         dictate_core::check_clipboard_available()?;
     }
 
@@ -218,7 +257,7 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
 
 /// Reuse the last saved recording and rerun transcription/post-processing.
 pub fn run_retry(options: &RecordOptions) -> Result<(), RecordError> {
-    if !options.stdout && !options.no_clipboard {
+    if options.output.use_clipboard() {
         dictate_core::check_clipboard_available()?;
     }
 
@@ -346,7 +385,8 @@ fn resolve_run_config(
         .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
 
     let post_process_base_url = options
-        .post_process_base_url
+        .post_process
+        .base_url
         .clone()
         .or_else(|| defaults.and_then(|saved| saved.pipeline_config.post_process_base_url.clone()))
         .or_else(|| std::env::var(GROQ_CHAT_BASE_URL_VAR).ok());
@@ -364,7 +404,7 @@ fn resolve_run_config(
     });
     let inherited_post_process = defaults.is_some_and(|saved| saved.pipeline_config.post_process);
     let effective_post_process =
-        resolve_post_process_enabled(options.post_process_override, inherited_post_process);
+        resolve_post_process_enabled(options.post_process.enabled, inherited_post_process);
 
     let config = PipelineConfig {
         base_url,
@@ -382,7 +422,7 @@ fn resolve_run_config(
             .or_else(|| defaults.and_then(|saved| saved.pipeline_config.temperature)),
         timestamp_granularities,
         post_process: effective_post_process,
-        post_process_model: options.post_process_model.clone().or_else(|| {
+        post_process_model: options.post_process.model.clone().or_else(|| {
             defaults.and_then(|saved| saved.pipeline_config.post_process_model.clone())
         }),
         post_process_base_url,
@@ -629,7 +669,7 @@ fn output_result(
     }
 
     // Determine output destination based on flags
-    let use_clipboard = !options.stdout && !options.no_clipboard;
+    let use_clipboard = options.output.use_clipboard();
 
     // Format the result according to --format flag
     let formatted = format_to_string(merged, format, post_process_requested, post_process_outcome);
@@ -1679,7 +1719,7 @@ mod tests {
             },
             pipeline,
         };
-        let options = RecordOptions::new().no_clipboard(true);
+        let options = RecordOptions::new().output(OutputOptions::new().no_clipboard(true));
 
         process_transcription_session(
             &options,

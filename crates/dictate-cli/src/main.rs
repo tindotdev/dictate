@@ -89,6 +89,10 @@ fn apply_transcription_options(
     mut options: commands::record::RecordOptions,
     args: args::TranscriptionArgs,
 ) -> commands::record::RecordOptions {
+    let output = commands::record::OutputOptions::new()
+        .stdout(args.output.stdout)
+        .no_clipboard(args.output.no_clipboard);
+
     if let Some(base_url) = args.base_url {
         options = options.base_url(base_url);
     }
@@ -123,50 +127,47 @@ fn apply_transcription_options(
             .collect();
         options = options.timestamp_granularities(granularities);
     }
-    if args.output.stdout {
-        options = options.stdout(true);
-    }
-    if args.output.no_clipboard {
-        options = options.no_clipboard(true);
-    }
-
-    options
+    options.output(output)
 }
 
 fn apply_record_post_process(
-    mut options: commands::record::RecordOptions,
+    options: commands::record::RecordOptions,
     args: args::RecordPostProcessArgs,
 ) -> commands::record::RecordOptions {
+    let mut post_process = commands::record::PostProcessOptions::new();
+
     if args.enabled {
-        options = options.post_process(true);
+        post_process = post_process.enabled(true);
     }
     if let Some(model) = args.model {
-        options = options.post_process_model(model);
+        post_process = post_process.model(model);
     }
     if let Some(url) = args.base_url {
-        options = options.post_process_base_url(url);
+        post_process = post_process.base_url(url);
     }
 
-    options
+    options.post_process_options(post_process)
 }
 
 fn apply_retry_post_process(
-    mut options: commands::record::RecordOptions,
+    options: commands::record::RecordOptions,
     args: args::RetryPostProcessArgs,
 ) -> commands::record::RecordOptions {
+    let mut post_process = commands::record::PostProcessOptions::new();
+
     if args.disabled {
-        options = options.post_process(false);
+        post_process = post_process.enabled(false);
     } else if args.enabled {
-        options = options.post_process(true);
+        post_process = post_process.enabled(true);
     }
     if let Some(model) = args.model {
-        options = options.post_process_model(model);
+        post_process = post_process.model(model);
     }
     if let Some(url) = args.base_url {
-        options = options.post_process_base_url(url);
+        post_process = post_process.base_url(url);
     }
 
-    options
+    options.post_process_options(post_process)
 }
 
 fn main() -> ExitCode {
