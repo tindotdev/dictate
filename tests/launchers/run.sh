@@ -95,6 +95,8 @@ stdout_mode = "--stdout" in args
 retry_mode = "retry" in args
 
 if retry_mode:
+    if "--save-last-audio" in args:
+        raise SystemExit(2)
     if stdout_mode:
         sys.stdout.write(os.environ.get("FAKE_RETRY_STDOUT", "retry text"))
         sys.stdout.flush()
@@ -191,7 +193,7 @@ desktop_retry() {
 	trap cleanup_env RETURN
 
 	run_launcher "$REPO_ROOT/contrib/dictate-launch" retry --language fr
-	wait_for "desktop retry command" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F 'retry -p --language fr --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
+	wait_for "desktop retry command" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F 'retry -p --language fr --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 	wait_for "desktop retry cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" ]]"
 	assert_contains "$FAKE_NOTIFY_LOG" "Retrying transcription…"
 	assert_contains "$FAKE_NOTIFY_LOG" "Copied to clipboard"
@@ -220,7 +222,7 @@ kitty_retry() {
 	export KITTY_LISTEN_ON="unix:/tmp/fake-kitty.sock"
 
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty" retry --language de
-	wait_for "kitty retry command" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F 'retry --stdout -p --language de --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
+	wait_for "kitty retry command" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F 'retry --stdout -p --language de --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 	wait_for "kitty retry content" "[[ -f \"$FAKE_KITTEN_CONTENT_LOG\" ]] && grep -F 'retry text' \"$FAKE_KITTEN_CONTENT_LOG\" >/dev/null"
 	wait_for "kitty retry cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" ]]"
 }

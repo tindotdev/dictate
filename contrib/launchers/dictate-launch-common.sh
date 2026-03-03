@@ -96,8 +96,13 @@ clear_stale_state_if_needed() {
 }
 
 run_transcription_command() {
-	log "exec: $DICTATE_BIN $* --save-last-audio --transcription-model $TRANSCRIPTION_MODEL"
-	"$DICTATE_BIN" "$@" --save-last-audio --transcription-model "$TRANSCRIPTION_MODEL"
+	local extra_args=(--transcription-model "$TRANSCRIPTION_MODEL")
+	if [[ "${1:-}" != "retry" ]]; then
+		extra_args=(--save-last-audio "${extra_args[@]}")
+	fi
+
+	log "exec: $DICTATE_BIN $* ${extra_args[*]}"
+	"$DICTATE_BIN" "$@" "${extra_args[@]}"
 }
 
 parse_mode() {
