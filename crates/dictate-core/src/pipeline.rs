@@ -16,6 +16,7 @@ use crate::postprocess::{PostProcessConfig, PostProcessor};
 use crate::provider::{
     ResponseFormat, TimestampGranularity, TranscriptionProvider, TranscriptionResult, WhisperModel,
 };
+use crate::request_policy::RequestPolicies;
 use crate::resampler::TRANSCRIPTION_SAMPLE_RATE;
 
 // Re-export provider types for convenience
@@ -95,6 +96,8 @@ pub struct PipelineConfig {
     /// Optional base URL for the post-processing chat endpoint.
     /// Separate from `base_url` (transcription) because they hit different APIs.
     pub post_process_base_url: Option<String>,
+    /// Timeout and retry settings for transcription and post-processing requests.
+    pub request_policies: RequestPolicies,
 }
 
 impl Default for PipelineConfig {
@@ -110,6 +113,7 @@ impl Default for PipelineConfig {
             post_process: false,
             post_process_model: None,
             post_process_base_url: None,
+            request_policies: RequestPolicies::default(),
         }
     }
 }
@@ -212,6 +216,7 @@ impl TranscriptionPipeline {
             model: self.config.post_process_model.as_ref().map(ModelId::as_str),
             system_prompt: None,
             temperature: None,
+            request_policy: self.config.request_policies.post_process,
         };
 
         match pp.process(&result.text, config) {
@@ -283,6 +288,8 @@ impl TranscriptionPipeline {
             provider_config = provider_config
                 .with_timestamp_granularities(self.config.timestamp_granularities.clone());
         }
+        provider_config =
+            provider_config.with_request_policy(self.config.request_policies.transcription);
 
         self.provider.transcribe(provider_config)
     }
@@ -843,7 +850,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::significant_drop_tightening)]
     fn post_process_uses_post_process_base_url_not_base_url() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let pipeline = TranscriptionPipeline::new(
@@ -867,16 +873,19 @@ mod tests {
         let _ = pipeline.post_process_result(result);
 
         let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
+        let recorded_len = recorded.len();
+        let recorded_base_url = recorded[0].1.clone();
+        drop(recorded);
+
+        assert_eq!(recorded_len, 1);
         assert_eq!(
-            recorded[0].1.as_deref(),
+            recorded_base_url.as_deref(),
             Some("https://chat.example.com/v1/chat"),
             "post-processor should receive post_process_base_url, not base_url"
         );
     }
 
     #[test]
-    #[allow(clippy::significant_drop_tightening)]
     fn post_process_base_url_defaults_to_none() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let pipeline = TranscriptionPipeline::new(
@@ -899,9 +908,13 @@ mod tests {
         let _ = pipeline.post_process_result(result);
 
         let recorded = calls.lock().unwrap();
-        assert_eq!(recorded.len(), 1);
+        let recorded_len = recorded.len();
+        let recorded_base_url = recorded[0].1.clone();
+        drop(recorded);
+
+        assert_eq!(recorded_len, 1);
         assert_eq!(
-            recorded[0].1, None,
+            recorded_base_url, None,
             "post-processor should get None when post_process_base_url is unset (not inherit base_url)"
         );
     }

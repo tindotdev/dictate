@@ -11,6 +11,7 @@ pub mod groq;
 pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
 use crate::error::TranscriptionError;
+use crate::request_policy::{RequestPolicies, RequestPolicy};
 
 /// A text post-processor that refines transcribed text.
 pub trait PostProcessor: Send + Sync {
@@ -41,4 +42,28 @@ pub struct PostProcessConfig<'a> {
     pub system_prompt: Option<&'a str>,
     /// Optional temperature for chat completion (omitted from request when `None`).
     pub temperature: Option<f32>,
+    /// Timeout and retry settings for this request.
+    pub request_policy: RequestPolicy,
+}
+
+impl<'a> PostProcessConfig<'a> {
+    /// Create a post-processing config with default request settings.
+    #[must_use]
+    pub const fn new(api_key: &'a str) -> Self {
+        Self {
+            api_key,
+            base_url: None,
+            model: None,
+            system_prompt: None,
+            temperature: None,
+            request_policy: RequestPolicies::persistent().post_process,
+        }
+    }
+
+    /// Set timeout and retry settings for this request.
+    #[must_use]
+    pub const fn with_request_policy(mut self, request_policy: RequestPolicy) -> Self {
+        self.request_policy = request_policy;
+        self
+    }
 }

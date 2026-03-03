@@ -14,13 +14,40 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
+# Format launcher and shell test scripts (requires shfmt)
+fmt-launchers:
+    shfmt -w \
+        contrib/launchers/dictate-launch-common.sh \
+        contrib/launchers/dictate-launch \
+        contrib/launchers/dictate-kitty \
+        contrib/dictate-launch \
+        contrib/dictate-kitty \
+        tests/launchers/run.sh
+
 # Run clippy lints with auto-fix (lint levels configured in workspace Cargo.toml)
 clippy:
     cargo clippy --workspace --all-targets --fix --allow-dirty -- -D warnings
 
-# Run all tests
-test:
+# Run Rust tests only
+test-rust:
     cargo test --workspace
+
+# Run launcher integration tests with fake binaries
+test-launchers:
+    bash tests/launchers/run.sh
+
+# Lint launcher and shell test scripts (requires shellcheck)
+lint-launchers:
+    shellcheck \
+        contrib/launchers/dictate-launch-common.sh \
+        contrib/launchers/dictate-launch \
+        contrib/launchers/dictate-kitty \
+        contrib/dictate-launch \
+        contrib/dictate-kitty \
+        tests/launchers/run.sh
+
+# Run all tests
+test: test-rust test-launchers
 
 # Build the dictate CLI binary (debug)
 build-cli:
@@ -88,32 +115,75 @@ remove-secret:
     echo "✓ Removed ~/.config/environment.d/groq.conf"
     echo "  Note: Restart your session to fully clear the environment variable"
 
-# Install dictate-launch script to ~/.local/bin/ (for global desktop activation)
+# Install the desktop launcher to ~/.local/bin/
 install-launcher:
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p ~/.local/bin
-    cp contrib/dictate-launch ~/.local/bin/dictate-launch
-    chmod +x ~/.local/bin/dictate-launch
-    echo "✓ Installed dictate-launch to ~/.local/bin/dictate-launch"
+    dest_dir="${DICTATE_LAUNCHER_INSTALL_DIR:-$HOME/.local/bin}"
+    mkdir -p "$dest_dir"
+    cp contrib/launchers/dictate-launch "$dest_dir/dictate-launch"
+    cp contrib/launchers/dictate-launch-common.sh "$dest_dir/dictate-launch-common.sh"
+    chmod +x "$dest_dir/dictate-launch" "$dest_dir/dictate-launch-common.sh"
+    echo "✓ Installed dictate-launch to $dest_dir/dictate-launch"
     echo "  Next: configure your compositor's global shortcut (see README.md)"
 
-# Uninstall dictate-launch script from ~/.local/bin/
+# Install both desktop and Kitty launchers plus their shared library.
+install-launchers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest_dir="${DICTATE_LAUNCHER_INSTALL_DIR:-$HOME/.local/bin}"
+    mkdir -p "$dest_dir"
+    cp contrib/launchers/dictate-launch "$dest_dir/dictate-launch"
+    cp contrib/launchers/dictate-kitty "$dest_dir/dictate-kitty"
+    cp contrib/launchers/dictate-launch-common.sh "$dest_dir/dictate-launch-common.sh"
+    chmod +x \
+        "$dest_dir/dictate-launch" \
+        "$dest_dir/dictate-kitty" \
+        "$dest_dir/dictate-launch-common.sh"
+    echo "✓ Installed launchers to $dest_dir"
+    echo "  - dictate-launch"
+    echo "  - dictate-kitty"
+    echo "  - dictate-launch-common.sh"
+
+# Install only the Kitty launcher.
+install-launcher-kitty:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest_dir="${DICTATE_LAUNCHER_INSTALL_DIR:-$HOME/.local/bin}"
+    mkdir -p "$dest_dir"
+    cp contrib/launchers/dictate-kitty "$dest_dir/dictate-kitty"
+    cp contrib/launchers/dictate-launch-common.sh "$dest_dir/dictate-launch-common.sh"
+    chmod +x "$dest_dir/dictate-kitty" "$dest_dir/dictate-launch-common.sh"
+    echo "✓ Installed dictate-kitty to $dest_dir/dictate-kitty"
+
+# Uninstall the desktop launcher from ~/.local/bin/
 uninstall-launcher:
     #!/usr/bin/env bash
     set -euo pipefail
+    dest_dir="${DICTATE_LAUNCHER_INSTALL_DIR:-$HOME/.local/bin}"
 
-    if [ ! -f ~/.local/bin/dictate-launch ]; then
-        echo "No launcher found at ~/.local/bin/dictate-launch"
+    if [ ! -f "$dest_dir/dictate-launch" ]; then
+        echo "No launcher found at $dest_dir/dictate-launch"
         exit 0
     fi
 
-    rm ~/.local/bin/dictate-launch
-    echo "✓ Removed ~/.local/bin/dictate-launch"
+    rm "$dest_dir/dictate-launch"
+    echo "✓ Removed $dest_dir/dictate-launch"
     echo "  Note: Remember to remove the keyboard shortcut from your compositor config"
 
-# Uninstall everything (binary, launcher, and secret)
-uninstall-all: uninstall uninstall-launcher remove-secret
+# Uninstall both launchers and their shared library from the install dir.
+uninstall-launchers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest_dir="${DICTATE_LAUNCHER_INSTALL_DIR:-$HOME/.local/bin}"
+    rm -f \
+        "$dest_dir/dictate-launch" \
+        "$dest_dir/dictate-kitty" \
+        "$dest_dir/dictate-launch-common.sh"
+    echo "✓ Removed launcher files from $dest_dir"
+
+# Uninstall everything (binary, launchers, and secret)
+uninstall-all: uninstall uninstall-launchers remove-secret
     echo ""
     echo "✓ Complete uninstallation finished"
 

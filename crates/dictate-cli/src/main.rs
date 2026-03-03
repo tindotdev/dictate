@@ -29,36 +29,70 @@ type Result<T> = std::result::Result<T, CliError>;
 fn run() -> Result<()> {
     let cli = args::Cli::parse();
 
-    let args = match cli.command {
+    match cli.command {
         Some(args::Commands::Devices) => {
             commands::devices::run()?;
-            return Ok(());
         }
         Some(args::Commands::Remember) => {
             commands::remember::run()?;
-            return Ok(());
         }
         Some(args::Commands::Dictionary) => {
             commands::dictionary::run()?;
-            return Ok(());
         }
         Some(args::Commands::Vocab(args)) => {
             commands::vocab::run(&args)?;
-            return Ok(());
         }
         Some(args::Commands::Completions(args)) => {
             commands::completions::run(&args);
-            return Ok(());
         }
-        Some(args::Commands::Record(args)) => args,
-        None => cli.record_args,
-    };
+        Some(args::Commands::Retry(args)) => {
+            let options = build_retry_options(args);
+            commands::record::run_retry(&options)?;
+        }
+        Some(args::Commands::Record(args)) => {
+            let options = build_record_options(args);
+            commands::record::run(&options)?;
+        }
+        None => {
+            let options = build_record_options(cli.record_args);
+            commands::record::run(&options)?;
+        }
+    }
 
-    let mut options = commands::record::RecordOptions::new();
+    Ok(())
+}
+
+fn build_record_options(args: args::RecordArgs) -> commands::record::RecordOptions {
+    let mut options = apply_record_post_process(
+        apply_transcription_options(commands::record::RecordOptions::new(), args.transcription),
+        args.post_process,
+    );
 
     if let Some(device) = args.device {
         options = options.device(device);
     }
+    if args.save_last_audio {
+        options = options.save_last_audio(true);
+    }
+
+    options
+}
+
+fn build_retry_options(args: args::RetryArgs) -> commands::record::RecordOptions {
+    apply_retry_post_process(
+        apply_transcription_options(commands::record::RecordOptions::new(), args.transcription),
+        args.post_process,
+    )
+}
+
+fn apply_transcription_options(
+    mut options: commands::record::RecordOptions,
+    args: args::TranscriptionArgs,
+) -> commands::record::RecordOptions {
+    let output = commands::record::OutputOptions::new()
+        .stdout(args.output.stdout)
+        .no_clipboard(args.output.no_clipboard);
+
     if let Some(base_url) = args.base_url {
         options = options.base_url(base_url);
     }
@@ -75,7 +109,6 @@ fn run() -> Result<()> {
         options = options.response_format(format);
     }
     if let Some(model_str) = args.transcription_model {
-        // clap's value_parser already validated this is a valid model name
         let model = model_str
             .parse::<dictate_core::WhisperModel>()
             .expect("clap-validated model should parse");
@@ -94,25 +127,47 @@ fn run() -> Result<()> {
             .collect();
         options = options.timestamp_granularities(granularities);
     }
-    if args.stdout {
-        options = options.stdout(true);
+    options.output(output)
+}
+
+fn apply_record_post_process(
+    options: commands::record::RecordOptions,
+    args: args::RecordPostProcessArgs,
+) -> commands::record::RecordOptions {
+    let mut post_process = commands::record::PostProcessOptions::new();
+
+    if args.enabled {
+        post_process = post_process.enabled(true);
     }
-    if args.no_clipboard {
-        options = options.no_clipboard(true);
+    if let Some(model) = args.model {
+        post_process = post_process.model(model);
     }
-    if args.post_process {
-        options = options.post_process(true);
-    }
-    if let Some(model) = args.post_process_model {
-        options = options.post_process_model(model);
-    }
-    if let Some(url) = args.post_process_base_url {
-        options = options.post_process_base_url(url);
+    if let Some(url) = args.base_url {
+        post_process = post_process.base_url(url);
     }
 
-    commands::record::run(&options)?;
+    options.post_process_options(post_process)
+}
 
-    Ok(())
+fn apply_retry_post_process(
+    options: commands::record::RecordOptions,
+    args: args::RetryPostProcessArgs,
+) -> commands::record::RecordOptions {
+    let mut post_process = commands::record::PostProcessOptions::new();
+
+    if args.disabled {
+        post_process = post_process.enabled(false);
+    } else if args.enabled {
+        post_process = post_process.enabled(true);
+    }
+    if let Some(model) = args.model {
+        post_process = post_process.model(model);
+    }
+    if let Some(url) = args.base_url {
+        post_process = post_process.base_url(url);
+    }
+
+    options.post_process_options(post_process)
 }
 
 fn main() -> ExitCode {

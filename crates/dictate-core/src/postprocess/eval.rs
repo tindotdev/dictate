@@ -166,6 +166,7 @@ fn golden_eval_against_live_api() {
             model: None,
             system_prompt: None,
             temperature: None,
+            ..PostProcessConfig::new(&api_key)
         };
 
         let result = pp.process(&case.input, config);
@@ -422,6 +423,7 @@ fn evaluate_combo(
             model: Some(model),
             system_prompt: Some(prompt_text),
             temperature: Some(0.0),
+            ..PostProcessConfig::new(api_key)
         };
 
         let result = pp.process(&case.input, config);
