@@ -33,6 +33,13 @@ dictate retry                  # rerun Whisper + post-process on saved audio
 dictate devices                # list audio input devices
 ```
 
+Recording control:
+
+- Press `Enter` to stop recording and continue to transcription
+- Press `Ctrl+C` to cancel the current session
+- Cancelled `dictate` and `dictate retry` runs exit with status `130`
+- After cancellation is observed, `dictate` does not print transcript output or write to the clipboard
+
 ### Retry the last recording
 
 If a long dictation did not come out the way you wanted, save the audio once and

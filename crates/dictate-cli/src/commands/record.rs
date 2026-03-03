@@ -1,5 +1,4 @@
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -52,16 +51,144 @@ pub enum RecordError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionState {
-    Completed,
-    InterruptedDuringTranscription,
-    InterruptedDuringPostProcess,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RunMode {
     Record,
     Retry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunOutcome {
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionPhase {
+    Recording,
+    Transcribing,
+    PostProcessing,
+    Completed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestedAction {
+    None,
+    StopRecording,
+    CancelSession,
+    ForceExit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionSnapshot {
+    phase: SessionPhase,
+    requested_action: RequestedAction,
+}
+
+#[derive(Debug)]
+struct SessionController {
+    state: Mutex<SessionSnapshot>,
+}
+
+impl SessionController {
+    const fn new(initial_phase: SessionPhase) -> Self {
+        Self {
+            state: Mutex::new(SessionSnapshot {
+                phase: initial_phase,
+                requested_action: RequestedAction::None,
+            }),
+        }
+    }
+
+    fn request_stop_recording(&self) -> bool {
+        let mut state = self.lock();
+        if state.phase == SessionPhase::Recording && state.requested_action == RequestedAction::None
+        {
+            state.requested_action = RequestedAction::StopRecording;
+            drop(state);
+            return true;
+        }
+
+        false
+    }
+
+    fn request_cancel_session(&self) -> bool {
+        let mut state = self.lock();
+        if matches!(
+            state.requested_action,
+            RequestedAction::CancelSession | RequestedAction::ForceExit
+        ) {
+            state.requested_action = RequestedAction::ForceExit;
+            return true;
+        }
+
+        state.requested_action = RequestedAction::CancelSession;
+        state.phase = SessionPhase::Cancelled;
+        false
+    }
+
+    fn begin_transcribing(&self) -> bool {
+        self.transition_to(SessionPhase::Transcribing)
+    }
+
+    fn begin_post_processing(&self) -> bool {
+        self.transition_to(SessionPhase::PostProcessing)
+    }
+
+    fn mark_completed(&self) {
+        let mut state = self.lock();
+        if state.phase != SessionPhase::Cancelled {
+            state.phase = SessionPhase::Completed;
+            state.requested_action = RequestedAction::None;
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        let state = self.lock();
+        state.phase == SessionPhase::Cancelled
+            || matches!(
+                state.requested_action,
+                RequestedAction::CancelSession | RequestedAction::ForceExit
+            )
+    }
+
+    fn is_recording(&self) -> bool {
+        self.lock().phase == SessionPhase::Recording
+    }
+
+    fn should_continue_recording(&self) -> bool {
+        let state = self.lock();
+        state.phase == SessionPhase::Recording && state.requested_action == RequestedAction::None
+    }
+
+    fn transition_to(&self, next_phase: SessionPhase) -> bool {
+        let mut state = self.lock();
+        if state.phase == SessionPhase::Cancelled
+            || matches!(
+                state.requested_action,
+                RequestedAction::CancelSession | RequestedAction::ForceExit
+            )
+        {
+            state.phase = SessionPhase::Cancelled;
+            return false;
+        }
+
+        if state.phase == SessionPhase::Recording
+            && state.requested_action == RequestedAction::StopRecording
+        {
+            state.requested_action = RequestedAction::None;
+        }
+
+        state.phase = next_phase;
+        true
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, SessionSnapshot> {
+        match self.state.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -223,7 +350,7 @@ impl RecordOptions {
 //  Main Entry Point
 // ══════════════════════════════════════════════════════════════════════════════
 
-pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
+pub fn run(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
     let resolved = resolve_run_config(options, None, RunMode::Record)?;
 
     // Fail fast if clipboard is requested but unavailable (missing tool / headless)
@@ -232,31 +359,40 @@ pub fn run(options: &RecordOptions) -> Result<(), RecordError> {
     }
 
     // Set up interrupt handling
-    let running = Arc::new(AtomicBool::new(true));
+    let controller = Arc::new(SessionController::new(SessionPhase::Recording));
     let active_recording_stop = Arc::new(Mutex::new(None));
-    install_stop_handlers(Arc::clone(&running), &active_recording_stop);
+    install_stop_handlers(&controller, &active_recording_stop, true);
 
     // Record audio chunks
     let session = capture_recording_session(
         options.device.as_deref(),
         options.save_last_audio,
-        &running,
+        &controller,
         &active_recording_stop,
     )?;
 
     if session.chunks.is_empty() {
+        if controller.is_cancelled() {
+            eprintln!("[dictate] cancelled");
+            return Ok(RunOutcome::Cancelled);
+        }
+
         eprintln!("[dictate] no audio captured");
-        return Ok(());
+        return Ok(RunOutcome::Completed);
     }
 
     maybe_save_last_audio(options, &session, &resolved);
 
-    running.store(true, Ordering::Relaxed); // Re-arm for transcription phase
-    process_transcription_session(options, &resolved, session.chunks, &running)
+    if !controller.begin_transcribing() {
+        eprintln!("[dictate] cancelled");
+        return Ok(RunOutcome::Cancelled);
+    }
+
+    process_transcription_session(options, &resolved, session.chunks, &controller)
 }
 
 /// Reuse the last saved recording and rerun transcription/post-processing.
-pub fn run_retry(options: &RecordOptions) -> Result<(), RecordError> {
+pub fn run_retry(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
     if options.output.use_clipboard() {
         dictate_core::check_clipboard_available()?;
     }
@@ -268,14 +404,14 @@ pub fn run_retry(options: &RecordOptions) -> Result<(), RecordError> {
 
     if session.chunks.is_empty() {
         eprintln!("[dictate] saved recording contains no audio");
-        return Ok(());
+        return Ok(RunOutcome::Completed);
     }
 
     eprintln!("[dictate] reusing saved audio from last recording...");
-    let running = Arc::new(AtomicBool::new(true));
+    let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
     let active_recording_stop = Arc::new(Mutex::new(None));
-    install_stop_handlers(Arc::clone(&running), &active_recording_stop);
-    process_transcription_session(options, &resolved, session.chunks, &running)
+    install_stop_handlers(&controller, &active_recording_stop, false);
+    process_transcription_session(options, &resolved, session.chunks, &controller)
 }
 
 #[derive(Debug, Clone)]
@@ -303,53 +439,59 @@ fn process_transcription_session(
     options: &RecordOptions,
     resolved: &ResolvedRunConfig,
     chunks: Vec<AudioChunk>,
-    running: &AtomicBool,
-) -> Result<(), RecordError> {
-    let (results, interrupted) = transcribe_chunks(&resolved.pipeline, chunks, running)?;
-    let mut state = if interrupted {
-        SessionState::InterruptedDuringTranscription
-    } else {
-        SessionState::Completed
+    controller: &SessionController,
+) -> Result<RunOutcome, RecordError> {
+    let Some(results) = transcribe_chunks(&resolved.pipeline, chunks, controller)? else {
+        eprintln!("[dictate] cancelled");
+        return Ok(RunOutcome::Cancelled);
     };
 
     // Output results
     let merged = merge_results(results);
     let post_process_requested = resolved.effective_post_process;
 
-    let (merged, post_process_outcome, post_process_requested) =
-        if post_process_requested && !merged.text.is_empty() && state == SessionState::Completed {
-            let model = resolved
-                .pipeline_config
-                .post_process_model
-                .as_ref()
-                .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
-            eprintln!("[dictate] post-processing with {model}...");
+    let (merged, post_process_outcome, post_process_requested) = if post_process_requested
+        && !merged.text.is_empty()
+    {
+        if !controller.begin_post_processing() {
+            eprintln!("[dictate] cancelled");
+            return Ok(RunOutcome::Cancelled);
+        }
 
-            if let Some((merged, outcome)) = post_process_result_interruptible(
-                Arc::clone(&resolved.pipeline),
-                merged.clone(),
-                running,
-            )? {
-                (merged, outcome, true)
-            } else {
-                eprintln!("[dictate] interrupted, skipping post-processing");
-                state = SessionState::InterruptedDuringPostProcess;
-                (merged, PostProcessOutcome::NotConfigured, false)
-            }
+        let model = resolved
+            .pipeline_config
+            .post_process_model
+            .as_ref()
+            .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
+        eprintln!("[dictate] post-processing with {model}...");
+
+        if let Some((merged, outcome)) =
+            post_process_result_interruptible(Arc::clone(&resolved.pipeline), merged, controller)?
+        {
+            (merged, outcome, true)
         } else {
-            (merged, PostProcessOutcome::NotConfigured, false)
-        };
+            eprintln!("[dictate] cancelled");
+            return Ok(RunOutcome::Cancelled);
+        }
+    } else {
+        (merged, PostProcessOutcome::NotConfigured, false)
+    };
 
+    if controller.is_cancelled() {
+        eprintln!("[dictate] cancelled");
+        return Ok(RunOutcome::Cancelled);
+    }
+
+    controller.mark_completed();
     output_result(
         &merged,
         resolved.effective_format,
         post_process_requested,
-        state,
         options,
         post_process_outcome,
     );
 
-    Ok(())
+    Ok(RunOutcome::Completed)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -493,10 +635,10 @@ fn saved_defaults_from_manifest(
 fn capture_recording_session(
     device: Option<&str>,
     collect_samples: bool,
-    running: &AtomicBool,
+    controller: &SessionController,
     active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
 ) -> Result<CapturedSession, RecordError> {
-    eprintln!("[dictate] recording... press Enter to stop (Ctrl+C also works)");
+    eprintln!("[dictate] recording... press Enter to stop, Ctrl+C to cancel");
 
     let mut config = RecorderConfig::default();
     if let Some(query) = device {
@@ -519,7 +661,7 @@ fn capture_recording_session(
     let mut chunks: Vec<AudioChunk> = Vec::new();
     let mut samples = collect_samples.then(Vec::new);
 
-    consume_until_stopped(&mut rx, running, &mut chunker, &mut samples, &mut chunks);
+    consume_until_stopped(&mut rx, controller, &mut chunker, &mut samples, &mut chunks);
     set_active_recording_stop(active_recording_stop, None);
 
     recorder.stop()?;
@@ -576,8 +718,8 @@ fn capture_recording_session(
 fn transcribe_chunks(
     pipeline: &Arc<TranscriptionPipeline>,
     chunks: Vec<AudioChunk>,
-    running: &AtomicBool,
-) -> Result<(Vec<TranscriptionResult>, bool), RecordError> {
+    controller: &SessionController,
+) -> Result<Option<Vec<TranscriptionResult>>, RecordError> {
     eprintln!(
         "[dictate] transcribing {} chunk{}...",
         chunks.len(),
@@ -585,15 +727,12 @@ fn transcribe_chunks(
     );
 
     let mut results: Vec<TranscriptionResult> = Vec::new();
-    let mut interrupted = false;
     let mut timeline_offset: f64 = 0.0;
 
-    // Re-arm is handled by the caller before calling this function
     for chunk in chunks {
-        if !running.load(Ordering::Relaxed) {
-            eprintln!("[dictate] interrupted, skipping remaining chunks");
-            interrupted = true;
-            break;
+        if controller.is_cancelled() {
+            eprintln!("[dictate] cancelled, skipping remaining chunks");
+            return Ok(None);
         }
 
         eprintln!(
@@ -606,11 +745,10 @@ fn transcribe_chunks(
         let chunk_duration = f64::from(chunk.duration_secs());
         let leading_overlap = f64::from(chunk.leading_overlap_secs());
 
-        let maybe_result = transcribe_chunk_interruptible(Arc::clone(pipeline), chunk, running)?;
+        let maybe_result = transcribe_chunk_interruptible(Arc::clone(pipeline), chunk, controller)?;
         let Some(mut result) = maybe_result else {
-            eprintln!("[dictate] interrupted, canceled in-flight transcription");
-            interrupted = true;
-            break;
+            eprintln!("[dictate] cancelled, abandoning in-flight transcription");
+            return Ok(None);
         };
 
         if chunk_offset > 0.0 {
@@ -621,7 +759,7 @@ fn transcribe_chunks(
         results.push(result);
     }
 
-    Ok((results, interrupted))
+    Ok(Some(results))
 }
 
 /// Shift all segment and word timestamps by the given offset (seconds).
@@ -653,18 +791,11 @@ fn output_result(
     merged: &TranscriptionResult,
     format: Option<ResponseFormat>,
     post_process_requested: bool,
-    state: SessionState,
     options: &RecordOptions,
     post_process_outcome: PostProcessOutcome,
 ) {
-    if merged.text.is_empty() && state == SessionState::Completed {
-        eprintln!("[dictate] no speech detected");
-        return;
-    }
-
     if merged.text.is_empty() {
-        // Interrupted with no text captured
-        eprintln!("[dictate] interrupted (no text captured)");
+        eprintln!("[dictate] no speech detected");
         return;
     }
 
@@ -678,7 +809,7 @@ fn output_result(
         // Default behavior: copy to clipboard
         match dictate_core::clipboard::copy_to_clipboard(&formatted) {
             Ok(()) => {
-                print_completion_message(state, merged.text.len(), true);
+                print_completion_message(merged.text.len(), true);
             }
             Err(err) => {
                 // Failure safety: never lose transcribed text
@@ -691,36 +822,24 @@ fn output_result(
     } else {
         // --stdout or --no-clipboard: print to stdout
         println!("{formatted}");
-        print_completion_message(state, merged.text.len(), false);
+        print_completion_message(merged.text.len(), false);
     }
 }
 
-fn print_completion_message(state: SessionState, char_count: usize, copied_to_clipboard: bool) {
+fn print_completion_message(char_count: usize, copied_to_clipboard: bool) {
     let suffix = if copied_to_clipboard {
         ", copied to clipboard"
     } else {
         ""
     };
 
-    match state {
-        SessionState::Completed => {
-            eprintln!("[dictate] done ({char_count} chars{suffix})");
-        }
-        SessionState::InterruptedDuringTranscription => {
-            eprintln!("[dictate] interrupted (partial transcript: {char_count} chars{suffix})");
-        }
-        SessionState::InterruptedDuringPostProcess => {
-            eprintln!(
-                "[dictate] interrupted during post-processing (raw transcript: {char_count} chars{suffix})"
-            );
-        }
-    }
+    eprintln!("[dictate] done ({char_count} chars{suffix})");
 }
 
 fn transcribe_chunk_interruptible(
     pipeline: Arc<TranscriptionPipeline>,
     chunk: AudioChunk,
-    running: &AtomicBool,
+    controller: &SessionController,
 ) -> Result<Option<TranscriptionResult>, RecordError> {
     let (tx, rx) = mpsc::sync_channel(1);
 
@@ -732,7 +851,7 @@ fn transcribe_chunk_interruptible(
     });
 
     loop {
-        if !running.load(Ordering::Relaxed) {
+        if controller.is_cancelled() {
             return Ok(None);
         }
 
@@ -749,7 +868,7 @@ fn transcribe_chunk_interruptible(
 fn post_process_result_interruptible(
     pipeline: Arc<TranscriptionPipeline>,
     merged: TranscriptionResult,
-    running: &AtomicBool,
+    controller: &SessionController,
 ) -> Result<Option<(TranscriptionResult, PostProcessOutcome)>, RecordError> {
     let (tx, rx) = mpsc::sync_channel(1);
 
@@ -761,7 +880,7 @@ fn post_process_result_interruptible(
     });
 
     loop {
-        if !running.load(Ordering::Relaxed) {
+        if controller.is_cancelled() {
             return Ok(None);
         }
 
@@ -776,46 +895,36 @@ fn post_process_result_interruptible(
 }
 
 fn install_stop_handlers(
-    running: Arc<AtomicBool>,
+    controller: &Arc<SessionController>,
     active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
+    enable_stdin_stop: bool,
 ) {
-    let running_ctrlc = Arc::clone(&running);
+    let controller_ctrlc = Arc::clone(controller);
     let active_recording_stop_ctrlc = Arc::clone(active_recording_stop);
     if let Err(err) = ctrlc::set_handler(move || {
-        // First press: cooperative shutdown. Second press: force exit.
-        if handle_stop_signal(&running_ctrlc, || {
-            request_active_recording_stop(&active_recording_stop_ctrlc);
-        }) {
+        if controller_ctrlc.request_cancel_session() {
             eprintln!("\n[dictate] forced exit");
             std::process::exit(130);
+        }
+
+        if controller_ctrlc.is_recording() {
+            request_active_recording_stop(&active_recording_stop_ctrlc);
         }
     }) {
         eprintln!("[dictate] warning: failed to set Ctrl+C handler: {err}");
     }
 
-    // Only listen for Enter when stdin is interactive (not piped / closed).
-    if std::io::stdin().is_terminal() {
+    if enable_stdin_stop && std::io::stdin().is_terminal() {
         let active_recording_stop_stdin = Arc::clone(active_recording_stop);
+        let controller_stdin = Arc::clone(controller);
         std::thread::spawn(move || {
             let mut input = String::new();
             let _ = std::io::stdin().read_line(&mut input);
-            let _ = handle_stop_signal(&running, || {
+            if controller_stdin.request_stop_recording() {
                 request_active_recording_stop(&active_recording_stop_stdin);
-            });
+            }
         });
     }
-}
-
-fn handle_stop_signal<F>(running: &AtomicBool, request_recording_stop: F) -> bool
-where
-    F: FnOnce(),
-{
-    if !running.swap(false, Ordering::Relaxed) {
-        return true;
-    }
-
-    request_recording_stop();
-    false
 }
 
 fn set_active_recording_stop(
@@ -874,12 +983,12 @@ fn push_samples_and_collect(
 
 fn consume_until_stopped(
     rx: &mut AudioReceiver,
-    running: &AtomicBool,
+    controller: &SessionController,
     chunker: &mut ProgressiveChunker,
     all_samples: &mut Option<Vec<f32>>,
     chunks: &mut Vec<AudioChunk>,
 ) {
-    while running.load(Ordering::Relaxed) {
+    while controller.should_continue_recording() {
         match rx.recv_timeout(RECV_TIMEOUT) {
             RecvResult::Data(samples) => {
                 push_samples_and_collect(chunker, samples, all_samples, chunks);
@@ -1254,7 +1363,7 @@ const fn post_process_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, Ordering as AtomicOrdering};
     use std::thread;
 
     fn make_result(text: &str) -> TranscriptionResult {
@@ -1269,7 +1378,7 @@ mod tests {
     struct StubProvider {
         response: String,
         calls: Arc<AtomicUsize>,
-        stop_after_first: Option<Arc<AtomicBool>>,
+        cancel_after_first: Option<Arc<SessionController>>,
     }
 
     impl StubProvider {
@@ -1277,12 +1386,12 @@ mod tests {
             Self {
                 response: response.into(),
                 calls: Arc::new(AtomicUsize::new(0)),
-                stop_after_first: None,
+                cancel_after_first: None,
             }
         }
 
-        fn with_stop_after_first(mut self, running: Arc<AtomicBool>) -> Self {
-            self.stop_after_first = Some(running);
+        fn with_cancel_after_first(mut self, controller: Arc<SessionController>) -> Self {
+            self.cancel_after_first = Some(controller);
             self
         }
     }
@@ -1298,9 +1407,9 @@ mod tests {
         ) -> Result<TranscriptionResult, TranscriptionError> {
             let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             if call == 0
-                && let Some(running) = &self.stop_after_first
+                && let Some(controller) = &self.cancel_after_first
             {
-                running.store(false, Ordering::Relaxed);
+                let _ = controller.request_cancel_session();
             }
 
             Ok(make_result(&self.response))
@@ -1687,22 +1796,23 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_after_partial_transcription_returns_partial_results() {
-        let running = Arc::new(AtomicBool::new(true));
-        let provider = StubProvider::new("partial").with_stop_after_first(Arc::clone(&running));
+    fn cancelled_after_partial_transcription_suppresses_results() {
+        let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
+        let provider =
+            StubProvider::new("partial").with_cancel_after_first(Arc::clone(&controller));
         let pipeline = test_pipeline(provider, None);
         let chunks = vec![test_chunk(0, 1.0), test_chunk(1, 1.0)];
 
-        let (results, interrupted) = transcribe_chunks(&pipeline, chunks, &running).unwrap();
+        let results = transcribe_chunks(&pipeline, chunks, &controller).unwrap();
 
-        assert!(interrupted);
-        assert_eq!(results, vec![make_result("partial")]);
+        assert!(results.is_none());
     }
 
     #[test]
-    fn interrupted_before_post_process_skips_post_processor() {
-        let running = Arc::new(AtomicBool::new(true));
-        let provider = StubProvider::new("partial").with_stop_after_first(Arc::clone(&running));
+    fn cancelled_before_post_process_skips_post_processor() {
+        let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
+        let provider =
+            StubProvider::new("partial").with_cancel_after_first(Arc::clone(&controller));
         let post_process_calls = Arc::new(AtomicUsize::new(0));
         let pipeline = test_pipeline(
             provider,
@@ -1721,20 +1831,21 @@ mod tests {
         };
         let options = RecordOptions::new().output(OutputOptions::new().no_clipboard(true));
 
-        process_transcription_session(
+        let outcome = process_transcription_session(
             &options,
             &resolved,
             vec![test_chunk(0, 1.0), test_chunk(1, 1.0)],
-            &running,
+            &controller,
         )
         .unwrap();
 
+        assert_eq!(outcome, RunOutcome::Cancelled);
         assert_eq!(post_process_calls.load(AtomicOrdering::SeqCst), 0);
     }
 
     #[test]
-    fn interrupted_during_post_process_returns_raw_text() {
-        let running = Arc::new(AtomicBool::new(true));
+    fn cancelled_during_post_process_returns_no_result() {
+        let controller = Arc::new(SessionController::new(SessionPhase::PostProcessing));
         let release = Arc::new(AtomicBool::new(false));
         let post_process_calls = Arc::new(AtomicUsize::new(0));
         let pipeline = test_pipeline(
@@ -1744,15 +1855,16 @@ mod tests {
                 Arc::clone(&release),
             ))),
         );
-        let running_for_cancel = Arc::clone(&running);
+        let controller_for_cancel = Arc::clone(&controller);
 
         let cancel_thread = thread::spawn(move || {
             thread::sleep(Duration::from_millis(150));
-            running_for_cancel.store(false, Ordering::Relaxed);
+            let _ = controller_for_cancel.request_cancel_session();
         });
 
         let result =
-            post_process_result_interruptible(pipeline, make_result("raw text"), &running).unwrap();
+            post_process_result_interruptible(pipeline, make_result("raw text"), &controller)
+                .unwrap();
 
         release.store(true, Ordering::Relaxed);
         cancel_thread.join().unwrap();
@@ -1762,30 +1874,22 @@ mod tests {
     }
 
     #[test]
-    fn first_stop_signal_requests_recording_stop() {
-        let running = AtomicBool::new(true);
-        let stop_requests = AtomicUsize::new(0);
+    fn stop_recording_request_only_applies_during_recording() {
+        let controller = SessionController::new(SessionPhase::Recording);
 
-        let forced_exit = handle_stop_signal(&running, || {
-            stop_requests.fetch_add(1, AtomicOrdering::SeqCst);
-        });
-
-        assert!(!forced_exit);
-        assert!(!running.load(Ordering::Relaxed));
-        assert_eq!(stop_requests.load(AtomicOrdering::SeqCst), 1);
+        assert!(controller.request_stop_recording());
+        assert!(!controller.should_continue_recording());
+        assert!(controller.begin_transcribing());
+        assert!(!controller.request_stop_recording());
     }
 
     #[test]
-    fn second_stop_signal_forces_exit_without_repeating_stop_request() {
-        let running = AtomicBool::new(false);
-        let stop_requests = AtomicUsize::new(0);
+    fn second_cancel_request_forces_exit() {
+        let controller = SessionController::new(SessionPhase::Transcribing);
 
-        let forced_exit = handle_stop_signal(&running, || {
-            stop_requests.fetch_add(1, AtomicOrdering::SeqCst);
-        });
-
-        assert!(forced_exit);
-        assert_eq!(stop_requests.load(AtomicOrdering::SeqCst), 0);
+        assert!(!controller.request_cancel_session());
+        assert!(controller.is_cancelled());
+        assert!(controller.request_cancel_session());
     }
 
     // ── build_effective_prompt tests ──────────────────────────────────

@@ -26,7 +26,7 @@ enum CliError {
 
 type Result<T> = std::result::Result<T, CliError>;
 
-fn run() -> Result<()> {
+fn run() -> Result<commands::record::RunOutcome> {
     let cli = args::Cli::parse();
 
     match cli.command {
@@ -47,19 +47,19 @@ fn run() -> Result<()> {
         }
         Some(args::Commands::Retry(args)) => {
             let options = build_retry_options(args);
-            commands::record::run_retry(&options)?;
+            return commands::record::run_retry(&options).map_err(CliError::from);
         }
         Some(args::Commands::Record(args)) => {
             let options = build_record_options(args);
-            commands::record::run(&options)?;
+            return commands::record::run(&options).map_err(CliError::from);
         }
         None => {
             let options = build_record_options(cli.record_args);
-            commands::record::run(&options)?;
+            return commands::record::run(&options).map_err(CliError::from);
         }
     }
 
-    Ok(())
+    Ok(commands::record::RunOutcome::Completed)
 }
 
 fn build_record_options(args: args::RecordArgs) -> commands::record::RecordOptions {
@@ -170,9 +170,10 @@ fn apply_retry_post_process(
     options.post_process_options(post_process)
 }
 
-fn main() -> ExitCode {
-    match run() {
-        Ok(()) => ExitCode::SUCCESS,
+fn exit_code_for_run_result(result: Result<commands::record::RunOutcome>) -> ExitCode {
+    match result {
+        Ok(commands::record::RunOutcome::Completed) => ExitCode::SUCCESS,
+        Ok(commands::record::RunOutcome::Cancelled) => ExitCode::from(130),
         Err(err) => {
             eprintln!("[dictate] error: {err}");
             // Show the full error chain for debugging
@@ -183,5 +184,30 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+fn main() -> ExitCode {
+    exit_code_for_run_result(run())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_run_maps_to_exit_code_130() {
+        assert_eq!(
+            exit_code_for_run_result(Ok(commands::record::RunOutcome::Cancelled)),
+            ExitCode::from(130)
+        );
+    }
+
+    #[test]
+    fn completed_run_maps_to_success() {
+        assert_eq!(
+            exit_code_for_run_result(Ok(commands::record::RunOutcome::Completed)),
+            ExitCode::SUCCESS
+        );
     }
 }

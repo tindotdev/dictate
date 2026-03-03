@@ -33,10 +33,10 @@ pub enum Commands {
     /// List available audio input devices
     Devices,
 
-    /// Record audio until Ctrl+C
+    /// Record audio until Enter; Ctrl+C cancels the session
     Record(RecordArgs),
 
-    /// Reuse the last saved recording and rerun transcription
+    /// Reuse the last saved recording and rerun transcription; Ctrl+C cancels the session
     Retry(RetryArgs),
 
     /// Add custom terms to dictionary (improves accuracy for technical terms, names, jargon)
