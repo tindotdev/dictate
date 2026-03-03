@@ -48,6 +48,7 @@ setup_env() {
 	export DICTATE_BIN="$HOME/.cargo/bin/dictate"
 	export FAKE_DICTATE_LOG="$TEST_ROOT/dictate.log"
 	export FAKE_DICTATE_SIGNAL_LOG="$TEST_ROOT/dictate-signals.log"
+	export FAKE_DICTATE_READY_FILE="$TEST_ROOT/dictate-ready"
 	export FAKE_NOTIFY_LOG="$TEST_ROOT/notify.log"
 	export FAKE_GDBUS_LOG="$TEST_ROOT/gdbus.log"
 	export FAKE_KITTEN_LOG="$TEST_ROOT/kitten.log"
@@ -141,6 +142,11 @@ signal.signal(signal.SIGINT, handle_cancel)
 signal.signal(signal.SIGTERM, handle_term)
 signal.signal(signal.SIGUSR1, handle_stop)
 
+ready_file = os.environ.get("FAKE_DICTATE_READY_FILE")
+if ready_file:
+    with open(ready_file, "w", encoding="utf-8") as handle:
+        handle.write("ready\n")
+
 while True:
     if stop_requested_at is not None and (time.monotonic() - stop_requested_at) >= stop_delay:
         finish_stop()
@@ -207,6 +213,7 @@ desktop_start_stop() {
 	run_launcher "$REPO_ROOT/contrib/dictate-launch" --language en
 	wait_for "desktop recording state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == recording ]]"
 	wait_for "desktop pidfile" "[[ -f \"$STATE_DIR/dictate.pid\" ]]"
+	wait_for "desktop ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 	wait_for "desktop dictate argv" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F -- '-p --language en --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 
 	sleep 1.1
@@ -225,6 +232,7 @@ desktop_cancel_transcribing() {
 	run_launcher "$REPO_ROOT/contrib/dictate-launch" --language en
 	wait_for "desktop recording state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == recording ]]"
 	wait_for "desktop pidfile" "[[ -f \"$STATE_DIR/dictate.pid\" ]]"
+	wait_for "desktop ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 
 	sleep 1.1
 	run_launcher "$REPO_ROOT/contrib/dictate-launch"
@@ -256,6 +264,7 @@ kitty_start_stop() {
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
 	wait_for "kitty recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
 	wait_for "kitty pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 	wait_for "kitty dictate argv" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F -- '--stdout -p --language en --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 
 	sleep 1.1
@@ -274,6 +283,7 @@ kitty_cancel_transcribing() {
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
 	wait_for "kitty recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
 	wait_for "kitty pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
 	wait_for "kitty transcribing state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == transcribing ]]"
