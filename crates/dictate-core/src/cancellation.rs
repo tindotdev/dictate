@@ -1,5 +1,6 @@
 //! Cancellation primitives shared across transcription and post-processing.
 
+use std::future::Future;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -70,6 +71,41 @@ impl CancellationContext {
 
             let remaining = deadline.saturating_duration_since(now);
             thread::sleep(remaining.min(CANCELLATION_POLL_INTERVAL));
+        }
+    }
+
+    /// Sleep asynchronously for up to `duration`, returning early on cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError::Cancelled`] if cancellation is requested
+    /// before the full delay elapses.
+    pub async fn sleep_async(&self, duration: Duration) -> Result<(), TranscriptionError> {
+        self.check()?;
+
+        let token = self.token.clone();
+        tokio::select! {
+            () = token.cancelled() => Err(TranscriptionError::Cancelled),
+            () = tokio::time::sleep(duration) => Ok(()),
+        }
+    }
+
+    /// Resolve `future`, unless cancellation is requested first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError::Cancelled`] when the cancellation token
+    /// wins the race before `future` completes.
+    pub(crate) async fn run_until_cancelled<T, F>(&self, future: F) -> Result<T, TranscriptionError>
+    where
+        F: Future<Output = T>,
+    {
+        self.check()?;
+
+        let token = self.token.clone();
+        tokio::select! {
+            () = token.cancelled() => Err(TranscriptionError::Cancelled),
+            output = future => Ok(output),
         }
     }
 }

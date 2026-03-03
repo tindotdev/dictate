@@ -4,10 +4,10 @@
 //! endpoint and returns the transcribed text. Includes exponential-backoff
 //! retry for transient failures and rate limits.
 
-use std::io::Cursor;
 use std::time::Duration;
 
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::Client;
 use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
@@ -54,12 +54,13 @@ fn http_client(timeout: Duration) -> Result<Client, TranscriptionError> {
     })
 }
 
+#[async_trait]
 impl TranscriptionProvider for GroqProvider {
     fn name(&self) -> &'static str {
         "groq"
     }
 
-    fn transcribe_with_cancellation(
+    async fn transcribe_with_cancellation_async(
         &self,
         config: TranscriptionConfig<'_>,
         cancellation: &CancellationContext,
@@ -76,6 +77,7 @@ impl TranscriptionProvider for GroqProvider {
                 eprintln!("[dictate] retrying after {dur:?}: {err}");
             },
         )
+        .await
     }
 }
 
@@ -93,8 +95,16 @@ struct TranscriptionResponse {
     words: Option<Vec<super::Word>>,
 }
 
+fn request_error(err: &reqwest::Error) -> TranscriptionError {
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        TranscriptionError::Network(err.to_string())
+    } else {
+        TranscriptionError::InvalidResponse(format!("HTTP request failed: {err}"))
+    }
+}
+
 /// Perform a single HTTP POST to the transcription API.
-fn send_request(
+async fn send_request(
     client: &Client,
     url: &str,
     config: &TranscriptionConfig<'_>,
@@ -107,12 +117,12 @@ fn send_request(
 
     let data = config.audio.data().clone(); // O(1): Bytes refcount bump
     let len = data.len() as u64;
-    let file_part = reqwest::blocking::multipart::Part::reader_with_length(Cursor::new(data), len)
+    let file_part = reqwest::multipart::Part::stream_with_length(data, len)
         .file_name(filename)
         .mime_str(config.audio.mime_type())
         .map_err(|e| TranscriptionError::EncodingFailed(e.to_string()))?;
 
-    let mut form = reqwest::blocking::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .text("model", model.to_string())
         .part("file", file_part);
 
@@ -139,30 +149,27 @@ fn send_request(
         }
     }
 
-    let response = client
-        .post(url)
-        .bearer_auth(config.api_key)
-        .multipart(form)
-        .send()
-        .map_err(|e| {
-            if e.is_timeout() || e.is_connect() || e.is_request() {
-                TranscriptionError::Network(e.to_string())
-            } else {
-                TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
-            }
-        })?;
-    cancellation.check()?;
+    let response = cancellation
+        .run_until_cancelled(
+            client
+                .post(url)
+                .bearer_auth(config.api_key)
+                .multipart(form)
+                .send(),
+        )
+        .await?
+        .map_err(|err| request_error(&err))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(api_error_from_failed_response(response, "Groq error"));
+        return Err(api_error_from_failed_response(response, "Groq error").await);
     }
 
-    let body = response
-        .text()
+    let body = cancellation
+        .run_until_cancelled(response.text())
+        .await?
         .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
-    cancellation.check()?;
 
     // Parse response based on requested format
     match config.response_format {

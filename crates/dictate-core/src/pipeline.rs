@@ -196,8 +196,10 @@ impl TranscriptionPipeline {
         &self,
         result: TranscriptionResult,
     ) -> (TranscriptionResult, PostProcessOutcome) {
-        self.post_process_result_with_cancellation(result, &CancellationContext::new())
-            .expect("fresh cancellation context cannot be cancelled")
+        crate::runtime::block_on(
+            self.post_process_result_with_cancellation_async(result, &CancellationContext::new()),
+        )
+        .expect("fresh cancellation context cannot be cancelled")
     }
 
     /// Post-process a merged transcription result while observing cancellation.
@@ -206,6 +208,21 @@ impl TranscriptionPipeline {
     ///
     /// Returns [`TranscriptionError::Cancelled`] once cancellation is observed.
     pub fn post_process_result_with_cancellation(
+        &self,
+        result: TranscriptionResult,
+        cancellation: &CancellationContext,
+    ) -> Result<(TranscriptionResult, PostProcessOutcome), TranscriptionError> {
+        crate::runtime::block_on(
+            self.post_process_result_with_cancellation_async(result, cancellation),
+        )
+    }
+
+    /// Async post-processing path used by the cancellable transport layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError::Cancelled`] once cancellation is observed.
+    pub async fn post_process_result_with_cancellation_async(
         &self,
         mut result: TranscriptionResult,
         cancellation: &CancellationContext,
@@ -241,7 +258,10 @@ impl TranscriptionPipeline {
             request_policy: self.config.request_policies.post_process,
         };
 
-        match pp.process_with_cancellation(&result.text, config, cancellation) {
+        match pp
+            .process_with_cancellation_async(&result.text, config, cancellation)
+            .await
+        {
             Ok(processed) if processed.trim().is_empty() => {
                 cancellation.check()?;
                 eprintln!(
@@ -272,7 +292,9 @@ impl TranscriptionPipeline {
         &self,
         chunk: &AudioChunk,
     ) -> Result<TranscriptionResult, TranscriptionError> {
-        self.transcribe_chunk_with_cancellation(chunk, &CancellationContext::new())
+        crate::runtime::block_on(
+            self.transcribe_chunk_with_cancellation_async(chunk, &CancellationContext::new()),
+        )
     }
 
     /// Encode and transcribe a single audio chunk while observing cancellation.
@@ -282,6 +304,20 @@ impl TranscriptionPipeline {
     /// Returns [`TranscriptionError`] if encoding, transcription, or
     /// cancellation fails.
     pub fn transcribe_chunk_with_cancellation(
+        &self,
+        chunk: &AudioChunk,
+        cancellation: &CancellationContext,
+    ) -> Result<TranscriptionResult, TranscriptionError> {
+        crate::runtime::block_on(self.transcribe_chunk_with_cancellation_async(chunk, cancellation))
+    }
+
+    /// Async transcription path used by the cancellable transport layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] if encoding, transcription, or
+    /// cancellation fails.
+    pub async fn transcribe_chunk_with_cancellation_async(
         &self,
         chunk: &AudioChunk,
         cancellation: &CancellationContext,
@@ -335,7 +371,8 @@ impl TranscriptionPipeline {
 
         let result = self
             .provider
-            .transcribe_with_cancellation(provider_config, cancellation)?;
+            .transcribe_with_cancellation_async(provider_config, cancellation)
+            .await?;
         cancellation.check()?;
         Ok(result)
     }
@@ -355,6 +392,7 @@ impl std::fmt::Debug for TranscriptionPipeline {
 mod tests {
     use super::*;
     use crate::encoder::EncodedAudio;
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -388,12 +426,13 @@ mod tests {
         payload_size / 2
     }
 
+    #[async_trait]
     impl TranscriptionProvider for MockProvider {
         fn name(&self) -> &'static str {
             "mock"
         }
 
-        fn transcribe_with_cancellation(
+        async fn transcribe_with_cancellation_async(
             &self,
             config: crate::provider::TranscriptionConfig<'_>,
             _cancellation: &CancellationContext,
@@ -405,11 +444,12 @@ mod tests {
                     .push(wav_sample_count(&config.audio));
             }
 
-            Ok(TranscriptionResult {
+            std::future::ready(Ok(TranscriptionResult {
                 text: self.response.clone(),
                 segments: None,
                 words: None,
-            })
+            }))
+            .await
         }
     }
 
@@ -423,22 +463,24 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl TranscriptionProvider for CountingProvider {
         fn name(&self) -> &'static str {
             "counting"
         }
 
-        fn transcribe_with_cancellation(
+        async fn transcribe_with_cancellation_async(
             &self,
             _config: crate::provider::TranscriptionConfig<'_>,
             _cancellation: &CancellationContext,
         ) -> Result<TranscriptionResult, TranscriptionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(TranscriptionResult {
+            std::future::ready(Ok(TranscriptionResult {
                 text: "counted".into(),
                 segments: None,
                 words: None,
-            })
+            }))
+            .await
         }
     }
 
@@ -704,12 +746,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PostProcessor for MockPostProcessor {
         fn name(&self) -> &'static str {
             "mock-pp"
         }
 
-        fn process_with_cancellation(
+        async fn process_with_cancellation_async(
             &self,
             text: &str,
             config: crate::postprocess::PostProcessConfig<'_>,
@@ -719,7 +762,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((text.to_string(), config.base_url.map(String::from)));
-            Ok(text.to_uppercase())
+            std::future::ready(Ok(text.to_uppercase())).await
         }
     }
 
@@ -736,18 +779,19 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PostProcessor for FixedOutputPostProcessor {
         fn name(&self) -> &'static str {
             "mock-pp-fixed"
         }
 
-        fn process_with_cancellation(
+        async fn process_with_cancellation_async(
             &self,
             _text: &str,
             _config: crate::postprocess::PostProcessConfig<'_>,
             _cancellation: &CancellationContext,
         ) -> Result<String, crate::error::TranscriptionError> {
-            Ok(self.output.clone())
+            std::future::ready(Ok(self.output.clone())).await
         }
     }
 
@@ -762,12 +806,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PostProcessor for FailingPostProcessor {
         fn name(&self) -> &'static str {
             "mock-pp-failing"
         }
 
-        fn process_with_cancellation(
+        async fn process_with_cancellation_async(
             &self,
             text: &str,
             config: crate::postprocess::PostProcessConfig<'_>,
@@ -777,9 +822,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((text.to_string(), config.base_url.map(String::from)));
-            Err(crate::error::TranscriptionError::Network(
+            std::future::ready(Err(crate::error::TranscriptionError::Network(
                 "forced post-process failure".into(),
-            ))
+            )))
+            .await
         }
     }
 

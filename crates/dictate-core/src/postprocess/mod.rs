@@ -8,6 +8,8 @@ mod eval;
 
 pub mod groq;
 
+use async_trait::async_trait;
+
 pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
 use crate::cancellation::CancellationContext;
@@ -15,11 +17,12 @@ use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
 
 /// A text post-processor that refines transcribed text.
+#[async_trait]
 pub trait PostProcessor: Send + Sync {
     /// Human-readable name of this post-processor (e.g. `"groq-chat"`).
     fn name(&self) -> &'static str;
 
-    /// Clean up the given transcription text.
+    /// Synchronous convenience wrapper around [`Self::process_async`].
     ///
     /// # Errors
     ///
@@ -29,7 +32,36 @@ pub trait PostProcessor: Send + Sync {
         text: &str,
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError> {
-        self.process_with_cancellation(text, config, &CancellationContext::new())
+        crate::runtime::block_on(self.process_async(text, config))
+    }
+
+    /// Clean up the given transcription text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] on network, API, or parsing failures.
+    async fn process_async(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        self.process_with_cancellation_async(text, config, &CancellationContext::new())
+            .await
+    }
+
+    /// Synchronous convenience wrapper around
+    /// [`Self::process_with_cancellation_async`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
+    fn process_with_cancellation(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> Result<String, TranscriptionError> {
+        crate::runtime::block_on(self.process_with_cancellation_async(text, config, cancellation))
     }
 
     /// Clean up the given transcription text while observing cancellation.
@@ -37,7 +69,7 @@ pub trait PostProcessor: Send + Sync {
     /// # Errors
     ///
     /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    fn process_with_cancellation(
+    async fn process_with_cancellation_async(
         &self,
         text: &str,
         config: PostProcessConfig<'_>,

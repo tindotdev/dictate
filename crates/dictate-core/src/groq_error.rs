@@ -34,12 +34,12 @@ fn extract_error_message(body: &str, error_label: &str) -> String {
     }
 }
 
-pub fn api_error_from_failed_response(
-    response: reqwest::blocking::Response,
+pub async fn api_error_from_failed_response(
+    response: reqwest::Response,
     error_label: &str,
 ) -> TranscriptionError {
     let status_code = response.status().as_u16();
-    let body = response.text().unwrap_or_else(|err| {
+    let body = response.text().await.unwrap_or_else(|err| {
         eprintln!("[dictate] warning: failed to read {error_label} response body: {err}");
         String::from("<failed to read body>")
     });

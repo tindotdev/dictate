@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{PostProcessConfig, PostProcessor};
@@ -37,12 +38,13 @@ fn chat_client(timeout: Duration) -> Result<Client, TranscriptionError> {
     })
 }
 
+#[async_trait]
 impl PostProcessor for GroqPostProcessor {
     fn name(&self) -> &'static str {
         "groq-chat"
     }
 
-    fn process_with_cancellation(
+    async fn process_with_cancellation_async(
         &self,
         text: &str,
         config: PostProcessConfig<'_>,
@@ -74,22 +76,33 @@ impl PostProcessor for GroqPostProcessor {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
             },
         )
+        .await
     }
 }
 
-fn retry_chat_request<Op, Notify>(
+fn request_error(err: &reqwest::Error) -> TranscriptionError {
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        TranscriptionError::Network(err.to_string())
+    } else {
+        TranscriptionError::InvalidResponse(format!("HTTP request failed: {err}"))
+    }
+}
+
+async fn retry_chat_request<Op, Fut, Notify>(
     request_policy: crate::request_policy::RequestPolicy,
     cancellation: &CancellationContext,
     operation: Op,
     mut notify: Notify,
 ) -> Result<String, TranscriptionError>
 where
-    Op: FnMut() -> Result<String, TranscriptionError>,
+    Op: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<String, TranscriptionError>>,
     Notify: FnMut(&TranscriptionError, Duration),
 {
     retry_with_cancellation(request_policy, cancellation, operation, |err, dur| {
         notify(err, dur);
     })
+    .await
 }
 
 // ─── HTTP request ────────────────────────────────────────────────────────────
@@ -132,7 +145,7 @@ struct ChatRequestParams<'a> {
 }
 
 /// Perform a single chat completion request.
-fn send_chat_request(
+async fn send_chat_request(
     client: &Client,
     url: &str,
     params: &ChatRequestParams<'_>,
@@ -155,33 +168,27 @@ fn send_chat_request(
         temperature: params.temperature,
     };
 
-    let response = client
-        .post(url)
-        .bearer_auth(params.api_key)
-        .json(&body)
-        .send()
-        .map_err(|e| {
-            if e.is_timeout() || e.is_connect() || e.is_request() {
-                TranscriptionError::Network(e.to_string())
-            } else {
-                TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
-            }
-        })?;
-    cancellation.check()?;
+    let response = cancellation
+        .run_until_cancelled(
+            client
+                .post(url)
+                .bearer_auth(params.api_key)
+                .json(&body)
+                .send(),
+        )
+        .await?
+        .map_err(|err| request_error(&err))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(api_error_from_failed_response(
-            response,
-            "Groq post-process error",
-        ));
+        return Err(api_error_from_failed_response(response, "Groq post-process error").await);
     }
 
-    let body = response
-        .text()
+    let body = cancellation
+        .run_until_cancelled(response.text())
+        .await?
         .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
-    cancellation.check()?;
 
     let parsed: ChatResponse = serde_json::from_str(&body)
         .map_err(|e| TranscriptionError::InvalidResponse(format!("{e}: {body}")))?;
@@ -216,20 +223,20 @@ mod tests {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
             fast_request_policy(),
             &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(TranscriptionError::Api {
                     status: 503,
                     message: "service unavailable".to_string(),
-                })
+                }))
             },
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
@@ -244,20 +251,20 @@ mod tests {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
             fast_request_policy(),
             &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(TranscriptionError::Api {
                     status: 429,
                     message: "rate limited".to_string(),
-                })
+                }))
             },
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
@@ -272,20 +279,20 @@ mod tests {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
             fast_request_policy(),
             &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(TranscriptionError::Api {
                     status: 401,
                     message: "invalid key".to_string(),
-                })
+                }))
             },
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
@@ -299,18 +306,18 @@ mod tests {
     fn retry_notify_receives_each_retryable_error() {
         let mut notifications = Vec::new();
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
             fast_request_policy(),
             &CancellationContext::new(),
             || {
-                Err(TranscriptionError::Network(
+                std::future::ready(Err(TranscriptionError::Network(
                     "connection reset by peer".to_string(),
-                ))
+                )))
             },
             |err, dur| {
                 notifications.push((err.to_string(), dur));
             },
-        );
+        ));
 
         assert!(matches!(result, Err(TranscriptionError::Network(_))));
         assert_eq!(

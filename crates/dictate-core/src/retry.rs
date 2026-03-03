@@ -1,17 +1,19 @@
+use std::future::Future;
 use std::time::Duration;
 
 use crate::cancellation::CancellationContext;
 use crate::error::TranscriptionError;
 use crate::request_policy::RequestPolicy;
 
-pub fn retry_with_cancellation<T, Op, Notify>(
+pub async fn retry_with_cancellation<T, Op, Fut, Notify>(
     request_policy: RequestPolicy,
     cancellation: &CancellationContext,
     mut operation: Op,
     mut notify: Notify,
 ) -> Result<T, TranscriptionError>
 where
-    Op: FnMut() -> Result<T, TranscriptionError>,
+    Op: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, TranscriptionError>>,
     Notify: FnMut(&TranscriptionError, Duration),
 {
     let mut retries_used = 0_u32;
@@ -19,7 +21,7 @@ where
     loop {
         cancellation.check()?;
 
-        let result = operation();
+        let result = operation().await;
         cancellation.check()?;
 
         match result {
@@ -39,7 +41,7 @@ where
                 let delay = retry_delay(request_policy, retries_used);
                 notify(&err, delay);
                 retries_used += 1;
-                cancellation.sleep(delay)?;
+                cancellation.sleep_async(delay).await?;
             }
         }
     }
@@ -77,15 +79,15 @@ mod tests {
         cancellation.cancel();
         let mut attempts = 0;
 
-        let result = retry_with_cancellation(
+        let result = crate::runtime::block_on(retry_with_cancellation(
             fast_request_policy(),
             &cancellation,
             || {
                 attempts += 1;
-                Ok::<_, TranscriptionError>("ok")
+                std::future::ready(Ok::<_, TranscriptionError>("ok"))
             },
             |_, _| {},
-        );
+        ));
 
         assert!(matches!(result, Err(TranscriptionError::Cancelled)));
         assert_eq!(attempts, 0);
@@ -108,15 +110,17 @@ mod tests {
             cancellation_for_thread.cancel();
         });
 
-        let result = retry_with_cancellation(
+        let result = crate::runtime::block_on(retry_with_cancellation(
             request_policy,
             &cancellation,
             || {
                 attempts += 1;
-                Err::<(), _>(TranscriptionError::Network("temporary".into()))
+                std::future::ready(Err::<(), _>(TranscriptionError::Network(
+                    "temporary".into(),
+                )))
             },
             |_, _| {},
-        );
+        ));
 
         cancel_thread.join().unwrap();
 
@@ -128,18 +132,18 @@ mod tests {
     fn exhausted_rate_limit_converts_to_rate_limit_exhausted() {
         let mut attempts = 0;
 
-        let result = retry_with_cancellation(
+        let result = crate::runtime::block_on(retry_with_cancellation(
             fast_request_policy(),
             &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err::<(), _>(TranscriptionError::Api {
+                std::future::ready(Err::<(), _>(TranscriptionError::Api {
                     status: 429,
                     message: "rate limited".into(),
-                })
+                }))
             },
             |_, _| {},
-        );
+        ));
 
         assert!(matches!(
             result,

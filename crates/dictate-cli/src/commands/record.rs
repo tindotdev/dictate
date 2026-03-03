@@ -1415,6 +1415,7 @@ const fn post_process_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, Ordering as AtomicOrdering};
     use std::thread;
 
@@ -1448,12 +1449,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl dictate_core::TranscriptionProvider for StubProvider {
         fn name(&self) -> &'static str {
             "stub"
         }
 
-        fn transcribe_with_cancellation(
+        async fn transcribe_with_cancellation_async(
             &self,
             _config: dictate_core::provider::TranscriptionConfig<'_>,
             _cancellation: &CancellationContext,
@@ -1465,7 +1467,7 @@ mod tests {
                 let _ = controller.request_cancel_session();
             }
 
-            Ok(make_result(&self.response))
+            std::future::ready(Ok(make_result(&self.response))).await
         }
     }
 
@@ -1479,19 +1481,20 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PostProcessor for CountingPostProcessor {
         fn name(&self) -> &'static str {
             "counting"
         }
 
-        fn process_with_cancellation(
+        async fn process_with_cancellation_async(
             &self,
             text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
             _cancellation: &CancellationContext,
         ) -> Result<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-            Ok(format!("{text}!"))
+            std::future::ready(Ok(format!("{text}!"))).await
         }
     }
 
@@ -1506,12 +1509,13 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PostProcessor for BlockingPostProcessor {
         fn name(&self) -> &'static str {
             "blocking"
         }
 
-        fn process_with_cancellation(
+        async fn process_with_cancellation_async(
             &self,
             text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
@@ -1522,7 +1526,7 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
 
-            Ok(format!("{text}!"))
+            std::future::ready(Ok(format!("{text}!"))).await
         }
     }
 

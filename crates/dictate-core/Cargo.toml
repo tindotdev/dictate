@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 audioadapter.workspace = true
 audioadapter-buffers.workspace = true
 bytes.workspace = true
@@ -18,6 +19,7 @@ rubato.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { version = "1.50.0", features = ["macros", "net", "rt-multi-thread", "time"] }
 tokio-util.workspace = true
 unicode-normalization.workspace = true
 
