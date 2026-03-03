@@ -206,16 +206,16 @@ record device="": build-cli
         {{dictate_bin}} record; \
     fi
 
-# Record audio, then stop cleanly without Ctrl+C (press Enter to stop)
+# Record audio, then stop cleanly without Ctrl+C by sending the launcher stop signal.
 record-clean device="": build-cli
     if [ -n "{{device}}" ]; then \
         {{dictate_bin}} record --device "{{device}}" & pid=$!; \
     else \
         {{dictate_bin}} record & pid=$!; \
     fi; \
-    echo "[dictate] press Enter to stop (avoids SIGINT interrupt message from just)"; \
+    echo "[dictate] press Enter to stop (sends SIGUSR1 instead of cancellation)"; \
     read -r _; \
-    kill -INT "$pid" 2>/dev/null || true; \
+    kill -USR1 "$pid" 2>/dev/null || true; \
     wait "$pid"
 
 # Record audio with default device

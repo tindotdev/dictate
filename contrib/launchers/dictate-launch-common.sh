@@ -79,6 +79,14 @@ signal_dictate() {
 	kill "-$signal" -- "-$pid" 2>/dev/null || kill "-$signal" "$pid" 2>/dev/null
 }
 
+stop_recording_dictate() {
+	signal_dictate USR1 "$1"
+}
+
+cancel_dictate() {
+	signal_dictate INT "$1"
+}
+
 worker_is_running() {
 	[[ -f "$WORKER_PID_FILE" ]] || return 1
 	local worker_pid

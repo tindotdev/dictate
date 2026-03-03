@@ -54,6 +54,10 @@ setup_env() {
 	export FAKE_KITTEN_CONTENT_LOG="$TEST_ROOT/kitten-content.log"
 	export FAKE_DICTATE_STDOUT="typed text"
 	export FAKE_RETRY_STDOUT="retry text"
+	export FAKE_DICTATE_STOP_DELAY="0"
+	export FAKE_DICTATE_STOP_EXIT_CODE="0"
+	export FAKE_DICTATE_CANCEL_EXIT_CODE="130"
+	export FAKE_DICTATE_TERM_EXIT_CODE="0"
 	export PATH="$HOME/.cargo/bin:$PATH"
 
 	create_fake_binaries
@@ -93,6 +97,11 @@ with open(os.environ["FAKE_DICTATE_LOG"], "a", encoding="utf-8") as handle:
 
 stdout_mode = "--stdout" in args
 retry_mode = "retry" in args
+stop_exit_code = int(os.environ.get("FAKE_DICTATE_STOP_EXIT_CODE", "0"))
+cancel_exit_code = int(os.environ.get("FAKE_DICTATE_CANCEL_EXIT_CODE", "130"))
+term_exit_code = int(os.environ.get("FAKE_DICTATE_TERM_EXIT_CODE", "0"))
+stop_delay = float(os.environ.get("FAKE_DICTATE_STOP_DELAY", "0"))
+stop_requested_at = None
 
 if retry_mode:
     if "--save-last-audio" in args:
@@ -102,19 +111,39 @@ if retry_mode:
         sys.stdout.flush()
     raise SystemExit(int(os.environ.get("FAKE_DICTATE_RETRY_EXIT_CODE", "0")))
 
-def handle_signal(signum, _frame):
+def log_signal(signum):
     name = signal.Signals(signum).name
     with open(os.environ["FAKE_DICTATE_SIGNAL_LOG"], "a", encoding="utf-8") as handle:
         handle.write(f"signal:{name}\n")
+
+def finish_stop():
     if stdout_mode:
         sys.stdout.write(os.environ.get("FAKE_DICTATE_STDOUT", "typed text"))
         sys.stdout.flush()
-    raise SystemExit(0)
+    raise SystemExit(stop_exit_code)
 
-signal.signal(signal.SIGINT, handle_signal)
-signal.signal(signal.SIGTERM, handle_signal)
+def handle_stop(signum, _frame):
+    global stop_requested_at
+    log_signal(signum)
+    if stop_delay <= 0:
+        finish_stop()
+    stop_requested_at = time.monotonic()
+
+def handle_cancel(signum, _frame):
+    log_signal(signum)
+    raise SystemExit(cancel_exit_code)
+
+def handle_term(signum, _frame):
+    log_signal(signum)
+    raise SystemExit(term_exit_code)
+
+signal.signal(signal.SIGINT, handle_cancel)
+signal.signal(signal.SIGTERM, handle_term)
+signal.signal(signal.SIGUSR1, handle_stop)
 
 while True:
+    if stop_requested_at is not None and (time.monotonic() - stop_requested_at) >= stop_delay:
+        finish_stop()
     time.sleep(0.1)
 PY
 EOF
@@ -182,10 +211,30 @@ desktop_start_stop() {
 
 	sleep 1.1
 	run_launcher "$REPO_ROOT/contrib/dictate-launch"
-	wait_for "desktop INT signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "desktop USR1 signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "desktop cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" && ! -e \"$STATE_DIR/dictate.pid\" ]]"
 	assert_contains "$FAKE_NOTIFY_LOG" "Recording…"
 	assert_contains "$FAKE_NOTIFY_LOG" "Transcribing…"
+}
+
+desktop_cancel_transcribing() {
+	setup_env
+	trap cleanup_env RETURN
+	export FAKE_DICTATE_STOP_DELAY="5"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-launch" --language en
+	wait_for "desktop recording state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == recording ]]"
+	wait_for "desktop pidfile" "[[ -f \"$STATE_DIR/dictate.pid\" ]]"
+
+	sleep 1.1
+	run_launcher "$REPO_ROOT/contrib/dictate-launch"
+	wait_for "desktop transcribing state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == transcribing ]]"
+	wait_for "desktop stop signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-launch"
+	wait_for "desktop cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "desktop cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" && ! -e \"$STATE_DIR/dictate.pid\" ]]"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
 }
 
 desktop_retry() {
@@ -211,9 +260,30 @@ kitty_start_stop() {
 
 	sleep 1.1
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
-	wait_for "kitty INT signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "kitty USR1 signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "kitty send-text content" "[[ -f \"$FAKE_KITTEN_CONTENT_LOG\" ]] && grep -F 'typed text' \"$FAKE_KITTEN_CONTENT_LOG\" >/dev/null"
 	wait_for "kitty cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+}
+
+kitty_cancel_transcribing() {
+	setup_env
+	trap cleanup_env RETURN
+	export KITTY_LISTEN_ON="unix:/tmp/fake-kitty.sock"
+	export FAKE_DICTATE_STOP_DELAY="5"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
+	wait_for "kitty recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
+	wait_for "kitty pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty transcribing state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == transcribing ]]"
+	wait_for "kitty stop signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "kitty cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
+	assert_not_exists "$FAKE_KITTEN_CONTENT_LOG"
 }
 
 kitty_retry() {
@@ -231,11 +301,17 @@ main() {
 	desktop_start_stop
 	echo "ok - desktop start/stop"
 
+	desktop_cancel_transcribing
+	echo "ok - desktop cancel during transcription"
+
 	desktop_retry
 	echo "ok - desktop retry"
 
 	kitty_start_stop
 	echo "ok - kitty start/stop"
+
+	kitty_cancel_transcribing
+	echo "ok - kitty cancel during transcription"
 
 	kitty_retry
 	echo "ok - kitty retry"

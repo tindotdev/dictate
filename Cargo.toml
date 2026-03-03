@@ -42,6 +42,7 @@ ctrlc = { version = "3.5.1", features = ["termination"] }
 dialoguer = "0.12.0"
 owo-colors = "4.2.3"
 tabled = "0.20.0"
+signal-hook = "0.4.3"
 
 # Testing
 tempfile = "3.25.0"

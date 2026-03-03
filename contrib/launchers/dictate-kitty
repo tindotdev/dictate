@@ -54,10 +54,14 @@ if [[ "$MODE" == "retry" ]]; then
 	if [[ -f "$PIDFILE" ]]; then
 		pid=$(<"$PIDFILE")
 		if kill -0 "$pid" 2>/dev/null; then
-			notify "Dictate" "Recording in progress…"
+			if [[ "$(get_state)" == "transcribing" ]]; then
+				notify "Dictate" "Transcribing…"
+			else
+				notify "Dictate" "Recording in progress…"
+			fi
 			exit 0
 		fi
-		rm -f "$PIDFILE"
+		clear_runtime_files
 	fi
 
 	if [[ "$(get_state)" == "transcribing" ]]; then
@@ -97,10 +101,14 @@ fi
 if [[ -f "$PIDFILE" ]]; then
 	pid=$(<"$PIDFILE")
 	if kill -0 "$pid" 2>/dev/null; then
-		rm -f "$PIDFILE"
-		set_state "transcribing"
-		signal_dictate INT "$pid"
-		notify "Dictate" "Transcribing…"
+		if [[ "$(get_state)" == "transcribing" ]]; then
+			cancel_dictate "$pid"
+			notify "Dictate" "Cancelling transcription…"
+		else
+			set_state "transcribing"
+			stop_recording_dictate "$pid"
+			notify "Dictate" "Transcribing…"
+		fi
 		exit 0
 	fi
 	clear_runtime_files
@@ -125,11 +133,36 @@ set_state "recording"
 
 	(
 		sleep "$MAX_DURATION"
-		if signal_dictate INT "$dictate_pid"; then
+		if kill -0 "$dictate_pid" 2>/dev/null && [[ "$(get_state)" == "recording" ]]; then
+			set_state "transcribing"
+			stop_recording_dictate "$dictate_pid"
 			notify "Dictate" "Auto-stopped — transcribing…"
 		fi
 	) &
 	watchdog_pid=$!
+
+	(
+		while kill -0 "$dictate_pid" 2>/dev/null; do
+			if [[ "$(get_state)" == "transcribing" ]]; then
+				sleep "$TRANSCRIBE_TIMEOUT"
+				if ! kill -0 "$dictate_pid" 2>/dev/null || [[ "$(get_state)" != "transcribing" ]]; then
+					exit 0
+				fi
+				notify "Dictate" "Transcription timed out — cancelling…"
+				cancel_dictate "$dictate_pid" || exit 0
+				sleep 2
+				if kill -0 "$dictate_pid" 2>/dev/null; then
+					notify "Dictate" "Transcription hung — force stopping…"
+					signal_dictate TERM "$dictate_pid" || exit 0
+					sleep 2
+				fi
+				signal_dictate KILL "$dictate_pid" || true
+				exit 0
+			fi
+			sleep 1
+		done
+	) &
+	transcribe_watchdog_pid=$!
 
 	wait "$dictate_pid"
 	rc=$?
@@ -137,7 +170,8 @@ set_state "recording"
 
 	kill "$watchdog_pid" 2>/dev/null
 	wait "$watchdog_pid" 2>/dev/null
-	rm -f "$PIDFILE"
+	kill "$transcribe_watchdog_pid" 2>/dev/null
+	wait "$transcribe_watchdog_pid" 2>/dev/null
 
 	if [[ $rc -eq 0 && -s "$OUTFILE" ]]; then
 		kitten @ --to "$KITTY_SOCKET" send-text \

@@ -14,6 +14,8 @@ use dictate_core::{
     WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
+#[cfg(unix)]
+use {signal_hook::consts::signal::SIGUSR1, signal_hook::iterator::Signals};
 
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 const QUIESCENT_TIMEOUTS: u8 = 3;
@@ -914,6 +916,8 @@ fn install_stop_handlers(
         eprintln!("[dictate] warning: failed to set Ctrl+C handler: {err}");
     }
 
+    install_sigusr1_stop_handler(controller, active_recording_stop);
+
     if enable_stdin_stop && std::io::stdin().is_terminal() {
         let active_recording_stop_stdin = Arc::clone(active_recording_stop);
         let controller_stdin = Arc::clone(controller);
@@ -925,6 +929,40 @@ fn install_stop_handlers(
             }
         });
     }
+}
+
+#[cfg(unix)]
+fn install_sigusr1_stop_handler(
+    controller: &Arc<SessionController>,
+    active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
+) {
+    let controller_sigusr1 = Arc::clone(controller);
+    let active_recording_stop_sigusr1 = Arc::clone(active_recording_stop);
+    let signals = match Signals::new([SIGUSR1]) {
+        Ok(signals) => signals,
+        Err(err) => {
+            eprintln!("[dictate] warning: failed to set SIGUSR1 handler: {err}");
+            return;
+        }
+    };
+
+    std::thread::spawn(move || {
+        let mut signals = signals;
+        for _signal in signals.forever() {
+            if controller_sigusr1.request_stop_recording() {
+                request_active_recording_stop(&active_recording_stop_sigusr1);
+            } else if !controller_sigusr1.is_cancelled() {
+                eprintln!("[dictate] warning: ignoring SIGUSR1 outside recording");
+            }
+        }
+    });
+}
+
+#[cfg(not(unix))]
+fn install_sigusr1_stop_handler(
+    _controller: &Arc<SessionController>,
+    _active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
+) {
 }
 
 fn set_active_recording_stop(

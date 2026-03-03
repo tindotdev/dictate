@@ -111,7 +111,7 @@ if [[ -f "$PIDFILE" ]]; then
 	if kill -0 "$pid" 2>/dev/null; then
 		state=$(get_state)
 		if [[ "$state" == "transcribing" ]]; then
-			signal_dictate INT "$pid"
+			cancel_dictate "$pid"
 			notify 0 "Dictate" "Cancelling transcription…"
 			exit 0
 		fi
@@ -123,7 +123,7 @@ if [[ -f "$PIDFILE" ]]; then
 		fi
 		rm -f "$STARTED_AT_FILE"
 		set_state "transcribing"
-		signal_dictate INT "$pid"
+		stop_recording_dictate "$pid"
 		notify 0 "Dictate" "Transcribing…"
 		exit 0
 	fi
@@ -152,7 +152,7 @@ set_state "recording"
 		if kill -0 "$dictate_pid" 2>/dev/null && [[ "$(get_state)" == "recording" ]]; then
 			rm -f "$STARTED_AT_FILE"
 			set_state "transcribing"
-			signal_dictate INT "$dictate_pid"
+			stop_recording_dictate "$dictate_pid"
 			notify 0 "Dictate" "Auto-stopped — transcribing…"
 		fi
 	) &
@@ -166,7 +166,7 @@ set_state "recording"
 					exit 0
 				fi
 				notify 0 "Dictate" "Transcription timed out — cancelling…"
-				signal_dictate INT "$dictate_pid" || exit 0
+				cancel_dictate "$dictate_pid" || exit 0
 				sleep 2
 				if kill -0 "$dictate_pid" 2>/dev/null; then
 					notify 0 "Dictate" "Transcription hung — force stopping…"

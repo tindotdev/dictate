@@ -174,7 +174,7 @@ The desktop launcher is a toggle — press once to start recording, press again 
 headlessly (no terminal window) and uses desktop notifications for feedback:
 
 - **Recording** — persistent notification stays visible while recording
-- **Transcribing** — replaces the recording notification on stop
+- **Transcribing** — replaces the recording notification after the launcher sends a dedicated stop signal
 - **Cancelling** — pressing the shortcut again during transcription requests cancellation
 - **Done** — shows result for 3 seconds, then auto-dismisses
 
@@ -190,6 +190,13 @@ Linux compositor examples:
 
 All flags after `dictate-launch` are passed through to `dictate` (e.g. `-p` for post-processing,
 `--language en`, `--device "USB Mic"`).
+
+Launcher control mapping on Linux/macOS:
+
+- First press starts recording
+- Second press during recording sends `SIGUSR1` to stop recording and continue to transcription
+- Press again during transcription to send `SIGINT` cancellation
+- Terminal `Ctrl+C` still means cancel, not stop
 
 Kitty adapter:
 
