@@ -20,7 +20,6 @@ use crate::resampler::TRANSCRIPTION_SAMPLE_RATE;
 
 const MANIFEST_FILENAME: &str = "last-recording.json";
 const MANIFEST_TMP_FILENAME: &str = "last-recording.json.tmp";
-const AUDIO_FILENAME: &str = "last-recording.wav";
 const AUDIO_TMP_FILENAME: &str = "last-recording.wav.tmp";
 const AUDIO_GENERATION_PREFIX: &str = "last-recording-";
 const MANIFEST_VERSION: u32 = 1;
@@ -50,7 +49,6 @@ pub struct SavedRecordingManifest {
     /// Number of normalized samples stored in the WAV file.
     pub sample_count: usize,
     /// Relative WAV file name paired with this manifest.
-    #[serde(default = "default_audio_filename")]
     pub audio_filename: String,
     /// Chunk target duration to use when replaying the audio.
     pub chunk_target_duration_secs: u64,
@@ -222,7 +220,6 @@ impl SavedPipelineConfig {
 pub struct SavedRecordingStore {
     dir: PathBuf,
     manifest_path: PathBuf,
-    legacy_audio_path: PathBuf,
 }
 
 impl SavedRecordingStore {
@@ -243,12 +240,7 @@ impl SavedRecordingStore {
     #[must_use]
     pub fn open_at(dir: PathBuf) -> Self {
         let manifest_path = dir.join(MANIFEST_FILENAME);
-        let legacy_audio_path = dir.join(AUDIO_FILENAME);
-        Self {
-            dir,
-            manifest_path,
-            legacy_audio_path,
-        }
+        Self { dir, manifest_path }
     }
 
     /// Save the given recording by atomically replacing the manifest.
@@ -349,8 +341,7 @@ impl SavedRecordingStore {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("wav"));
-            let is_saved_audio = filename == AUDIO_FILENAME
-                || (filename.starts_with(AUDIO_GENERATION_PREFIX) && has_wav_extension);
+            let is_saved_audio = filename.starts_with(AUDIO_GENERATION_PREFIX) && has_wav_extension;
             if is_saved_audio && filename != active_audio_filename {
                 std::fs::remove_file(path)?;
             }
@@ -358,16 +349,6 @@ impl SavedRecordingStore {
 
         Ok(())
     }
-
-    /// The legacy fixed audio file path used by older manifests.
-    #[must_use]
-    pub fn audio_path(&self) -> &Path {
-        &self.legacy_audio_path
-    }
-}
-
-fn default_audio_filename() -> String {
-    AUDIO_FILENAME.to_string()
 }
 
 fn next_audio_filename() -> String {
@@ -555,7 +536,6 @@ mod tests {
         let (_dir, store) = temp_store();
         std::fs::create_dir_all(store.manifest_path().parent().unwrap()).unwrap();
         std::fs::write(store.manifest_path(), "{not json").unwrap();
-        std::fs::write(store.audio_path(), b"placeholder").unwrap();
 
         let result = store.load();
         assert!(matches!(result, Err(SavedRecordingError::ManifestJson(_))));
@@ -598,18 +578,15 @@ mod tests {
         store.save(&sample_recording()).unwrap();
 
         let manifest_tmp = store.manifest_path().with_file_name(MANIFEST_TMP_FILENAME);
-        let audio_tmp = store.audio_path().with_file_name(AUDIO_TMP_FILENAME);
+        let audio_tmp = store.dir.join(AUDIO_TMP_FILENAME);
         assert!(!manifest_tmp.exists());
         assert!(!audio_tmp.exists());
     }
 
     #[test]
-    fn load_supports_legacy_manifest_without_audio_filename() {
+    fn load_rejects_manifest_without_audio_filename() {
         let (_dir, store) = temp_store();
         let recording = sample_recording();
-        let audio = WavEncoder
-            .encode(&recording.samples, TRANSCRIPTION_SAMPLE_RATE)
-            .unwrap();
         let mut manifest_json = serde_json::to_value(&recording.manifest).unwrap();
         manifest_json
             .as_object_mut()
@@ -623,10 +600,9 @@ mod tests {
             serde_json::to_string_pretty(&manifest_json).unwrap(),
         )
         .unwrap();
-        std::fs::write(store.audio_path(), audio.data()).unwrap();
 
-        let loaded = store.load().unwrap();
-        assert_eq!(loaded.samples.len(), recording.samples.len());
+        let result = store.load();
+        assert!(matches!(result, Err(SavedRecordingError::ManifestJson(_))));
     }
 
     #[test]
@@ -728,6 +704,6 @@ mod tests {
         let dir = PathBuf::from("/tmp/dictate-tests");
         let store = SavedRecordingStore::open_at(dir.clone());
         assert_eq!(store.manifest_path(), dir.join(MANIFEST_FILENAME));
-        assert_eq!(store.audio_path(), dir.join(AUDIO_FILENAME));
+        assert_eq!(store.dir, dir);
     }
 }
