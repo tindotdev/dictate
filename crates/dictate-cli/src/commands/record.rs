@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
-    AudioChunk, AudioError, AudioReceiver, AudioRecorder, ChunkerConfig, ClipboardError,
-    DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary, DictionaryStore, GroqPostProcessor,
-    GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker,
-    RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies, ResponseFormat,
-    SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment, TimestampGranularity,
-    TranscriptionError, TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore,
-    WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
+    AudioChunk, AudioError, AudioReceiver, AudioRecorder, CancellationContext, ChunkerConfig,
+    ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary, DictionaryStore,
+    GroqPostProcessor, GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor,
+    ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies,
+    ResponseFormat, SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment,
+    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
+    Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
 #[cfg(unix)]
@@ -90,15 +90,17 @@ struct SessionSnapshot {
 #[derive(Debug)]
 struct SessionController {
     state: Mutex<SessionSnapshot>,
+    cancellation: CancellationContext,
 }
 
 impl SessionController {
-    const fn new(initial_phase: SessionPhase) -> Self {
+    fn new(initial_phase: SessionPhase) -> Self {
         Self {
             state: Mutex::new(SessionSnapshot {
                 phase: initial_phase,
                 requested_action: RequestedAction::None,
             }),
+            cancellation: CancellationContext::new(),
         }
     }
 
@@ -126,6 +128,8 @@ impl SessionController {
 
         state.requested_action = RequestedAction::CancelSession;
         state.phase = SessionPhase::Cancelled;
+        drop(state);
+        self.cancellation.cancel();
         false
     }
 
@@ -156,6 +160,10 @@ impl SessionController {
 
     fn is_recording(&self) -> bool {
         self.lock().phase == SessionPhase::Recording
+    }
+
+    const fn cancellation(&self) -> &CancellationContext {
+        &self.cancellation
     }
 
     fn should_continue_recording(&self) -> bool {
@@ -844,9 +852,10 @@ fn transcribe_chunk_interruptible(
     controller: &SessionController,
 ) -> Result<Option<TranscriptionResult>, RecordError> {
     let (tx, rx) = mpsc::sync_channel(1);
+    let cancellation = controller.cancellation().clone();
 
     std::thread::spawn(move || {
-        let result = pipeline.transcribe_chunk(&chunk);
+        let result = pipeline.transcribe_chunk_with_cancellation(&chunk, &cancellation);
         if tx.send(result).is_err() {
             eprintln!("[dictate] warning: transcription result dropped (receiver disconnected)");
         }
@@ -858,7 +867,9 @@ fn transcribe_chunk_interruptible(
         }
 
         match rx.recv_timeout(RECV_TIMEOUT) {
-            Ok(result) => return result.map(Some).map_err(RecordError::from),
+            Ok(Ok(result)) => return Ok(Some(result)),
+            Ok(Err(TranscriptionError::Cancelled)) => return Ok(None),
+            Ok(Err(err)) => return Err(RecordError::from(err)),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(RecordError::TranscriptionWorkerDisconnected);
@@ -873,9 +884,10 @@ fn post_process_result_interruptible(
     controller: &SessionController,
 ) -> Result<Option<(TranscriptionResult, PostProcessOutcome)>, RecordError> {
     let (tx, rx) = mpsc::sync_channel(1);
+    let cancellation = controller.cancellation().clone();
 
     std::thread::spawn(move || {
-        let result = pipeline.post_process_result_with_outcome(merged);
+        let result = pipeline.post_process_result_with_cancellation(merged, &cancellation);
         if tx.send(result).is_err() {
             eprintln!("[dictate] warning: post-process result dropped (receiver disconnected)");
         }
@@ -887,7 +899,9 @@ fn post_process_result_interruptible(
         }
 
         match rx.recv_timeout(RECV_TIMEOUT) {
-            Ok(result) => return Ok(Some(result)),
+            Ok(Ok(result)) => return Ok(Some(result)),
+            Ok(Err(TranscriptionError::Cancelled)) => return Ok(None),
+            Ok(Err(err)) => return Err(RecordError::from(err)),
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 return Err(RecordError::PostProcessWorkerDisconnected);
@@ -1439,9 +1453,10 @@ mod tests {
             "stub"
         }
 
-        fn transcribe(
+        fn transcribe_with_cancellation(
             &self,
             _config: dictate_core::provider::TranscriptionConfig<'_>,
+            _cancellation: &CancellationContext,
         ) -> Result<TranscriptionResult, TranscriptionError> {
             let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             if call == 0
@@ -1469,10 +1484,11 @@ mod tests {
             "counting"
         }
 
-        fn process(
+        fn process_with_cancellation(
             &self,
             text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
+            _cancellation: &CancellationContext,
         ) -> Result<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             Ok(format!("{text}!"))
@@ -1495,10 +1511,11 @@ mod tests {
             "blocking"
         }
 
-        fn process(
+        fn process_with_cancellation(
             &self,
             text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
+            _cancellation: &CancellationContext,
         ) -> Result<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             while !self.release.load(Ordering::Relaxed) {

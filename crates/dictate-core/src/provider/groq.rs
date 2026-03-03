@@ -7,13 +7,14 @@
 use std::io::Cursor;
 use std::time::Duration;
 
-use backon::{BlockingRetryable, ExponentialBuilder};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
+use crate::cancellation::CancellationContext;
 use crate::error::TranscriptionError;
 use crate::groq_error::api_error_from_failed_response;
+use crate::retry::retry_with_cancellation;
 use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -53,42 +54,28 @@ fn http_client(timeout: Duration) -> Result<Client, TranscriptionError> {
     })
 }
 
-fn retry_builder(config: &TranscriptionConfig<'_>) -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(config.request_policy.base_delay)
-        .with_max_delay(config.request_policy.max_delay)
-        .with_max_times(config.request_policy.max_retries as usize)
-}
-
 impl TranscriptionProvider for GroqProvider {
     fn name(&self) -> &'static str {
         "groq"
     }
 
-    fn transcribe(
+    fn transcribe_with_cancellation(
         &self,
         config: TranscriptionConfig<'_>,
+        cancellation: &CancellationContext,
     ) -> Result<TranscriptionResult, TranscriptionError> {
         let url = config.base_url.unwrap_or(DEFAULT_API_URL);
         let model = config.model.unwrap_or(DEFAULT_MODEL);
         let client = http_client(config.request_policy.timeout)?;
 
-        (|| send_request(&client, url, &config, model))
-            .retry(retry_builder(&config))
-            .when(super::super::error::TranscriptionError::is_retryable)
-            .notify(|err, dur| {
+        retry_with_cancellation(
+            config.request_policy,
+            cancellation,
+            || send_request(&client, url, &config, model, cancellation),
+            |err, dur| {
                 eprintln!("[dictate] retrying after {dur:?}: {err}");
-            })
-            .call()
-            .map_err(|e| {
-                if e.is_rate_limit_error() {
-                    TranscriptionError::RateLimitExhausted {
-                        retries: config.request_policy.max_retries,
-                    }
-                } else {
-                    e
-                }
-            })
+            },
+        )
     }
 }
 
@@ -112,7 +99,10 @@ fn send_request(
     url: &str,
     config: &TranscriptionConfig<'_>,
     model: &str,
+    cancellation: &CancellationContext,
 ) -> Result<TranscriptionResult, TranscriptionError> {
+    cancellation.check()?;
+
     let filename = format!("audio.{}", config.audio.extension());
 
     let data = config.audio.data().clone(); // O(1): Bytes refcount bump
@@ -161,6 +151,7 @@ fn send_request(
                 TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
             }
         })?;
+    cancellation.check()?;
 
     let status = response.status();
 
@@ -171,6 +162,7 @@ fn send_request(
     let body = response
         .text()
         .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
+    cancellation.check()?;
 
     // Parse response based on requested format
     match config.response_format {

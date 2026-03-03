@@ -1,6 +1,7 @@
 //! dictate-core: audio capture, chunking, and transcription pipeline.
 
 pub mod audio;
+pub mod cancellation;
 pub mod clipboard;
 pub mod dictionary;
 pub mod encoder;
@@ -13,6 +14,7 @@ pub mod prompt;
 pub mod provider;
 pub mod request_policy;
 pub mod resampler;
+mod retry;
 pub mod saved_recording;
 pub mod token;
 pub mod vocabulary;
@@ -22,6 +24,7 @@ pub use audio::{
     ProgressiveChunker, RecorderConfig, RecorderInfo, RecorderStats, RecorderStatsSnapshot,
     RecorderStopHandle, RecvResult, list_input_devices,
 };
+pub use cancellation::CancellationContext;
 pub use clipboard::{ClipboardError, check_clipboard_available};
 pub use dictionary::{Dictionary, DictionaryError, DictionaryStore};
 pub use encoder::{AudioEncoder, EncodedAudio, WavEncoder};

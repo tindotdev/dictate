@@ -7,6 +7,7 @@ mod groq;
 
 pub use groq::GroqProvider;
 
+use crate::cancellation::CancellationContext;
 use crate::encoder::EncodedAudio;
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
@@ -239,6 +240,20 @@ pub trait TranscriptionProvider: Send + Sync {
     fn transcribe(
         &self,
         config: TranscriptionConfig<'_>,
+    ) -> Result<TranscriptionResult, TranscriptionError> {
+        self.transcribe_with_cancellation(config, &CancellationContext::new())
+    }
+
+    /// Send encoded audio to the provider while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
+    /// Implementations should retry transient errors internally.
+    fn transcribe_with_cancellation(
+        &self,
+        config: TranscriptionConfig<'_>,
+        cancellation: &CancellationContext,
     ) -> Result<TranscriptionResult, TranscriptionError>;
 }
 

@@ -104,6 +104,10 @@ fn is_permission_error(msg: &str) -> bool {
 /// Errors that can occur during transcription (encoding, network, API).
 #[derive(Debug, thiserror::Error)]
 pub enum TranscriptionError {
+    /// The user cancelled the current session.
+    #[error("cancelled")]
+    Cancelled,
+
     /// The required API key environment variable is not set.
     #[error("API key missing: set {env_var} environment variable")]
     MissingApiKey {
@@ -170,6 +174,12 @@ impl TranscriptionError {
             Self::Api { status, .. } => is_retryable_status(*status),
             _ => false,
         }
+    }
+
+    /// Whether this error represents a user cancellation.
+    #[must_use]
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
     }
 
     /// Whether this error originated from a 429 rate limit.
@@ -273,6 +283,12 @@ mod tests {
     fn http_client_initialization_is_not_retryable() {
         let err = TranscriptionError::HttpClientInitialization("tls backend missing".into());
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn cancelled_error_is_not_retryable() {
+        assert!(!TranscriptionError::Cancelled.is_retryable());
+        assert!(TranscriptionError::Cancelled.is_cancelled());
     }
 
     #[test]

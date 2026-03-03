@@ -10,6 +10,7 @@ pub mod groq;
 
 pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
+use crate::cancellation::CancellationContext;
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
 
@@ -27,6 +28,20 @@ pub trait PostProcessor: Send + Sync {
         &self,
         text: &str,
         config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        self.process_with_cancellation(text, config, &CancellationContext::new())
+    }
+
+    /// Clean up the given transcription text while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
+    fn process_with_cancellation(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
     ) -> Result<String, TranscriptionError>;
 }
 

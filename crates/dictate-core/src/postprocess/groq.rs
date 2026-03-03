@@ -5,13 +5,14 @@
 
 use std::time::Duration;
 
-use backon::{BlockingRetryable, ExponentialBuilder};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{PostProcessConfig, PostProcessor};
+use crate::cancellation::CancellationContext;
 use crate::error::TranscriptionError;
 use crate::groq_error::api_error_from_failed_response;
+use crate::retry::retry_with_cancellation;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -41,11 +42,14 @@ impl PostProcessor for GroqPostProcessor {
         "groq-chat"
     }
 
-    fn process(
+    fn process_with_cancellation(
         &self,
         text: &str,
         config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
     ) -> Result<String, TranscriptionError> {
+        cancellation.check()?;
+
         if text.is_empty() {
             return Ok(String::new());
         }
@@ -53,23 +57,19 @@ impl PostProcessor for GroqPostProcessor {
         let url = config.base_url.unwrap_or(DEFAULT_CHAT_URL);
         let model = config.model.unwrap_or(DEFAULT_POST_PROCESS_MODEL);
         let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
-        let temperature = config.temperature;
         let client = chat_client(config.request_policy.timeout)?;
+        let params = ChatRequestParams {
+            api_key: config.api_key,
+            model,
+            text,
+            system_prompt,
+            temperature: config.temperature,
+        };
 
         retry_chat_request(
-            || {
-                send_chat_request(
-                    &client,
-                    url,
-                    config.api_key,
-                    model,
-                    text,
-                    system_prompt,
-                    temperature,
-                )
-            },
-            retry_builder(config.request_policy),
-            config.request_policy.max_retries,
+            config.request_policy,
+            cancellation,
+            || send_chat_request(&client, url, &params, cancellation),
             |err, dur| {
                 eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
             },
@@ -77,39 +77,19 @@ impl PostProcessor for GroqPostProcessor {
     }
 }
 
-fn retry_builder(request_policy: crate::request_policy::RequestPolicy) -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(request_policy.base_delay)
-        .with_max_delay(request_policy.max_delay)
-        .with_max_times(request_policy.max_retries as usize)
-}
-
 fn retry_chat_request<Op, Notify>(
-    mut operation: Op,
-    retry: ExponentialBuilder,
-    max_retries: u32,
+    request_policy: crate::request_policy::RequestPolicy,
+    cancellation: &CancellationContext,
+    operation: Op,
     mut notify: Notify,
 ) -> Result<String, TranscriptionError>
 where
     Op: FnMut() -> Result<String, TranscriptionError>,
     Notify: FnMut(&TranscriptionError, Duration),
 {
-    (|| operation())
-        .retry(retry)
-        .when(super::super::error::TranscriptionError::is_retryable)
-        .notify(|err, dur| {
-            notify(err, dur);
-        })
-        .call()
-        .map_err(|e| {
-            if e.is_rate_limit_error() {
-                TranscriptionError::RateLimitExhausted {
-                    retries: max_retries,
-                }
-            } else {
-                e
-            }
-        })
+    retry_with_cancellation(request_policy, cancellation, operation, |err, dur| {
+        notify(err, dur);
+    })
 }
 
 // ─── HTTP request ────────────────────────────────────────────────────────────
@@ -143,34 +123,41 @@ struct ChatChoiceMessage {
     content: String,
 }
 
+struct ChatRequestParams<'a> {
+    api_key: &'a str,
+    model: &'a str,
+    text: &'a str,
+    system_prompt: &'a str,
+    temperature: Option<f32>,
+}
+
 /// Perform a single chat completion request.
 fn send_chat_request(
     client: &Client,
     url: &str,
-    api_key: &str,
-    model: &str,
-    text: &str,
-    system_prompt: &str,
-    temperature: Option<f32>,
+    params: &ChatRequestParams<'_>,
+    cancellation: &CancellationContext,
 ) -> Result<String, TranscriptionError> {
+    cancellation.check()?;
+
     let body = ChatRequest {
-        model,
+        model: params.model,
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: system_prompt,
+                content: params.system_prompt,
             },
             ChatMessage {
                 role: "user",
-                content: text,
+                content: params.text,
             },
         ],
-        temperature,
+        temperature: params.temperature,
     };
 
     let response = client
         .post(url)
-        .bearer_auth(api_key)
+        .bearer_auth(params.api_key)
         .json(&body)
         .send()
         .map_err(|e| {
@@ -180,6 +167,7 @@ fn send_chat_request(
                 TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
             }
         })?;
+    cancellation.check()?;
 
     let status = response.status();
 
@@ -193,6 +181,7 @@ fn send_chat_request(
     let body = response
         .text()
         .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
+    cancellation.check()?;
 
     let parsed: ChatResponse = serde_json::from_str(&body)
         .map_err(|e| TranscriptionError::InvalidResponse(format!("{e}: {body}")))?;
@@ -210,6 +199,7 @@ fn send_chat_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancellation::CancellationContext;
     use crate::request_policy::RequestPolicy;
 
     fn fast_request_policy() -> RequestPolicy {
@@ -221,16 +211,14 @@ mod tests {
         )
     }
 
-    fn fast_retry_builder() -> ExponentialBuilder {
-        retry_builder(fast_request_policy())
-    }
-
     #[test]
     fn retry_exhaustion_retries_then_returns_last_retryable_error() {
         let mut attempts = 0;
         let mut notifications = 0;
 
         let result = retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
                 Err(TranscriptionError::Api {
@@ -238,8 +226,6 @@ mod tests {
                     message: "service unavailable".to_string(),
                 })
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -259,6 +245,8 @@ mod tests {
         let mut notifications = 0;
 
         let result = retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
                 Err(TranscriptionError::Api {
@@ -266,8 +254,6 @@ mod tests {
                     message: "rate limited".to_string(),
                 })
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -287,6 +273,8 @@ mod tests {
         let mut notifications = 0;
 
         let result = retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
                 Err(TranscriptionError::Api {
@@ -294,8 +282,6 @@ mod tests {
                     message: "invalid key".to_string(),
                 })
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
@@ -314,13 +300,13 @@ mod tests {
         let mut notifications = Vec::new();
 
         let result = retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 Err(TranscriptionError::Network(
                     "connection reset by peer".to_string(),
                 ))
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |err, dur| {
                 notifications.push((err.to_string(), dur));
             },
