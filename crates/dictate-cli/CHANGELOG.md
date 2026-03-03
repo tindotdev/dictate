@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-03-03
+
+### Added
+
+- Add saved-audio retry flow and canonical launcher smoke tests ([#15](https://github.com/tindotdev/dictate/pull/15))
+
+
+
 ### Added
 
 - Add opt-in saved-audio retry flow with `--save-last-audio` and `dictate retry`
