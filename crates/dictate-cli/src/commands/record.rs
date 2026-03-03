@@ -1,5 +1,4 @@
 use std::io::IsTerminal;
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,12 +43,6 @@ pub enum RecordError {
 
     #[error("saved recording error: {0}")]
     SavedRecording(#[from] dictate_core::SavedRecordingError),
-
-    #[error("transcription worker disconnected unexpectedly")]
-    TranscriptionWorkerDisconnected,
-
-    #[error("post-process worker disconnected unexpectedly")]
-    PostProcessWorkerDisconnected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,32 +453,34 @@ fn process_transcription_session(
     let merged = merge_results(results);
     let post_process_requested = resolved.effective_post_process;
 
-    let (merged, post_process_outcome, post_process_requested) = if post_process_requested
-        && !merged.text.is_empty()
-    {
-        if !controller.begin_post_processing() {
-            eprintln!("[dictate] cancelled");
-            return Ok(RunOutcome::Cancelled);
-        }
+    let (merged, post_process_outcome, post_process_requested) =
+        if post_process_requested && !merged.text.is_empty() {
+            if !controller.begin_post_processing() {
+                eprintln!("[dictate] cancelled");
+                return Ok(RunOutcome::Cancelled);
+            }
 
-        let model = resolved
-            .pipeline_config
-            .post_process_model
-            .as_ref()
-            .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
-        eprintln!("[dictate] post-processing with {model}...");
+            let model = resolved
+                .pipeline_config
+                .post_process_model
+                .as_ref()
+                .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
+            eprintln!("[dictate] post-processing with {model}...");
 
-        if let Some((merged, outcome)) =
-            post_process_result_interruptible(Arc::clone(&resolved.pipeline), merged, controller)?
-        {
-            (merged, outcome, true)
+            match resolved
+                .pipeline
+                .post_process_result_with_cancellation(merged, controller.cancellation())
+            {
+                Ok((merged, outcome)) => (merged, outcome, true),
+                Err(TranscriptionError::Cancelled) => {
+                    eprintln!("[dictate] cancelled");
+                    return Ok(RunOutcome::Cancelled);
+                }
+                Err(err) => return Err(RecordError::from(err)),
+            }
         } else {
-            eprintln!("[dictate] cancelled");
-            return Ok(RunOutcome::Cancelled);
-        }
-    } else {
-        (merged, PostProcessOutcome::NotConfigured, false)
-    };
+            (merged, PostProcessOutcome::NotConfigured, false)
+        };
 
     if controller.is_cancelled() {
         eprintln!("[dictate] cancelled");
@@ -755,11 +750,15 @@ fn transcribe_chunks(
         let chunk_duration = f64::from(chunk.duration_secs());
         let leading_overlap = f64::from(chunk.leading_overlap_secs());
 
-        let maybe_result = transcribe_chunk_interruptible(Arc::clone(pipeline), chunk, controller)?;
-        let Some(mut result) = maybe_result else {
-            eprintln!("[dictate] cancelled, abandoning in-flight transcription");
-            return Ok(None);
-        };
+        let mut result =
+            match pipeline.transcribe_chunk_with_cancellation(&chunk, controller.cancellation()) {
+                Ok(result) => result,
+                Err(TranscriptionError::Cancelled) => {
+                    eprintln!("[dictate] cancelled, abandoning in-flight transcription");
+                    return Ok(None);
+                }
+                Err(err) => return Err(RecordError::from(err)),
+            };
 
         if chunk_offset > 0.0 {
             offset_timestamps(&mut result, chunk_offset);
@@ -844,70 +843,6 @@ fn print_completion_message(char_count: usize, copied_to_clipboard: bool) {
     };
 
     eprintln!("[dictate] done ({char_count} chars{suffix})");
-}
-
-fn transcribe_chunk_interruptible(
-    pipeline: Arc<TranscriptionPipeline>,
-    chunk: AudioChunk,
-    controller: &SessionController,
-) -> Result<Option<TranscriptionResult>, RecordError> {
-    let (tx, rx) = mpsc::sync_channel(1);
-    let cancellation = controller.cancellation().clone();
-
-    std::thread::spawn(move || {
-        let result = pipeline.transcribe_chunk_with_cancellation(&chunk, &cancellation);
-        if tx.send(result).is_err() {
-            eprintln!("[dictate] warning: transcription result dropped (receiver disconnected)");
-        }
-    });
-
-    loop {
-        if controller.is_cancelled() {
-            return Ok(None);
-        }
-
-        match rx.recv_timeout(RECV_TIMEOUT) {
-            Ok(Ok(result)) => return Ok(Some(result)),
-            Ok(Err(TranscriptionError::Cancelled)) => return Ok(None),
-            Ok(Err(err)) => return Err(RecordError::from(err)),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(RecordError::TranscriptionWorkerDisconnected);
-            }
-        }
-    }
-}
-
-fn post_process_result_interruptible(
-    pipeline: Arc<TranscriptionPipeline>,
-    merged: TranscriptionResult,
-    controller: &SessionController,
-) -> Result<Option<(TranscriptionResult, PostProcessOutcome)>, RecordError> {
-    let (tx, rx) = mpsc::sync_channel(1);
-    let cancellation = controller.cancellation().clone();
-
-    std::thread::spawn(move || {
-        let result = pipeline.post_process_result_with_cancellation(merged, &cancellation);
-        if tx.send(result).is_err() {
-            eprintln!("[dictate] warning: post-process result dropped (receiver disconnected)");
-        }
-    });
-
-    loop {
-        if controller.is_cancelled() {
-            return Ok(None);
-        }
-
-        match rx.recv_timeout(RECV_TIMEOUT) {
-            Ok(Ok(result)) => return Ok(Some(result)),
-            Ok(Err(TranscriptionError::Cancelled)) => return Ok(None),
-            Ok(Err(err)) => return Err(RecordError::from(err)),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(RecordError::PostProcessWorkerDisconnected);
-            }
-        }
-    }
 }
 
 fn install_stop_handlers(
@@ -1416,8 +1351,7 @@ const fn post_process_metadata(
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, Ordering as AtomicOrdering};
-    use std::thread;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     fn make_result(text: &str) -> TranscriptionResult {
         TranscriptionResult {
@@ -1498,35 +1432,30 @@ mod tests {
         }
     }
 
-    struct BlockingPostProcessor {
+    struct CancelledPostProcessor {
         calls: Arc<AtomicUsize>,
-        release: Arc<AtomicBool>,
     }
 
-    impl BlockingPostProcessor {
-        fn new(calls: Arc<AtomicUsize>, release: Arc<AtomicBool>) -> Self {
-            Self { calls, release }
+    impl CancelledPostProcessor {
+        fn new(calls: Arc<AtomicUsize>) -> Self {
+            Self { calls }
         }
     }
 
     #[async_trait]
-    impl PostProcessor for BlockingPostProcessor {
+    impl PostProcessor for CancelledPostProcessor {
         fn name(&self) -> &'static str {
-            "blocking"
+            "cancelled"
         }
 
         async fn process_with_cancellation_async(
             &self,
-            text: &str,
+            _text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
             _cancellation: &CancellationContext,
         ) -> Result<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-            while !self.release.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(10));
-            }
-
-            std::future::ready(Ok(format!("{text}!"))).await
+            Err(TranscriptionError::Cancelled)
         }
     }
 
@@ -1903,32 +1832,35 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_during_post_process_returns_no_result() {
-        let controller = Arc::new(SessionController::new(SessionPhase::PostProcessing));
-        let release = Arc::new(AtomicBool::new(false));
+    fn cancelled_post_process_error_returns_cancelled_outcome() {
+        let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
         let post_process_calls = Arc::new(AtomicUsize::new(0));
         let pipeline = test_pipeline(
             StubProvider::new("raw text"),
-            Some(Box::new(BlockingPostProcessor::new(
-                Arc::clone(&post_process_calls),
-                Arc::clone(&release),
-            ))),
+            Some(Box::new(CancelledPostProcessor::new(Arc::clone(
+                &post_process_calls,
+            )))),
         );
-        let controller_for_cancel = Arc::clone(&controller);
+        let resolved = ResolvedRunConfig {
+            effective_format: None,
+            effective_post_process: true,
+            pipeline_config: PipelineConfig {
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+            pipeline,
+        };
+        let options = RecordOptions::new().output(OutputOptions::new().no_clipboard(true));
 
-        let cancel_thread = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(150));
-            let _ = controller_for_cancel.request_cancel_session();
-        });
+        let outcome = process_transcription_session(
+            &options,
+            &resolved,
+            vec![test_chunk(0, 1.0)],
+            &controller,
+        )
+        .unwrap();
 
-        let result =
-            post_process_result_interruptible(pipeline, make_result("raw text"), &controller)
-                .unwrap();
-
-        release.store(true, Ordering::Relaxed);
-        cancel_thread.join().unwrap();
-
-        assert!(result.is_none());
+        assert_eq!(outcome, RunOutcome::Cancelled);
         assert_eq!(post_process_calls.load(AtomicOrdering::SeqCst), 1);
     }
 
