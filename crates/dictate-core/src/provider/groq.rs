@@ -4,16 +4,17 @@
 //! endpoint and returns the transcribed text. Includes exponential-backoff
 //! retry for transient failures and rate limits.
 
-use std::io::Cursor;
 use std::time::Duration;
 
-use backon::{BlockingRetryable, ExponentialBuilder};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::Deserialize;
 
 use super::{ResponseFormat, TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::groq_error::api_error_from_failed_response;
+use crate::request_policy::RequestPolicy;
+use crate::retry::retry_with_cancellation;
 use crate::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -53,13 +54,6 @@ fn http_client(timeout: Duration) -> Result<Client, TranscriptionError> {
     })
 }
 
-fn retry_builder(config: &TranscriptionConfig<'_>) -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(config.request_policy.base_delay)
-        .with_max_delay(config.request_policy.max_delay)
-        .with_max_times(config.request_policy.max_retries as usize)
-}
-
 impl TranscriptionProvider for GroqProvider {
     fn name(&self) -> &'static str {
         "groq"
@@ -69,27 +63,61 @@ impl TranscriptionProvider for GroqProvider {
         &self,
         config: TranscriptionConfig<'_>,
     ) -> Result<TranscriptionResult, TranscriptionError> {
-        let url = config.base_url.unwrap_or(DEFAULT_API_URL);
-        let model = config.model.unwrap_or(DEFAULT_MODEL);
-        let client = http_client(config.request_policy.timeout)?;
-
-        (|| send_request(&client, url, &config, model))
-            .retry(retry_builder(&config))
-            .when(super::super::error::TranscriptionError::is_retryable)
-            .notify(|err, dur| {
-                eprintln!("[dictate] retrying after {dur:?}: {err}");
-            })
-            .call()
-            .map_err(|e| {
-                if e.is_rate_limit_error() {
-                    TranscriptionError::RateLimitExhausted {
-                        retries: config.request_policy.max_retries,
-                    }
-                } else {
-                    e
-                }
-            })
+        let request_policy = config.request_policy;
+        crate::runtime::block_on(transcribe_request_async(
+            config,
+            request_policy,
+            &CancellationContext::new(),
+        ))
+        .map_err(|err| match err {
+            CancellationError::Cancelled => {
+                unreachable!("fresh cancellation context cannot be cancelled")
+            }
+            CancellationError::Error(err) => err,
+        })
     }
+
+    fn transcribe_with_cancellation(
+        &self,
+        config: TranscriptionConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        let request_policy = config.request_policy;
+        self.transcribe_with_cancellation_and_request_policy(config, request_policy, cancellation)
+    }
+
+    fn transcribe_with_cancellation_and_request_policy(
+        &self,
+        config: TranscriptionConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        crate::runtime::block_on(transcribe_request_async(
+            config,
+            request_policy,
+            cancellation,
+        ))
+    }
+}
+
+async fn transcribe_request_async(
+    config: TranscriptionConfig<'_>,
+    request_policy: RequestPolicy,
+    cancellation: &CancellationContext,
+) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+    let url = config.base_url.unwrap_or(DEFAULT_API_URL);
+    let model = config.model.unwrap_or(DEFAULT_MODEL);
+    let client = http_client(request_policy.timeout).map_err(CancellationError::Error)?;
+
+    retry_with_cancellation(
+        request_policy,
+        cancellation,
+        || send_request(&client, url, &config, model, cancellation),
+        |err, dur| {
+            eprintln!("[dictate] retrying after {dur:?}: {err}");
+        },
+    )
+    .await
 }
 
 // ─── HTTP request ────────────────────────────────────────────────────────────
@@ -106,23 +134,34 @@ struct TranscriptionResponse {
     words: Option<Vec<super::Word>>,
 }
 
+fn request_error(err: &reqwest::Error) -> TranscriptionError {
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        TranscriptionError::Network(err.to_string())
+    } else {
+        TranscriptionError::InvalidResponse(format!("HTTP request failed: {err}"))
+    }
+}
+
 /// Perform a single HTTP POST to the transcription API.
-fn send_request(
+async fn send_request(
     client: &Client,
     url: &str,
     config: &TranscriptionConfig<'_>,
     model: &str,
-) -> Result<TranscriptionResult, TranscriptionError> {
+    cancellation: &CancellationContext,
+) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+    cancellation.check()?;
+
     let filename = format!("audio.{}", config.audio.extension());
 
     let data = config.audio.data().clone(); // O(1): Bytes refcount bump
     let len = data.len() as u64;
-    let file_part = reqwest::blocking::multipart::Part::reader_with_length(Cursor::new(data), len)
+    let file_part = reqwest::multipart::Part::stream_with_length(data, len)
         .file_name(filename)
         .mime_str(config.audio.mime_type())
-        .map_err(|e| TranscriptionError::EncodingFailed(e.to_string()))?;
+        .map_err(|e| CancellationError::Error(TranscriptionError::EncodingFailed(e.to_string())))?;
 
-    let mut form = reqwest::blocking::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .text("model", model.to_string())
         .part("file", file_part);
 
@@ -132,7 +171,7 @@ fn send_request(
     }
 
     if let Some(p) = config.prompt {
-        validate_prompt_length(p)?;
+        validate_prompt_length(p).map_err(CancellationError::Error)?;
         form = form.text("prompt", p.to_string());
     }
 
@@ -149,28 +188,32 @@ fn send_request(
         }
     }
 
-    let response = client
-        .post(url)
-        .bearer_auth(config.api_key)
-        .multipart(form)
-        .send()
-        .map_err(|e| {
-            if e.is_timeout() || e.is_connect() || e.is_request() {
-                TranscriptionError::Network(e.to_string())
-            } else {
-                TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
-            }
-        })?;
+    let response = cancellation
+        .run_until_cancelled(
+            client
+                .post(url)
+                .bearer_auth(config.api_key)
+                .multipart(form)
+                .send(),
+        )
+        .await?
+        .map_err(|err| CancellationError::Error(request_error(&err)))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(api_error_from_failed_response(response, "Groq error"));
+        let error = api_error_from_failed_response(response, "Groq error", cancellation)
+            .await
+            .map_err(CancellationError::from)?;
+        return Err(CancellationError::Error(error));
     }
 
-    let body = response
-        .text()
-        .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
+    let body = cancellation
+        .run_until_cancelled(response.text())
+        .await?
+        .map_err(|e| {
+            CancellationError::Error(TranscriptionError::InvalidResponse(e.to_string()))
+        })?;
 
     // Parse response based on requested format
     match config.response_format {
@@ -184,8 +227,11 @@ fn send_request(
         }
         ResponseFormat::Json | ResponseFormat::VerboseJson => {
             // JSON response (default or verbose) - parse and extract fields
-            let parsed: TranscriptionResponse = serde_json::from_str(&body)
-                .map_err(|e| TranscriptionError::InvalidResponse(format!("{e}: {body}")))?;
+            let parsed: TranscriptionResponse = serde_json::from_str(&body).map_err(|e| {
+                CancellationError::Error(TranscriptionError::InvalidResponse(format!(
+                    "{e}: {body}"
+                )))
+            })?;
             Ok(TranscriptionResult {
                 text: parsed.text.trim().to_string(),
                 segments: parsed.segments,
@@ -362,10 +408,12 @@ mod tests {
 
         let url = format!("{}/openai/v1/audio/transcriptions", server.base_url());
         let start = Instant::now();
-        let config = TranscriptionConfig::new("test-key", audio)
-            .with_base_url(&url)
-            .with_request_policy(fast_request_policy());
-        let result = provider.transcribe(config);
+        let config = TranscriptionConfig::new("test-key", audio).with_base_url(&url);
+        let result = provider.transcribe_with_cancellation_and_request_policy(
+            config,
+            fast_request_policy(),
+            &CancellationContext::new(),
+        );
         let elapsed = start.elapsed();
 
         // Should eventually fail after retries using the configured fast backoff.
@@ -392,15 +440,19 @@ mod tests {
 
         let url = format!("{}/openai/v1/audio/transcriptions", server.base_url());
         let start = Instant::now();
-        let config = TranscriptionConfig::new("test-key", audio)
-            .with_base_url(&url)
-            .with_request_policy(fast_request_policy());
-        let result = provider.transcribe(config);
+        let config = TranscriptionConfig::new("test-key", audio).with_base_url(&url);
+        let result = provider.transcribe_with_cancellation_and_request_policy(
+            config,
+            fast_request_policy(),
+            &CancellationContext::new(),
+        );
         let elapsed = start.elapsed();
 
         // Should fail after 4 attempts (0 + 3 retries)
         match &result {
-            Err(TranscriptionError::RateLimitExhausted { retries: 3 }) => {}
+            Err(CancellationError::Error(TranscriptionError::RateLimitExhausted {
+                retries: 3,
+            })) => {}
             other => panic!("Expected RateLimitExhausted with 3 retries, got: {other:?}"),
         }
 
@@ -437,6 +489,66 @@ mod tests {
             Err(TranscriptionError::Api { status: 401, .. })
         ));
         mock.assert(); // Exactly one hit - no retries for 401
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_failed_response_body_returns_cancelled_promptly() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("test listener should expose local address");
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("test server should accept one connection");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await;
+
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("test server should write headers");
+
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+
+        let provider = GroqProvider;
+        let audio = test_audio_wav();
+        let url = format!("http://{address}");
+        let config = TranscriptionConfig::new("test-key", audio).with_base_url(&url);
+        let cancellation = CancellationContext::new();
+        let cancellation_for_thread = cancellation.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            cancellation_for_thread.cancel();
+        });
+
+        let started = std::time::Instant::now();
+        let result = provider.transcribe_with_cancellation_and_request_policy(
+            config,
+            RequestPolicy::new(
+                Duration::from_secs(5),
+                0,
+                Duration::from_millis(1),
+                Duration::from_millis(2),
+            ),
+            &cancellation,
+        );
+        let elapsed = started.elapsed();
+
+        assert!(matches!(result, Err(CancellationError::Cancelled)));
+        assert!(elapsed < Duration::from_secs(1));
+
+        server.abort();
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use crate::audio::AudioChunk;
 use crate::audio::chunker::OVERLAP_SAMPLES;
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::encoder::AudioEncoder;
 use crate::encoder::WavEncoder;
 use crate::error::TranscriptionError;
@@ -185,21 +186,67 @@ impl TranscriptionPipeline {
     /// Post-process a merged transcription result and return the outcome.
     ///
     /// Fail-safe: returns the original result on error (never loses transcribed text).
+    ///
+    /// # Panics
+    ///
+    /// Panics only if a fresh, internal cancellation context is somehow
+    /// observed as cancelled, which indicates a bug in the cancellation flow.
     #[must_use]
     pub fn post_process_result_with_outcome(
         &self,
-        mut result: TranscriptionResult,
+        result: TranscriptionResult,
     ) -> (TranscriptionResult, PostProcessOutcome) {
+        crate::runtime::block_on(
+            self.post_process_result_with_cancellation_async(result, &CancellationContext::new()),
+        )
+        .unwrap_or_else(|err| match err {
+            CancellationError::Cancelled => {
+                panic!("fresh cancellation context cannot be cancelled")
+            }
+            CancellationError::Error(err) => panic!("post-processing unexpectedly failed: {err}"),
+        })
+    }
+
+    /// Post-process a merged transcription result while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for
+    /// post-processing failures, or `Cancelled` once cancellation is observed.
+    pub fn post_process_result_with_cancellation(
+        &self,
+        result: TranscriptionResult,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<(TranscriptionResult, PostProcessOutcome), TranscriptionError> {
+        crate::runtime::block_on(
+            self.post_process_result_with_cancellation_async(result, cancellation),
+        )
+    }
+
+    /// Async post-processing path used by the cancellable transport layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for
+    /// post-processing failures, or `Cancelled` once cancellation is observed.
+    #[allow(clippy::unused_async)]
+    pub async fn post_process_result_with_cancellation_async(
+        &self,
+        mut result: TranscriptionResult,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<(TranscriptionResult, PostProcessOutcome), TranscriptionError> {
+        cancellation.check()?;
+
         if !self.config.post_process {
-            return (result, PostProcessOutcome::NotConfigured);
+            return Ok((result, PostProcessOutcome::NotConfigured));
         }
 
         let Some(ref pp) = self.post_processor else {
-            return (result, PostProcessOutcome::NotConfigured);
+            return Ok((result, PostProcessOutcome::NotConfigured));
         };
 
         if result.text.is_empty() {
-            return (result, PostProcessOutcome::SkippedEmptyText);
+            return Ok((result, PostProcessOutcome::SkippedEmptyText));
         }
 
         // VerboseJson includes segments/words with timestamps that correspond
@@ -207,7 +254,7 @@ impl TranscriptionPipeline {
         // would produce self-contradictory JSON, so skip post-processing.
         if self.config.response_format == ResponseFormat::VerboseJson {
             eprintln!("[dictate] skipping post-processing (incompatible with verbose_json format)");
-            return (result, PostProcessOutcome::SkippedVerboseJson);
+            return Ok((result, PostProcessOutcome::SkippedVerboseJson));
         }
 
         let config = PostProcessConfig {
@@ -219,20 +266,29 @@ impl TranscriptionPipeline {
             request_policy: self.config.request_policies.post_process,
         };
 
-        match pp.process(&result.text, config) {
+        match pp.process_with_cancellation_and_request_policy(
+            &result.text,
+            config,
+            self.config.request_policies.post_process,
+            cancellation,
+        ) {
             Ok(processed) if processed.trim().is_empty() => {
+                cancellation.check()?;
                 eprintln!(
                     "[dictate] post-processing returned empty text, keeping raw transcription"
                 );
-                (result, PostProcessOutcome::FailedFallback)
+                Ok((result, PostProcessOutcome::FailedFallback))
             }
             Ok(processed) => {
+                cancellation.check()?;
                 result.text = processed;
-                (result, PostProcessOutcome::Applied)
+                Ok((result, PostProcessOutcome::Applied))
             }
-            Err(err) => {
+            Err(CancellationError::Cancelled) => Err(CancellationError::Cancelled),
+            Err(CancellationError::Error(err)) => {
+                cancellation.check()?;
                 eprintln!("[dictate] post-processing failed, using raw transcription: {err}");
-                (result, PostProcessOutcome::FailedFallback)
+                Ok((result, PostProcessOutcome::FailedFallback))
             }
         }
     }
@@ -246,6 +302,45 @@ impl TranscriptionPipeline {
         &self,
         chunk: &AudioChunk,
     ) -> Result<TranscriptionResult, TranscriptionError> {
+        crate::runtime::block_on(
+            self.transcribe_chunk_with_cancellation_async(chunk, &CancellationContext::new()),
+        )
+        .map_err(|err| match err {
+            CancellationError::Cancelled => {
+                unreachable!("fresh cancellation context cannot be cancelled")
+            }
+            CancellationError::Error(err) => err,
+        })
+    }
+
+    /// Encode and transcribe a single audio chunk while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] if encoding or
+    /// transcription fails, or `Cancelled` if the session is aborted.
+    pub fn transcribe_chunk_with_cancellation(
+        &self,
+        chunk: &AudioChunk,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        crate::runtime::block_on(self.transcribe_chunk_with_cancellation_async(chunk, cancellation))
+    }
+
+    /// Async transcription path used by the cancellable transport layer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] if encoding or
+    /// transcription fails, or `Cancelled` if the session is aborted.
+    #[allow(clippy::unused_async)]
+    pub async fn transcribe_chunk_with_cancellation_async(
+        &self,
+        chunk: &AudioChunk,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        cancellation.check()?;
+
         let samples = if chunk.has_leading_overlap {
             let overlap_start = OVERLAP_SAMPLES.min(chunk.samples.len());
             &chunk.samples[overlap_start..]
@@ -263,7 +358,10 @@ impl TranscriptionPipeline {
             });
         }
 
-        let encoded = self.encoder.encode(samples, TRANSCRIPTION_SAMPLE_RATE)?;
+        let encoded = self
+            .encoder
+            .encode(samples, TRANSCRIPTION_SAMPLE_RATE)
+            .map_err(CancellationError::Error)?;
 
         // Build provider config with borrowed values
         let mut provider_config = crate::provider::TranscriptionConfig::new(&self.api_key, encoded);
@@ -291,7 +389,15 @@ impl TranscriptionPipeline {
         provider_config =
             provider_config.with_request_policy(self.config.request_policies.transcription);
 
-        self.provider.transcribe(provider_config)
+        let result = self
+            .provider
+            .transcribe_with_cancellation_and_request_policy(
+                provider_config,
+                self.config.request_policies.transcription,
+                cancellation,
+            )?;
+        cancellation.check()?;
+        Ok(result)
     }
 }
 
@@ -309,6 +415,7 @@ impl std::fmt::Debug for TranscriptionPipeline {
 mod tests {
     use super::*;
     use crate::encoder::EncodedAudio;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     /// Mock provider that returns a fixed response for every call.
@@ -359,6 +466,34 @@ mod tests {
 
             Ok(TranscriptionResult {
                 text: self.response.clone(),
+                segments: None,
+                words: None,
+            })
+        }
+    }
+
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingProvider {
+        fn new(calls: Arc<AtomicUsize>) -> Self {
+            Self { calls }
+        }
+    }
+
+    impl TranscriptionProvider for CountingProvider {
+        fn name(&self) -> &'static str {
+            "counting"
+        }
+
+        fn transcribe(
+            &self,
+            _config: crate::provider::TranscriptionConfig<'_>,
+        ) -> Result<TranscriptionResult, TranscriptionError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(TranscriptionResult {
+                text: "counted".into(),
                 segments: None,
                 words: None,
             })
@@ -492,6 +627,24 @@ mod tests {
             "single sample after overlap trim should succeed"
         );
         assert_eq!(encoded_sample_counts.lock().unwrap().as_slice(), &[1]);
+    }
+
+    #[test]
+    fn cancelled_chunk_skips_provider_call() {
+        let provider_calls = Arc::new(AtomicUsize::new(0));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(CountingProvider::new(Arc::clone(&provider_calls))),
+            "test-key".into(),
+            PipelineConfig::default(),
+        );
+        let cancellation = CancellationContext::new();
+        cancellation.cancel();
+
+        let result =
+            pipeline.transcribe_chunk_with_cancellation(&test_chunk(0, 1.0), &cancellation);
+
+        assert!(matches!(result, Err(CancellationError::Cancelled)));
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -917,5 +1070,34 @@ mod tests {
             recorded_base_url, None,
             "post-processor should get None when post_process_base_url is unset (not inherit base_url)"
         );
+    }
+
+    #[test]
+    fn cancelled_post_process_returns_cancelled_without_fallback() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("test")),
+            "test-key".into(),
+            PipelineConfig {
+                response_format: ResponseFormat::Json,
+                post_process: true,
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(Box::new(MockPostProcessor::new(Arc::clone(&calls))));
+        let cancellation = CancellationContext::new();
+        cancellation.cancel();
+
+        let result = pipeline.post_process_result_with_cancellation(
+            TranscriptionResult {
+                text: "hello world".into(),
+                segments: None,
+                words: None,
+            },
+            &cancellation,
+        );
+
+        assert!(matches!(result, Err(CancellationError::Cancelled)));
+        assert!(calls.lock().unwrap().is_empty());
     }
 }

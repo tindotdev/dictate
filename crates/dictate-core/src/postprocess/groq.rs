@@ -5,13 +5,15 @@
 
 use std::time::Duration;
 
-use backon::{BlockingRetryable, ExponentialBuilder};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::{PostProcessConfig, PostProcessor};
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::groq_error::api_error_from_failed_response;
+use crate::request_policy::RequestPolicy;
+use crate::retry::retry_with_cancellation;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -46,70 +48,110 @@ impl PostProcessor for GroqPostProcessor {
         text: &str,
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError> {
-        if text.is_empty() {
-            return Ok(String::new());
-        }
+        let request_policy = config.request_policy;
+        crate::runtime::block_on(process_request_async(
+            text,
+            config,
+            request_policy,
+            &CancellationContext::new(),
+        ))
+        .map_err(|err| match err {
+            CancellationError::Cancelled => {
+                unreachable!("fresh cancellation context cannot be cancelled")
+            }
+            CancellationError::Error(err) => err,
+        })
+    }
 
-        let url = config.base_url.unwrap_or(DEFAULT_CHAT_URL);
-        let model = config.model.unwrap_or(DEFAULT_POST_PROCESS_MODEL);
-        let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
-        let temperature = config.temperature;
-        let client = chat_client(config.request_policy.timeout)?;
-
-        retry_chat_request(
-            || {
-                send_chat_request(
-                    &client,
-                    url,
-                    config.api_key,
-                    model,
-                    text,
-                    system_prompt,
-                    temperature,
-                )
-            },
-            retry_builder(config.request_policy),
-            config.request_policy.max_retries,
-            |err, dur| {
-                eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
-            },
+    fn process_with_cancellation(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        let request_policy = config.request_policy;
+        self.process_with_cancellation_and_request_policy(
+            text,
+            config,
+            request_policy,
+            cancellation,
         )
+    }
+
+    fn process_with_cancellation_and_request_policy(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        crate::runtime::block_on(process_request_async(
+            text,
+            config,
+            request_policy,
+            cancellation,
+        ))
     }
 }
 
-fn retry_builder(request_policy: crate::request_policy::RequestPolicy) -> ExponentialBuilder {
-    ExponentialBuilder::default()
-        .with_min_delay(request_policy.base_delay)
-        .with_max_delay(request_policy.max_delay)
-        .with_max_times(request_policy.max_retries as usize)
+async fn process_request_async(
+    text: &str,
+    config: PostProcessConfig<'_>,
+    request_policy: RequestPolicy,
+    cancellation: &CancellationContext,
+) -> CancellationResult<String, TranscriptionError> {
+    cancellation.check()?;
+
+    if text.is_empty() {
+        return Ok(String::new());
+    }
+
+    let url = config.base_url.unwrap_or(DEFAULT_CHAT_URL);
+    let model = config.model.unwrap_or(DEFAULT_POST_PROCESS_MODEL);
+    let system_prompt = config.system_prompt.unwrap_or(SYSTEM_PROMPT);
+    let client = chat_client(request_policy.timeout).map_err(CancellationError::Error)?;
+    let params = ChatRequestParams {
+        api_key: config.api_key,
+        model,
+        text,
+        system_prompt,
+        temperature: config.temperature,
+    };
+
+    retry_chat_request(
+        request_policy,
+        cancellation,
+        || send_chat_request(&client, url, &params, cancellation),
+        |err, dur| {
+            eprintln!("[dictate] post-process retrying after {dur:?}: {err}");
+        },
+    )
+    .await
 }
 
-fn retry_chat_request<Op, Notify>(
-    mut operation: Op,
-    retry: ExponentialBuilder,
-    max_retries: u32,
+fn request_error(err: &reqwest::Error) -> TranscriptionError {
+    if err.is_timeout() || err.is_connect() || err.is_request() {
+        TranscriptionError::Network(err.to_string())
+    } else {
+        TranscriptionError::InvalidResponse(format!("HTTP request failed: {err}"))
+    }
+}
+
+async fn retry_chat_request<Op, Fut, Notify>(
+    request_policy: crate::request_policy::RequestPolicy,
+    cancellation: &CancellationContext,
+    operation: Op,
     mut notify: Notify,
-) -> Result<String, TranscriptionError>
+) -> CancellationResult<String, TranscriptionError>
 where
-    Op: FnMut() -> Result<String, TranscriptionError>,
+    Op: FnMut() -> Fut,
+    Fut: std::future::Future<Output = CancellationResult<String, TranscriptionError>>,
     Notify: FnMut(&TranscriptionError, Duration),
 {
-    (|| operation())
-        .retry(retry)
-        .when(super::super::error::TranscriptionError::is_retryable)
-        .notify(|err, dur| {
-            notify(err, dur);
-        })
-        .call()
-        .map_err(|e| {
-            if e.is_rate_limit_error() {
-                TranscriptionError::RateLimitExhausted {
-                    retries: max_retries,
-                }
-            } else {
-                e
-            }
-        })
+    retry_with_cancellation(request_policy, cancellation, operation, |err, dur| {
+        notify(err, dur);
+    })
+    .await
 }
 
 // ─── HTTP request ────────────────────────────────────────────────────────────
@@ -143,59 +185,69 @@ struct ChatChoiceMessage {
     content: String,
 }
 
+struct ChatRequestParams<'a> {
+    api_key: &'a str,
+    model: &'a str,
+    text: &'a str,
+    system_prompt: &'a str,
+    temperature: Option<f32>,
+}
+
 /// Perform a single chat completion request.
-fn send_chat_request(
+async fn send_chat_request(
     client: &Client,
     url: &str,
-    api_key: &str,
-    model: &str,
-    text: &str,
-    system_prompt: &str,
-    temperature: Option<f32>,
-) -> Result<String, TranscriptionError> {
+    params: &ChatRequestParams<'_>,
+    cancellation: &CancellationContext,
+) -> CancellationResult<String, TranscriptionError> {
+    cancellation.check()?;
+
     let body = ChatRequest {
-        model,
+        model: params.model,
         messages: vec![
             ChatMessage {
                 role: "system",
-                content: system_prompt,
+                content: params.system_prompt,
             },
             ChatMessage {
                 role: "user",
-                content: text,
+                content: params.text,
             },
         ],
-        temperature,
+        temperature: params.temperature,
     };
 
-    let response = client
-        .post(url)
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .map_err(|e| {
-            if e.is_timeout() || e.is_connect() || e.is_request() {
-                TranscriptionError::Network(e.to_string())
-            } else {
-                TranscriptionError::InvalidResponse(format!("HTTP request failed: {e}"))
-            }
-        })?;
+    let response = cancellation
+        .run_until_cancelled(
+            client
+                .post(url)
+                .bearer_auth(params.api_key)
+                .json(&body)
+                .send(),
+        )
+        .await?
+        .map_err(|err| CancellationError::Error(request_error(&err)))?;
 
     let status = response.status();
 
     if !status.is_success() {
-        return Err(api_error_from_failed_response(
-            response,
-            "Groq post-process error",
-        ));
+        let error =
+            api_error_from_failed_response(response, "Groq post-process error", cancellation)
+                .await
+                .map_err(CancellationError::from)?;
+        return Err(CancellationError::Error(error));
     }
 
-    let body = response
-        .text()
-        .map_err(|e| TranscriptionError::InvalidResponse(e.to_string()))?;
+    let body = cancellation
+        .run_until_cancelled(response.text())
+        .await?
+        .map_err(|e| {
+            CancellationError::Error(TranscriptionError::InvalidResponse(e.to_string()))
+        })?;
 
-    let parsed: ChatResponse = serde_json::from_str(&body)
-        .map_err(|e| TranscriptionError::InvalidResponse(format!("{e}: {body}")))?;
+    let parsed: ChatResponse = serde_json::from_str(&body).map_err(|e| {
+        CancellationError::Error(TranscriptionError::InvalidResponse(format!("{e}: {body}")))
+    })?;
 
     parsed
         .choices
@@ -203,13 +255,16 @@ fn send_chat_request(
         .next()
         .map(|c| c.message.content.trim().to_string())
         .ok_or_else(|| {
-            TranscriptionError::InvalidResponse("chat response contained no choices".to_string())
+            CancellationError::Error(TranscriptionError::InvalidResponse(
+                "chat response contained no choices".to_string(),
+            ))
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancellation::CancellationContext;
     use crate::request_policy::RequestPolicy;
 
     fn fast_request_policy() -> RequestPolicy {
@@ -221,33 +276,32 @@ mod tests {
         )
     }
 
-    fn fast_retry_builder() -> ExponentialBuilder {
-        retry_builder(fast_request_policy())
-    }
-
     #[test]
     fn retry_exhaustion_retries_then_returns_last_retryable_error() {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(CancellationError::Error(TranscriptionError::Api {
                     status: 503,
                     message: "service unavailable".to_string(),
-                })
+                })))
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
-            Err(TranscriptionError::Api { status: 503, .. })
+            Err(CancellationError::Error(TranscriptionError::Api {
+                status: 503,
+                ..
+            }))
         ));
         assert_eq!(attempts, (fast_request_policy().max_retries + 1) as usize);
         assert_eq!(notifications, fast_request_policy().max_retries as usize);
@@ -258,24 +312,26 @@ mod tests {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(CancellationError::Error(TranscriptionError::Api {
                     status: 429,
                     message: "rate limited".to_string(),
-                })
+                })))
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
-            Err(TranscriptionError::RateLimitExhausted { retries: 3 })
+            Err(CancellationError::Error(
+                TranscriptionError::RateLimitExhausted { retries: 3 }
+            ))
         ));
         assert_eq!(attempts, (fast_request_policy().max_retries + 1) as usize);
         assert_eq!(notifications, fast_request_policy().max_retries as usize);
@@ -286,24 +342,27 @@ mod tests {
         let mut attempts = 0;
         let mut notifications = 0;
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
                 attempts += 1;
-                Err(TranscriptionError::Api {
+                std::future::ready(Err(CancellationError::Error(TranscriptionError::Api {
                     status: 401,
                     message: "invalid key".to_string(),
-                })
+                })))
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |_, _| {
                 notifications += 1;
             },
-        );
+        ));
 
         assert!(matches!(
             result,
-            Err(TranscriptionError::Api { status: 401, .. })
+            Err(CancellationError::Error(TranscriptionError::Api {
+                status: 401,
+                ..
+            }))
         ));
         assert_eq!(attempts, 1);
         assert_eq!(notifications, 0);
@@ -313,20 +372,23 @@ mod tests {
     fn retry_notify_receives_each_retryable_error() {
         let mut notifications = Vec::new();
 
-        let result = retry_chat_request(
+        let result = crate::runtime::block_on(retry_chat_request(
+            fast_request_policy(),
+            &CancellationContext::new(),
             || {
-                Err(TranscriptionError::Network(
+                std::future::ready(Err(CancellationError::Error(TranscriptionError::Network(
                     "connection reset by peer".to_string(),
-                ))
+                ))))
             },
-            fast_retry_builder(),
-            fast_request_policy().max_retries,
             |err, dur| {
                 notifications.push((err.to_string(), dur));
             },
-        );
+        ));
 
-        assert!(matches!(result, Err(TranscriptionError::Network(_))));
+        assert!(matches!(
+            result,
+            Err(CancellationError::Error(TranscriptionError::Network(_)))
+        ));
         assert_eq!(
             notifications.len(),
             fast_request_policy().max_retries as usize
@@ -385,7 +447,12 @@ mod tests {
             request_policy: fast_request_policy(),
         };
 
-        let result = pp.process("um hello how are you uh doing today", config);
+        let result = pp.process_with_cancellation_and_request_policy(
+            "um hello how are you uh doing today",
+            config,
+            fast_request_policy(),
+            &CancellationContext::new(),
+        );
         assert_eq!(result.unwrap(), "Hello, how are you doing today?");
         mock.assert();
     }
@@ -414,10 +481,18 @@ mod tests {
             request_policy: fast_request_policy(),
         };
 
-        let result = pp.process("hello", config);
+        let result = pp.process_with_cancellation_and_request_policy(
+            "hello",
+            config,
+            fast_request_policy(),
+            &CancellationContext::new(),
+        );
         assert!(matches!(
             result,
-            Err(TranscriptionError::Api { status: 401, .. })
+            Err(CancellationError::Error(TranscriptionError::Api {
+                status: 401,
+                ..
+            }))
         ));
     }
 
@@ -453,7 +528,12 @@ mod tests {
             request_policy: fast_request_policy(),
         };
 
-        let result = pp.process("some text", config);
+        let result = pp.process_with_cancellation_and_request_policy(
+            "some text",
+            config,
+            fast_request_policy(),
+            &CancellationContext::new(),
+        );
         assert!(result.is_ok());
         mock.assert();
     }

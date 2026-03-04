@@ -10,6 +10,7 @@ pub mod groq;
 
 pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
 
@@ -28,6 +29,47 @@ pub trait PostProcessor: Send + Sync {
         text: &str,
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError>;
+
+    /// Clean up the given transcription text while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_cancellation(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        cancellation.check()?;
+        let result = self
+            .process(text, config)
+            .map_err(CancellationError::Error)?;
+        cancellation.check()?;
+        Ok(result)
+    }
+
+    /// Clean up the given transcription text using the supplied transport
+    /// policy while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_cancellation_and_request_policy(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        self.process_with_cancellation(
+            text,
+            config.with_request_policy(request_policy),
+            cancellation,
+        )
+    }
 }
 
 /// Configuration for a post-processing request.

@@ -7,6 +7,7 @@ mod groq;
 
 pub use groq::GroqProvider;
 
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::encoder::EncodedAudio;
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
@@ -224,8 +225,6 @@ pub struct TranscriptionResult {
 
 /// A speech-to-text backend that can transcribe encoded audio into text.
 ///
-/// The trait is intentionally minimal for v3.0 (sync, one method). Async
-/// and streaming variants will be added when the daemon (v3.1) needs them.
 pub trait TranscriptionProvider: Send + Sync {
     /// Human-readable name of this provider (e.g. `"groq"`).
     fn name(&self) -> &'static str;
@@ -240,6 +239,39 @@ pub trait TranscriptionProvider: Send + Sync {
         &self,
         config: TranscriptionConfig<'_>,
     ) -> Result<TranscriptionResult, TranscriptionError>;
+
+    /// Send encoded audio to the provider while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn transcribe_with_cancellation(
+        &self,
+        config: TranscriptionConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        cancellation.check()?;
+        let result = self.transcribe(config).map_err(CancellationError::Error)?;
+        cancellation.check()?;
+        Ok(result)
+    }
+
+    /// Send encoded audio using the supplied transport policy while observing
+    /// cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn transcribe_with_cancellation_and_request_policy(
+        &self,
+        config: TranscriptionConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        self.transcribe_with_cancellation(config.with_request_policy(request_policy), cancellation)
+    }
 }
 
 #[cfg(test)]

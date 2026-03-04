@@ -31,9 +31,25 @@ assert_contains() {
 	grep -F -- "$pattern" "$file" >/dev/null || fail "expected '$pattern' in $file"
 }
 
+assert_not_contains() {
+	local file="$1"
+	local pattern="$2"
+	if [[ -f "$file" ]] && grep -F -- "$pattern" "$file" >/dev/null; then
+		fail "did not expect '$pattern' in $file"
+	fi
+}
+
 assert_not_exists() {
 	local path="$1"
 	[[ ! -e "$path" ]] || fail "expected $path to be absent"
+}
+
+assert_line_count() {
+	local file="$1"
+	local expected="$2"
+	local count
+	count=$(wc -l <"$file")
+	[[ "$count" == "$expected" ]] || fail "expected $file to have $expected lines, found $count"
 }
 
 setup_env() {
@@ -48,12 +64,17 @@ setup_env() {
 	export DICTATE_BIN="$HOME/.cargo/bin/dictate"
 	export FAKE_DICTATE_LOG="$TEST_ROOT/dictate.log"
 	export FAKE_DICTATE_SIGNAL_LOG="$TEST_ROOT/dictate-signals.log"
+	export FAKE_DICTATE_READY_FILE="$TEST_ROOT/dictate-ready"
 	export FAKE_NOTIFY_LOG="$TEST_ROOT/notify.log"
 	export FAKE_GDBUS_LOG="$TEST_ROOT/gdbus.log"
 	export FAKE_KITTEN_LOG="$TEST_ROOT/kitten.log"
 	export FAKE_KITTEN_CONTENT_LOG="$TEST_ROOT/kitten-content.log"
 	export FAKE_DICTATE_STDOUT="typed text"
 	export FAKE_RETRY_STDOUT="retry text"
+	export FAKE_DICTATE_STOP_DELAY="0"
+	export FAKE_DICTATE_STOP_EXIT_CODE="0"
+	export FAKE_DICTATE_CANCEL_EXIT_CODE="130"
+	export FAKE_DICTATE_TERM_EXIT_CODE="0"
 	export PATH="$HOME/.cargo/bin:$PATH"
 
 	create_fake_binaries
@@ -93,6 +114,11 @@ with open(os.environ["FAKE_DICTATE_LOG"], "a", encoding="utf-8") as handle:
 
 stdout_mode = "--stdout" in args
 retry_mode = "retry" in args
+stop_exit_code = int(os.environ.get("FAKE_DICTATE_STOP_EXIT_CODE", "0"))
+cancel_exit_code = int(os.environ.get("FAKE_DICTATE_CANCEL_EXIT_CODE", "130"))
+term_exit_code = int(os.environ.get("FAKE_DICTATE_TERM_EXIT_CODE", "0"))
+stop_delay = float(os.environ.get("FAKE_DICTATE_STOP_DELAY", "0"))
+stop_requested_at = None
 
 if retry_mode:
     if "--save-last-audio" in args:
@@ -102,19 +128,44 @@ if retry_mode:
         sys.stdout.flush()
     raise SystemExit(int(os.environ.get("FAKE_DICTATE_RETRY_EXIT_CODE", "0")))
 
-def handle_signal(signum, _frame):
+def log_signal(signum):
     name = signal.Signals(signum).name
     with open(os.environ["FAKE_DICTATE_SIGNAL_LOG"], "a", encoding="utf-8") as handle:
         handle.write(f"signal:{name}\n")
+
+def finish_stop():
     if stdout_mode:
         sys.stdout.write(os.environ.get("FAKE_DICTATE_STDOUT", "typed text"))
         sys.stdout.flush()
-    raise SystemExit(0)
+    raise SystemExit(stop_exit_code)
 
-signal.signal(signal.SIGINT, handle_signal)
-signal.signal(signal.SIGTERM, handle_signal)
+def handle_stop(signum, _frame):
+    global stop_requested_at
+    log_signal(signum)
+    if stop_delay <= 0:
+        finish_stop()
+    stop_requested_at = time.monotonic()
+
+def handle_cancel(signum, _frame):
+    log_signal(signum)
+    raise SystemExit(cancel_exit_code)
+
+def handle_term(signum, _frame):
+    log_signal(signum)
+    raise SystemExit(term_exit_code)
+
+signal.signal(signal.SIGINT, handle_cancel)
+signal.signal(signal.SIGTERM, handle_term)
+signal.signal(signal.SIGUSR1, handle_stop)
+
+ready_file = os.environ.get("FAKE_DICTATE_READY_FILE")
+if ready_file:
+    with open(ready_file, "w", encoding="utf-8") as handle:
+        handle.write("ready\n")
 
 while True:
+    if stop_requested_at is not None and (time.monotonic() - stop_requested_at) >= stop_delay:
+        finish_stop()
     time.sleep(0.1)
 PY
 EOF
@@ -178,14 +229,38 @@ desktop_start_stop() {
 	run_launcher "$REPO_ROOT/contrib/dictate-launch" --language en
 	wait_for "desktop recording state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == recording ]]"
 	wait_for "desktop pidfile" "[[ -f \"$STATE_DIR/dictate.pid\" ]]"
+	wait_for "desktop ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 	wait_for "desktop dictate argv" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F -- '-p --language en --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 
 	sleep 1.1
 	run_launcher "$REPO_ROOT/contrib/dictate-launch"
-	wait_for "desktop INT signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "desktop USR1 signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "desktop cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" && ! -e \"$STATE_DIR/dictate.pid\" ]]"
 	assert_contains "$FAKE_NOTIFY_LOG" "Recording…"
 	assert_contains "$FAKE_NOTIFY_LOG" "Transcribing…"
+}
+
+desktop_cancel_transcribing() {
+	setup_env
+	trap cleanup_env RETURN
+	export FAKE_DICTATE_STOP_DELAY="5"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-launch" --language en
+	wait_for "desktop recording state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == recording ]]"
+	wait_for "desktop pidfile" "[[ -f \"$STATE_DIR/dictate.pid\" ]]"
+	wait_for "desktop ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
+
+	sleep 1.1
+	run_launcher "$REPO_ROOT/contrib/dictate-launch"
+	wait_for "desktop transcribing state" "[[ \$(cat \"$STATE_DIR/dictate.state\") == transcribing ]]"
+	wait_for "desktop stop signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-launch"
+	wait_for "desktop cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "desktop cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" && ! -e \"$STATE_DIR/dictate.pid\" ]]"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelled"
+	assert_not_contains "$FAKE_NOTIFY_LOG" "Transcription failed (exit 130)"
 }
 
 desktop_retry() {
@@ -207,13 +282,81 @@ kitty_start_stop() {
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
 	wait_for "kitty recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
 	wait_for "kitty pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
 	wait_for "kitty dictate argv" "[[ -f \"$FAKE_DICTATE_LOG\" ]] && grep -F -- '--stdout -p --language en --save-last-audio --transcription-model whisper-large-v3' \"$FAKE_DICTATE_LOG\" >/dev/null"
 
 	sleep 1.1
 	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
-	wait_for "kitty INT signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "kitty USR1 signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "kitty send-text content" "[[ -f \"$FAKE_KITTEN_CONTENT_LOG\" ]] && grep -F 'typed text' \"$FAKE_KITTEN_CONTENT_LOG\" >/dev/null"
 	wait_for "kitty cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+}
+
+kitty_retrigger_after_completion_keeps_pending_transcript() {
+	setup_env
+	trap cleanup_env RETURN
+	export KITTY_LISTEN_ON="unix:/tmp/fake-kitty.sock"
+
+	cat >"$HOME/.cargo/bin/kitten" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_KITTEN_LOG"
+
+from_file=""
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--from-file" ]]; then
+        from_file="$arg"
+        break
+    fi
+    prev="$arg"
+done
+
+sleep 1
+if [[ -n "$from_file" ]]; then
+    cat "$from_file" >>"$FAKE_KITTEN_CONTENT_LOG"
+fi
+EOF
+	chmod +x "$HOME/.cargo/bin/kitten"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
+	wait_for "kitty race recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
+	wait_for "kitty race pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty race ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
+
+	sleep 1.1
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty race send-text started" "[[ -f \"$FAKE_KITTEN_LOG\" ]]"
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty race send-text content" "[[ -f \"$FAKE_KITTEN_CONTENT_LOG\" ]] && grep -F 'typed text' \"$FAKE_KITTEN_CONTENT_LOG\" >/dev/null"
+	wait_for "kitty race cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	assert_line_count "$FAKE_DICTATE_LOG" 1
+	assert_contains "$FAKE_NOTIFY_LOG" "Transcribing…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Typed into terminal"
+}
+
+kitty_cancel_transcribing() {
+	setup_env
+	trap cleanup_env RETURN
+	export KITTY_LISTEN_ON="unix:/tmp/fake-kitty.sock"
+	export FAKE_DICTATE_STOP_DELAY="5"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
+	wait_for "kitty recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
+	wait_for "kitty pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty transcribing state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == transcribing ]]"
+	wait_for "kitty stop signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGUSR1' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
+	wait_for "kitty cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelled"
+	assert_not_contains "$FAKE_NOTIFY_LOG" "Failed (exit 130)"
+	assert_not_exists "$FAKE_KITTEN_CONTENT_LOG"
 }
 
 kitty_retry() {
@@ -231,11 +374,20 @@ main() {
 	desktop_start_stop
 	echo "ok - desktop start/stop"
 
+	desktop_cancel_transcribing
+	echo "ok - desktop cancel during transcription"
+
 	desktop_retry
 	echo "ok - desktop retry"
 
 	kitty_start_stop
 	echo "ok - kitty start/stop"
+
+	kitty_retrigger_after_completion_keeps_pending_transcript
+	echo "ok - kitty re-trigger after completion keeps transcript"
+
+	kitty_cancel_transcribing
+	echo "ok - kitty cancel during transcription"
 
 	kitty_retry
 	echo "ok - kitty retry"

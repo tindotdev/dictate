@@ -26,12 +26,21 @@ just install
 dictate                        # record -> clipboard
 dictate --stdout               # record -> stdout (+ clipboard)
 dictate --no-clipboard         # record -> stdout only
+dictate --stop-after 30s       # auto-stop after 30 seconds, then transcribe
 dictate --language en          # language hint for accuracy
 dictate --device <query>       # select device by name or index
 dictate --save-last-audio      # save audio locally for retry
 dictate retry                  # rerun Whisper + post-process on saved audio
 dictate devices                # list audio input devices
 ```
+
+Recording control:
+
+- Press `Enter` to stop recording and continue to transcription
+- For headless/scripted use, pass `--stop-after <duration>` (for example `30s`, `2m`, `500ms`)
+- Press `Ctrl+C` to cancel the current session
+- Cancelled `dictate` and `dictate retry` runs exit with status `130`
+- After cancellation is observed, `dictate` does not print transcript output or write to the clipboard
 
 ### Retry the last recording
 
@@ -167,7 +176,7 @@ The desktop launcher is a toggle — press once to start recording, press again 
 headlessly (no terminal window) and uses desktop notifications for feedback:
 
 - **Recording** — persistent notification stays visible while recording
-- **Transcribing** — replaces the recording notification on stop
+- **Transcribing** — replaces the recording notification after the launcher sends a dedicated stop signal
 - **Cancelling** — pressing the shortcut again during transcription requests cancellation
 - **Done** — shows result for 3 seconds, then auto-dismisses
 
@@ -183,6 +192,13 @@ Linux compositor examples:
 
 All flags after `dictate-launch` are passed through to `dictate` (e.g. `-p` for post-processing,
 `--language en`, `--device "USB Mic"`).
+
+Launcher control mapping on Linux/macOS:
+
+- First press starts recording
+- Second press during recording sends `SIGUSR1` to stop recording and continue to transcription
+- Press again during transcription to send `SIGINT` cancellation
+- Terminal `Ctrl+C` still means cancel, not stop
 
 Kitty adapter:
 

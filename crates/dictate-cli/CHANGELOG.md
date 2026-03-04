@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `dictate record --stop-after <duration>` as a built-in non-interactive stop path for headless/scripted recording flows
+
+### Changed
+
+- Split launcher stop vs cancel handling so launcher stop-recording uses `SIGUSR1` while `Ctrl+C`/`SIGINT` remain dedicated cancellation paths
+- Keep desktop and Kitty launcher smoke tests aligned with the separate stop and cancel signal behavior
+- Treat launcher-observed exit `130` as cancellation so launcher-driven transcription cancellation does not surface as a failure
+
 ## [1.7.0] - 2026-03-03
 
 ### Added
