@@ -42,7 +42,6 @@ body = """
   {% endfor %}
 {% endfor %}\n
 """
-footer = ""
 trim = true
 
 [changelog.git]
