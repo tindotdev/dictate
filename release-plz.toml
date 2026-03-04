@@ -1,6 +1,6 @@
 [workspace]
-# Generate changelog using Keep a Changelog format (matches existing CHANGELOG.md).
-changelog_config = "cliff.toml"
+# Keep a single changelog at the repository root for the user-facing CLI.
+changelog_update = false
 
 # PR settings
 pr_name = "chore: release v{{ version }}"
@@ -15,6 +15,57 @@ publish = false
 git_release_enable = true
 git_tag_enable = true
 
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).\n
+"""
+body = """
+{%- macro remote_url() -%}
+  https://github.com/tindotdev/dictate
+{%- endmacro -%}
+
+{% if version -%}
+  ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+  ## [Unreleased]
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+  ### {{ group | upper_first }}
+  {% for commit in commits %}
+    - {% if commit.breaking %}**BREAKING** {% endif %}{{ commit.message | upper_first | trim }}\
+  {% endfor %}
+{% endfor %}\n
+"""
+footer = ""
+trim = true
+
+[changelog.git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+
+commit_parsers = [
+  { message = "^feat", group = "Added" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^perf", group = "Changed" },
+  { message = "^doc", group = "Documentation" },
+  { message = "^test", group = "Testing" },
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^chore", group = "Miscellaneous" },
+]
+
+protect_breaking_commits = false
+filter_commits = false
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+
 # dictate-core is an internal library — no separate release.
 [[package]]
 name = "dictate-core"
@@ -25,3 +76,6 @@ release = false
 [[package]]
 name = "dictate-cli"
 git_only = true
+changelog_update = true
+changelog_path = "./CHANGELOG.md"
+changelog_include = ["dictate-core"]

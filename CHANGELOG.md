@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Add `dictate record --stop-after <duration>` as a built-in non-interactive stop path for headless/scripted recording flows
+
+### Changed
+
+- Split launcher stop vs cancel handling so launcher stop-recording uses `SIGUSR1` while `Ctrl+C`/`SIGINT` remain dedicated cancellation paths
+- Keep desktop and Kitty launcher smoke tests aligned with the separate stop and cancel signal behavior
+- Treat launcher-observed exit `130` as cancellation so launcher-driven transcription cancellation does not surface as a failure
+
+## [1.8.0] - 2026-03-04
+
+### Added
+
+- Add cancellation-aware recording pipeline
+
+## [1.7.0] - 2026-03-03
+
+### Added
+
+- Add opt-in saved-audio retry flow with `--save-last-audio` and `dictate retry`
+
+### Changed
+
+- Use shorter request/retry budgets for direct recording while keeping `dictate retry` as the longer, more persistent reprocessing path
+- Make repo-owned launcher assets the canonical source for desktop and Kitty integrations, with shared install/debug workflow
+- Add repo-local launcher smoke tests for start/stop/retry behavior
+
+## [1.6.0] - 2026-02-17
+
+### Added
+
+- Add shell completions support
+- Add launcher toggle flow with persistent notifications and auto-timeout
+
+## [1.5.0] - 2026-02-17
+
+### Added
+
+- Add post-processing cleanup and evaluation tooling for improving raw Whisper output quality
+
+### Changed
+
+- Rework prompt candidate evaluation to auto-discover test inputs at runtime
+
+### Fixed
+
+- Remove stale prompt includes and ignore generated prompt candidate artifacts
+
+## [1.4.0] - 2026-02-13
+
+### Added
+
+- Add vocabulary management and prompt hint merging
+
 ## [1.3.0] - 2026-02-12
 
 ### Added
@@ -166,11 +223,21 @@ Initial development releases (not publicly announced).
 
 ## Release Links
 
+- [1.8.0](https://github.com/tindotdev/dictate/releases/tag/v1.8.0) - 2026-03-04
+- [1.7.0](https://github.com/tindotdev/dictate/releases/tag/v1.7.0) - 2026-03-03
+- [1.6.0](https://github.com/tindotdev/dictate/releases/tag/v1.6.0) - 2026-02-17
+- [1.5.0](https://github.com/tindotdev/dictate/releases/tag/v1.5.0) - 2026-02-17
+- [1.4.0](https://github.com/tindotdev/dictate/releases/tag/v1.4.0) - 2026-02-13
 - [1.3.0](https://github.com/tindotdev/dictate/releases/tag/v1.3.0) - 2026-02-12
 - [1.1.0](https://github.com/tindotdev/dictate/releases/tag/v1.1.0) - 2026-02-10
 - [1.0.0](https://github.com/tindotdev/dictate/releases/tag/v1.0.0) - 2026-02-09
 - [0.2.0](https://github.com/tindotdev/dictate/releases/tag/v0.2.0) - 2026-01-04
 
+[1.8.0]: https://github.com/tindotdev/dictate/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/tindotdev/dictate/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/tindotdev/dictate/compare/v1.5.0...v1.6.0
+[1.5.0]: https://github.com/tindotdev/dictate/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/tindotdev/dictate/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tindotdev/dictate/compare/v1.2.0...v1.3.0
 [1.1.0]: https://github.com/tindotdev/dictate/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tindotdev/dictate/compare/v0.3.0...v1.0.0

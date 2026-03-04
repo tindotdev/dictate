@@ -99,4 +99,4 @@ crates/
 
 ## Feature Work Process
 
-- If behavior or CLI surface changes are user-visible, update `README.md` and relevant changelog entries in the same change.
+- If behavior or CLI surface changes are user-visible, update `README.md`. Release notes are generated from Conventional Commits into the root `CHANGELOG.md` via `release-plz`, so keep commit messages release-note-ready instead of hand-editing changelog entries.
