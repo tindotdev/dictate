@@ -44,11 +44,6 @@ body = """
 """
 trim = true
 
-[changelog.git]
-conventional_commits = true
-filter_unconventional = true
-split_commits = false
-
 commit_parsers = [
   { message = "^feat", group = "Added" },
   { message = "^fix", group = "Fixed" },
@@ -61,7 +56,6 @@ commit_parsers = [
 ]
 
 protect_breaking_commits = false
-filter_commits = false
 tag_pattern = "v[0-9].*"
 sort_commits = "oldest"
 
