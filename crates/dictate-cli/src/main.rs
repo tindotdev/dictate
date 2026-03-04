@@ -71,6 +71,9 @@ fn build_record_options(args: args::RecordArgs) -> commands::record::RecordOptio
     if let Some(device) = args.device {
         options = options.device(device);
     }
+    if let Some(stop_after) = args.stop_after {
+        options = options.stop_after(stop_after);
+    }
     if args.save_last_audio {
         options = options.save_last_audio(true);
     }
@@ -194,6 +197,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn cancelled_run_maps_to_exit_code_130() {
@@ -209,5 +213,34 @@ mod tests {
             exit_code_for_run_result(Ok(commands::record::RunOutcome::Completed)),
             ExitCode::SUCCESS
         );
+    }
+
+    #[test]
+    fn build_record_options_maps_stop_after() {
+        let options = build_record_options(args::RecordArgs {
+            device: None,
+            stop_after: Some(Duration::from_secs(30)),
+            transcription: args::TranscriptionArgs {
+                base_url: None,
+                language: None,
+                prompt: None,
+                format: None,
+                transcription_model: None,
+                temperature: None,
+                timestamp_granularities: None,
+                output: args::OutputArgs {
+                    stdout: false,
+                    no_clipboard: true,
+                },
+            },
+            post_process: args::RecordPostProcessArgs {
+                enabled: false,
+                model: None,
+                base_url: None,
+            },
+            save_last_audio: false,
+        });
+
+        assert_eq!(options.stop_after, Some(Duration::from_secs(30)));
     }
 }

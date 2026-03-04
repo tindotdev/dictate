@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use clap::{Args, Parser, Subcommand};
 use dictate_core::ModelId;
 
@@ -10,6 +12,52 @@ fn parse_temperature(s: &str) -> Result<f32, String> {
         return Err(format!("temperature {temp} is out of range (0.0–1.0)"));
     }
     Ok(temp)
+}
+
+fn invalid_duration(trimmed: &str) -> String {
+    format!(
+        "invalid duration '{trimmed}'; use a positive number optionally suffixed with ms, s, m, or h"
+    )
+}
+
+/// Parse a positive duration with optional unit suffix.
+///
+/// Supported suffixes:
+/// - `ms` for milliseconds
+/// - `s` for seconds
+/// - `m` for minutes
+/// - `h` for hours
+///
+/// Bare numbers default to seconds.
+fn parse_duration(s: &str) -> Result<Duration, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err("duration cannot be empty".to_string());
+    }
+
+    let (value, multiplier) = [("ms", 0.001), ("s", 1.0), ("m", 60.0), ("h", 3600.0)]
+        .into_iter()
+        .find_map(|(suffix, multiplier)| {
+            trimmed
+                .strip_suffix(suffix)
+                .map(|value| (value, multiplier))
+        })
+        .unwrap_or((trimmed, 1.0));
+
+    let amount = value
+        .parse::<f64>()
+        .map_err(|_| invalid_duration(trimmed))?;
+
+    if !amount.is_finite() || amount <= 0.0 {
+        return Err(invalid_duration(trimmed));
+    }
+
+    let seconds = amount * multiplier;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Err(invalid_duration(trimmed));
+    }
+
+    Duration::try_from_secs_f64(seconds).map_err(|_| invalid_duration(trimmed))
 }
 
 #[derive(Parser)]
@@ -33,7 +81,7 @@ pub enum Commands {
     /// List available audio input devices
     Devices,
 
-    /// Record audio until Enter; Ctrl+C cancels the session
+    /// Record audio until Enter or `--stop-after`; Ctrl+C cancels the session
     Record(RecordArgs),
 
     /// Reuse the last saved recording and rerun transcription; Ctrl+C cancels the session
@@ -203,6 +251,10 @@ pub struct RecordArgs {
     #[arg(long)]
     pub device: Option<String>,
 
+    /// Automatically stop recording after this duration (e.g. `30s`, `2m`, `500ms`)
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
+    pub stop_after: Option<Duration>,
+
     #[command(flatten)]
     pub transcription: TranscriptionArgs,
 
@@ -267,6 +319,35 @@ mod tests {
         };
 
         assert!(args.save_last_audio);
+    }
+
+    #[test]
+    fn record_accepts_stop_after_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "--stop-after", "2.5s"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert_eq!(args.stop_after, Some(Duration::from_secs_f64(2.5)));
+    }
+
+    #[test]
+    fn record_rejects_non_positive_stop_after() {
+        let result = Cli::try_parse_from(["dictate", "record", "--stop-after", "0"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_rejects_oversized_stop_after() {
+        let result = Cli::try_parse_from(["dictate", "record", "--stop-after", "1e308h"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retry_rejects_stop_after_flag() {
+        let result = Cli::try_parse_from(["dictate", "retry", "--stop-after", "30s"]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -504,7 +585,16 @@ mod tests {
 
     #[test]
     fn top_level_multiple_flags() {
-        let cli = Cli::parse_from(["dictate", "--stdout", "--language", "es", "--device", "mic"]);
+        let cli = Cli::parse_from([
+            "dictate",
+            "--stdout",
+            "--language",
+            "es",
+            "--device",
+            "mic",
+            "--stop-after",
+            "45s",
+        ]);
         assert!(cli.command.is_none());
         assert!(cli.record_args.transcription.output.stdout);
         assert_eq!(
@@ -512,6 +602,7 @@ mod tests {
             Some("es")
         );
         assert_eq!(cli.record_args.device.as_deref(), Some("mic"));
+        assert_eq!(cli.record_args.stop_after, Some(Duration::from_secs(45)));
     }
 
     #[test]

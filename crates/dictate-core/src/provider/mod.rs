@@ -7,9 +7,7 @@ mod groq;
 
 pub use groq::GroqProvider;
 
-use async_trait::async_trait;
-
-use crate::cancellation::CancellationContext;
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::encoder::EncodedAudio;
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
@@ -227,14 +225,11 @@ pub struct TranscriptionResult {
 
 /// A speech-to-text backend that can transcribe encoded audio into text.
 ///
-/// Async transport is the primary execution model, with sync convenience
-/// wrappers retained so the CLI can stay synchronous.
-#[async_trait]
 pub trait TranscriptionProvider: Send + Sync {
     /// Human-readable name of this provider (e.g. `"groq"`).
     fn name(&self) -> &'static str;
 
-    /// Synchronous convenience wrapper around [`Self::transcribe_async`].
+    /// Send encoded audio to the provider and return the transcribed text with optional metadata.
     ///
     /// # Errors
     ///
@@ -243,48 +238,40 @@ pub trait TranscriptionProvider: Send + Sync {
     fn transcribe(
         &self,
         config: TranscriptionConfig<'_>,
-    ) -> Result<TranscriptionResult, TranscriptionError> {
-        crate::runtime::block_on(self.transcribe_async(config))
-    }
-
-    /// Send encoded audio to the provider and return the transcribed text with optional metadata.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    /// Implementations should retry transient errors internally.
-    async fn transcribe_async(
-        &self,
-        config: TranscriptionConfig<'_>,
-    ) -> Result<TranscriptionResult, TranscriptionError> {
-        self.transcribe_with_cancellation_async(config, &CancellationContext::new())
-            .await
-    }
-
-    /// Synchronous convenience wrapper around
-    /// [`Self::transcribe_with_cancellation_async`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    fn transcribe_with_cancellation(
-        &self,
-        config: TranscriptionConfig<'_>,
-        cancellation: &CancellationContext,
-    ) -> Result<TranscriptionResult, TranscriptionError> {
-        crate::runtime::block_on(self.transcribe_with_cancellation_async(config, cancellation))
-    }
+    ) -> Result<TranscriptionResult, TranscriptionError>;
 
     /// Send encoded audio to the provider while observing cancellation.
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    async fn transcribe_with_cancellation_async(
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn transcribe_with_cancellation(
         &self,
         config: TranscriptionConfig<'_>,
         cancellation: &CancellationContext,
-    ) -> Result<TranscriptionResult, TranscriptionError>;
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        cancellation.check()?;
+        let result = self.transcribe(config).map_err(CancellationError::Error)?;
+        cancellation.check()?;
+        Ok(result)
+    }
+
+    /// Send encoded audio using the supplied transport policy while observing
+    /// cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn transcribe_with_cancellation_and_request_policy(
+        &self,
+        config: TranscriptionConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
+        self.transcribe_with_cancellation(config.with_request_policy(request_policy), cancellation)
+    }
 }
 
 #[cfg(test)]

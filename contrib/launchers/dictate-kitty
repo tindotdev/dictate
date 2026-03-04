@@ -167,6 +167,7 @@ set_state "recording"
 	wait "$dictate_pid"
 	rc=$?
 	log "dictate exited rc=$rc"
+	rm -f "$PIDFILE"
 
 	kill "$watchdog_pid" 2>/dev/null
 	wait "$watchdog_pid" 2>/dev/null
@@ -181,6 +182,9 @@ set_state "recording"
 	elif [[ $rc -eq 0 ]]; then
 		rm -f "$OUTFILE"
 		notify "Dictate" "Nothing transcribed"
+	elif [[ $rc -eq 130 ]]; then
+		rm -f "$OUTFILE"
+		notify "Dictate" "Cancelled"
 	else
 		rm -f "$OUTFILE"
 		notify "Dictate" "Failed (exit $rc)"

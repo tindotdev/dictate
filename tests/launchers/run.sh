@@ -31,9 +31,25 @@ assert_contains() {
 	grep -F -- "$pattern" "$file" >/dev/null || fail "expected '$pattern' in $file"
 }
 
+assert_not_contains() {
+	local file="$1"
+	local pattern="$2"
+	if [[ -f "$file" ]] && grep -F -- "$pattern" "$file" >/dev/null; then
+		fail "did not expect '$pattern' in $file"
+	fi
+}
+
 assert_not_exists() {
 	local path="$1"
 	[[ ! -e "$path" ]] || fail "expected $path to be absent"
+}
+
+assert_line_count() {
+	local file="$1"
+	local expected="$2"
+	local count
+	count=$(wc -l <"$file")
+	[[ "$count" == "$expected" ]] || fail "expected $file to have $expected lines, found $count"
 }
 
 setup_env() {
@@ -243,6 +259,8 @@ desktop_cancel_transcribing() {
 	wait_for "desktop cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "desktop cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate.state\" && ! -e \"$STATE_DIR/dictate.pid\" ]]"
 	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelled"
+	assert_not_contains "$FAKE_NOTIFY_LOG" "Transcription failed (exit 130)"
 }
 
 desktop_retry() {
@@ -274,6 +292,49 @@ kitty_start_stop() {
 	wait_for "kitty cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
 }
 
+kitty_retrigger_after_completion_keeps_pending_transcript() {
+	setup_env
+	trap cleanup_env RETURN
+	export KITTY_LISTEN_ON="unix:/tmp/fake-kitty.sock"
+
+	cat >"$HOME/.cargo/bin/kitten" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_KITTEN_LOG"
+
+from_file=""
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "--from-file" ]]; then
+        from_file="$arg"
+        break
+    fi
+    prev="$arg"
+done
+
+sleep 1
+if [[ -n "$from_file" ]]; then
+    cat "$from_file" >>"$FAKE_KITTEN_CONTENT_LOG"
+fi
+EOF
+	chmod +x "$HOME/.cargo/bin/kitten"
+
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty" --language en
+	wait_for "kitty race recording state" "[[ \$(cat \"$STATE_DIR/dictate-kitty.state\") == recording ]]"
+	wait_for "kitty race pidfile" "[[ -f \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	wait_for "kitty race ready file" "[[ -f \"$FAKE_DICTATE_READY_FILE\" ]]"
+
+	sleep 1.1
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty race send-text started" "[[ -f \"$FAKE_KITTEN_LOG\" ]]"
+	run_launcher "$REPO_ROOT/contrib/dictate-kitty"
+	wait_for "kitty race send-text content" "[[ -f \"$FAKE_KITTEN_CONTENT_LOG\" ]] && grep -F 'typed text' \"$FAKE_KITTEN_CONTENT_LOG\" >/dev/null"
+	wait_for "kitty race cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
+	assert_line_count "$FAKE_DICTATE_LOG" 1
+	assert_contains "$FAKE_NOTIFY_LOG" "Transcribing…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Typed into terminal"
+}
+
 kitty_cancel_transcribing() {
 	setup_env
 	trap cleanup_env RETURN
@@ -293,6 +354,8 @@ kitty_cancel_transcribing() {
 	wait_for "kitty cancel signal" "[[ -f \"$FAKE_DICTATE_SIGNAL_LOG\" ]] && grep -F 'signal:SIGINT' \"$FAKE_DICTATE_SIGNAL_LOG\" >/dev/null"
 	wait_for "kitty cancel cleanup" "[[ ! -e \"$STATE_DIR/dictate-kitty.state\" && ! -e \"$STATE_DIR/dictate-kitty.pid\" ]]"
 	assert_contains "$FAKE_NOTIFY_LOG" "Cancelling transcription…"
+	assert_contains "$FAKE_NOTIFY_LOG" "Cancelled"
+	assert_not_contains "$FAKE_NOTIFY_LOG" "Failed (exit 130)"
 	assert_not_exists "$FAKE_KITTEN_CONTENT_LOG"
 }
 
@@ -319,6 +382,9 @@ main() {
 
 	kitty_start_stop
 	echo "ok - kitty start/stop"
+
+	kitty_retrigger_after_completion_keeps_pending_transcript
+	echo "ok - kitty re-trigger after completion keeps transcript"
 
 	kitty_cancel_transcribing
 	echo "ok - kitty cancel during transcription"

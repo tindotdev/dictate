@@ -26,6 +26,7 @@ just install
 dictate                        # record -> clipboard
 dictate --stdout               # record -> stdout (+ clipboard)
 dictate --no-clipboard         # record -> stdout only
+dictate --stop-after 30s       # auto-stop after 30 seconds, then transcribe
 dictate --language en          # language hint for accuracy
 dictate --device <query>       # select device by name or index
 dictate --save-last-audio      # save audio locally for retry
@@ -36,6 +37,7 @@ dictate devices                # list audio input devices
 Recording control:
 
 - Press `Enter` to stop recording and continue to transcription
+- For headless/scripted use, pass `--stop-after <duration>` (for example `30s`, `2m`, `500ms`)
 - Press `Ctrl+C` to cancel the current session
 - Cancelled `dictate` and `dictate retry` runs exit with status `130`
 - After cancellation is observed, `dictate` does not print transcript output or write to the clipboard

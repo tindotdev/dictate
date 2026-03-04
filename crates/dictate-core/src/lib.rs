@@ -25,7 +25,7 @@ pub use audio::{
     ProgressiveChunker, RecorderConfig, RecorderInfo, RecorderStats, RecorderStatsSnapshot,
     RecorderStopHandle, RecvResult, list_input_devices,
 };
-pub use cancellation::CancellationContext;
+pub use cancellation::{CancellationContext, CancellationError, CancellationResult, Cancelled};
 pub use clipboard::{ClipboardError, check_clipboard_available};
 pub use dictionary::{Dictionary, DictionaryError, DictionaryStore};
 pub use encoder::{AudioEncoder, EncodedAudio, WavEncoder};

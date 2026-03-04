@@ -1,15 +1,15 @@
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
-    AudioChunk, AudioError, AudioReceiver, AudioRecorder, CancellationContext, ChunkerConfig,
-    ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary, DictionaryStore,
-    GroqPostProcessor, GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor,
-    ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies,
-    ResponseFormat, SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment,
-    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
+    AudioChunk, AudioError, AudioReceiver, AudioRecorder, CancellationContext, CancellationError,
+    ChunkerConfig, ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary,
+    DictionaryStore, GroqPostProcessor, GroqProvider, ModelId, PipelineConfig, PostProcessOutcome,
+    PostProcessor, ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult,
+    RequestPolicies, ResponseFormat, SavedRecording, SavedRecordingManifest, SavedRecordingStore,
+    Segment, TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
     Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
 };
 use thiserror::Error;
@@ -60,8 +60,10 @@ pub enum RunOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionPhase {
     Recording,
+    SavingLastAudio,
     Transcribing,
     PostProcessing,
+    EmittingOutput,
     Completed,
     Cancelled,
 }
@@ -120,10 +122,22 @@ impl SessionController {
         }
 
         state.requested_action = RequestedAction::CancelSession;
-        state.phase = SessionPhase::Cancelled;
+        let should_cancel_work = !matches!(
+            state.phase,
+            SessionPhase::EmittingOutput | SessionPhase::Completed
+        );
+        if should_cancel_work {
+            state.phase = SessionPhase::Cancelled;
+        }
         drop(state);
-        self.cancellation.cancel();
+        if should_cancel_work {
+            self.cancellation.cancel();
+        }
         false
+    }
+
+    fn begin_saving_last_audio(&self) -> bool {
+        self.transition_to(SessionPhase::SavingLastAudio)
     }
 
     fn begin_transcribing(&self) -> bool {
@@ -134,12 +148,14 @@ impl SessionController {
         self.transition_to(SessionPhase::PostProcessing)
     }
 
-    fn mark_completed(&self) {
+    fn begin_output_commit(&self) -> bool {
+        self.transition_to(SessionPhase::EmittingOutput)
+    }
+
+    fn finish_success(&self) {
         let mut state = self.lock();
-        if state.phase != SessionPhase::Cancelled {
-            state.phase = SessionPhase::Completed;
-            state.requested_action = RequestedAction::None;
-        }
+        state.phase = SessionPhase::Completed;
+        state.requested_action = RequestedAction::None;
     }
 
     fn is_cancelled(&self) -> bool {
@@ -273,6 +289,7 @@ pub struct RecordOptions {
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
     output: OutputOptions,
     post_process: PostProcessOptions,
+    pub(crate) stop_after: Option<Duration>,
     save_last_audio: bool,
 }
 
@@ -342,6 +359,12 @@ impl RecordOptions {
         self
     }
 
+    /// Automatically stop recording after the given duration.
+    pub const fn stop_after(mut self, duration: Duration) -> Self {
+        self.stop_after = Some(duration);
+        self
+    }
+
     /// Persist the captured audio locally for later reuse with `dictate retry`.
     pub const fn save_last_audio(mut self, enabled: bool) -> Self {
         self.save_last_audio = enabled;
@@ -370,6 +393,7 @@ pub fn run(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
     let session = capture_recording_session(
         options.device.as_deref(),
         options.save_last_audio,
+        options.stop_after,
         &controller,
         &active_recording_stop,
     )?;
@@ -384,7 +408,16 @@ pub fn run(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
         return Ok(RunOutcome::Completed);
     }
 
-    maybe_save_last_audio(options, &session, &resolved);
+    if options.save_last_audio && !session.samples.is_empty() {
+        if !controller.begin_saving_last_audio() {
+            eprintln!("[dictate] cancelled");
+            return Ok(RunOutcome::Cancelled);
+        }
+
+        if let Err(outcome) = maybe_save_last_audio(options, &session, &resolved, &controller) {
+            return Ok(outcome);
+        }
+    }
 
     if !controller.begin_transcribing() {
         eprintln!("[dictate] cancelled");
@@ -472,22 +505,21 @@ fn process_transcription_session(
                 .post_process_result_with_cancellation(merged, controller.cancellation())
             {
                 Ok((merged, outcome)) => (merged, outcome, true),
-                Err(TranscriptionError::Cancelled) => {
+                Err(CancellationError::Cancelled) => {
                     eprintln!("[dictate] cancelled");
                     return Ok(RunOutcome::Cancelled);
                 }
-                Err(err) => return Err(RecordError::from(err)),
+                Err(CancellationError::Error(err)) => return Err(RecordError::from(err)),
             }
         } else {
             (merged, PostProcessOutcome::NotConfigured, false)
         };
 
-    if controller.is_cancelled() {
+    if !controller.begin_output_commit() {
         eprintln!("[dictate] cancelled");
         return Ok(RunOutcome::Cancelled);
     }
 
-    controller.mark_completed();
     output_result(
         &merged,
         resolved.effective_format,
@@ -495,6 +527,7 @@ fn process_transcription_session(
         options,
         post_process_outcome,
     );
+    controller.finish_success();
 
     Ok(RunOutcome::Completed)
 }
@@ -640,10 +673,11 @@ fn saved_defaults_from_manifest(
 fn capture_recording_session(
     device: Option<&str>,
     collect_samples: bool,
+    stop_after: Option<Duration>,
     controller: &SessionController,
     active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
 ) -> Result<CapturedSession, RecordError> {
-    eprintln!("[dictate] recording... press Enter to stop, Ctrl+C to cancel");
+    print_recording_start_message(stop_after);
 
     let mut config = RecorderConfig::default();
     if let Some(query) = device {
@@ -666,7 +700,15 @@ fn capture_recording_session(
     let mut chunks: Vec<AudioChunk> = Vec::new();
     let mut samples = collect_samples.then(Vec::new);
 
-    consume_until_stopped(&mut rx, controller, &mut chunker, &mut samples, &mut chunks);
+    consume_until_stopped(
+        &mut rx,
+        controller,
+        active_recording_stop,
+        stop_after,
+        &mut chunker,
+        &mut samples,
+        &mut chunks,
+    );
     set_active_recording_stop(active_recording_stop, None);
 
     recorder.stop()?;
@@ -753,11 +795,11 @@ fn transcribe_chunks(
         let mut result =
             match pipeline.transcribe_chunk_with_cancellation(&chunk, controller.cancellation()) {
                 Ok(result) => result,
-                Err(TranscriptionError::Cancelled) => {
+                Err(CancellationError::Cancelled) => {
                     eprintln!("[dictate] cancelled, abandoning in-flight transcription");
                     return Ok(None);
                 }
-                Err(err) => return Err(RecordError::from(err)),
+                Err(CancellationError::Error(err)) => return Err(RecordError::from(err)),
             };
 
         if chunk_offset > 0.0 {
@@ -872,12 +914,16 @@ fn install_stop_handlers(
         let controller_stdin = Arc::clone(controller);
         std::thread::spawn(move || {
             let mut input = String::new();
-            let _ = std::io::stdin().read_line(&mut input);
-            if controller_stdin.request_stop_recording() {
-                request_active_recording_stop(&active_recording_stop_stdin);
+            let read_result = std::io::stdin().read_line(&mut input);
+            if should_stop_after_stdin_read(&read_result, &input) {
+                request_recording_stop(&controller_stdin, &active_recording_stop_stdin, None);
             }
         });
     }
+}
+
+fn should_stop_after_stdin_read(read_result: &std::io::Result<usize>, input: &str) -> bool {
+    read_result.is_ok() && input.ends_with('\n')
 }
 
 #[cfg(unix)]
@@ -898,8 +944,8 @@ fn install_sigusr1_stop_handler(
     std::thread::spawn(move || {
         let mut signals = signals;
         for _signal in signals.forever() {
-            if controller_sigusr1.request_stop_recording() {
-                request_active_recording_stop(&active_recording_stop_sigusr1);
+            if controller_sigusr1.is_recording() {
+                request_recording_stop(&controller_sigusr1, &active_recording_stop_sigusr1, None);
             } else if !controller_sigusr1.is_cancelled() {
                 eprintln!("[dictate] warning: ignoring SIGUSR1 outside recording");
             }
@@ -940,6 +986,49 @@ fn request_active_recording_stop(active_recording_stop: &Mutex<Option<RecorderSt
     }
 }
 
+fn request_recording_stop(
+    controller: &SessionController,
+    active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+    reason: Option<&str>,
+) {
+    if controller.request_stop_recording() {
+        if let Some(reason) = reason {
+            eprintln!("[dictate] {reason}");
+        }
+        request_active_recording_stop(active_recording_stop);
+    }
+}
+
+fn print_recording_start_message(stop_after: Option<Duration>) {
+    let stop_hint = if std::io::stdin().is_terminal() {
+        "press Enter to stop"
+    } else {
+        "use --stop-after or SIGUSR1 to stop"
+    };
+
+    let auto_stop_hint = stop_after.map_or_else(String::new, |duration| {
+        format!(", auto-stop after {}", format_duration(duration))
+    });
+
+    eprintln!("[dictate] recording... {stop_hint}{auto_stop_hint}, Ctrl+C to cancel");
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_secs() > 0 && duration.subsec_nanos() == 0 {
+        return format!("{}s", duration.as_secs());
+    }
+
+    if duration.as_secs() > 0 {
+        return format!("{:.1}s", duration.as_secs_f64());
+    }
+
+    if duration.as_millis() > 0 {
+        return format!("{}ms", duration.as_millis());
+    }
+
+    format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
+}
+
 /// Push samples to chunker and collect any produced chunk.
 fn push_and_collect(
     chunker: &mut ProgressiveChunker,
@@ -971,12 +1060,28 @@ fn push_samples_and_collect(
 fn consume_until_stopped(
     rx: &mut AudioReceiver,
     controller: &SessionController,
+    active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+    stop_after: Option<Duration>,
     chunker: &mut ProgressiveChunker,
     all_samples: &mut Option<Vec<f32>>,
     chunks: &mut Vec<AudioChunk>,
 ) {
-    while controller.should_continue_recording() {
-        match rx.recv_timeout(RECV_TIMEOUT) {
+    let stop_deadline = resolve_stop_deadline(stop_after);
+
+    loop {
+        if stop_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            request_recording_stop(
+                controller,
+                active_recording_stop,
+                Some("stop-after elapsed; finishing capture"),
+            );
+        }
+
+        if !controller.should_continue_recording() {
+            break;
+        }
+
+        match rx.recv_timeout(recording_wait_timeout(stop_deadline)) {
             RecvResult::Data(samples) => {
                 push_samples_and_collect(chunker, samples, all_samples, chunks);
             }
@@ -984,6 +1089,27 @@ fn consume_until_stopped(
             RecvResult::Disconnected => break,
         }
     }
+}
+
+fn resolve_stop_deadline(stop_after: Option<Duration>) -> Option<Instant> {
+    let duration = stop_after?;
+    Some(Instant::now().checked_add(duration).unwrap_or_else(|| {
+        eprintln!(
+            "[dictate] warning: --stop-after is too large on this platform; stopping immediately"
+        );
+        Instant::now()
+    }))
+}
+
+fn recording_wait_timeout(stop_deadline: Option<Instant>) -> Duration {
+    stop_deadline.map_or(RECV_TIMEOUT, |deadline| {
+        let now = Instant::now();
+        if now >= deadline {
+            Duration::ZERO
+        } else {
+            RECV_TIMEOUT.min(deadline.duration_since(now))
+        }
+    })
 }
 
 /// Drain all remaining samples from the ring buffer after the stream has stopped.
@@ -1028,9 +1154,10 @@ fn maybe_save_last_audio(
     options: &RecordOptions,
     session: &CapturedSession,
     resolved: &ResolvedRunConfig,
-) {
+    controller: &SessionController,
+) -> Result<(), RunOutcome> {
     if !options.save_last_audio || session.samples.is_empty() {
-        return;
+        return Ok(());
     }
 
     let recording = SavedRecording {
@@ -1043,10 +1170,21 @@ fn maybe_save_last_audio(
         samples: session.samples.clone(),
     };
 
-    match SavedRecordingStore::open().and_then(|store| store.save(&recording)) {
-        Ok(()) => eprintln!("[dictate] saved audio for later reuse"),
+    match SavedRecordingStore::open() {
+        Ok(store) => match store.save_with_cancellation(&recording, controller.cancellation()) {
+            Ok(()) => eprintln!("[dictate] saved audio for later reuse"),
+            Err(CancellationError::Cancelled) => {
+                eprintln!("[dictate] cancelled");
+                return Err(RunOutcome::Cancelled);
+            }
+            Err(CancellationError::Error(err)) => {
+                eprintln!("[dictate] warning: could not save audio for retry: {err}");
+            }
+        },
         Err(err) => eprintln!("[dictate] warning: could not save audio for retry: {err}"),
     }
+
+    Ok(())
 }
 
 fn rechunk_saved_audio(samples: Vec<f32>, target_duration_secs: u64) -> CapturedSession {
@@ -1350,8 +1488,9 @@ const fn post_process_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_result(text: &str) -> TranscriptionResult {
         TranscriptionResult {
@@ -1383,16 +1522,14 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl dictate_core::TranscriptionProvider for StubProvider {
         fn name(&self) -> &'static str {
             "stub"
         }
 
-        async fn transcribe_with_cancellation_async(
+        fn transcribe(
             &self,
             _config: dictate_core::provider::TranscriptionConfig<'_>,
-            _cancellation: &CancellationContext,
         ) -> Result<TranscriptionResult, TranscriptionError> {
             let call = self.calls.fetch_add(1, AtomicOrdering::SeqCst);
             if call == 0
@@ -1401,7 +1538,7 @@ mod tests {
                 let _ = controller.request_cancel_session();
             }
 
-            std::future::ready(Ok(make_result(&self.response))).await
+            Ok(make_result(&self.response))
         }
     }
 
@@ -1415,20 +1552,18 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl PostProcessor for CountingPostProcessor {
         fn name(&self) -> &'static str {
             "counting"
         }
 
-        async fn process_with_cancellation_async(
+        fn process(
             &self,
             text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
-            _cancellation: &CancellationContext,
         ) -> Result<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-            std::future::ready(Ok(format!("{text}!"))).await
+            Ok(format!("{text}!"))
         }
     }
 
@@ -1442,20 +1577,28 @@ mod tests {
         }
     }
 
-    #[async_trait]
     impl PostProcessor for CancelledPostProcessor {
         fn name(&self) -> &'static str {
             "cancelled"
         }
 
-        async fn process_with_cancellation_async(
+        fn process(
+            &self,
+            _text: &str,
+            _config: dictate_core::PostProcessConfig<'_>,
+        ) -> Result<String, TranscriptionError> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(String::new())
+        }
+
+        fn process_with_cancellation(
             &self,
             _text: &str,
             _config: dictate_core::PostProcessConfig<'_>,
             _cancellation: &CancellationContext,
-        ) -> Result<String, TranscriptionError> {
+        ) -> dictate_core::CancellationResult<String, TranscriptionError> {
             self.calls.fetch_add(1, AtomicOrdering::SeqCst);
-            Err(TranscriptionError::Cancelled)
+            Err(CancellationError::Cancelled)
         }
     }
 
@@ -1475,6 +1618,36 @@ mod tests {
         }
 
         Arc::new(pipeline)
+    }
+
+    fn test_saved_recording(
+        samples: Vec<f32>,
+        target_duration_secs: u64,
+        format: Option<ResponseFormat>,
+    ) -> SavedRecording {
+        SavedRecording {
+            manifest: SavedRecordingManifest::new(
+                samples.len(),
+                target_duration_secs,
+                format,
+                &PipelineConfig::default(),
+            ),
+            samples,
+        }
+    }
+
+    fn make_temp_saved_recording_store() -> (PathBuf, SavedRecordingStore) {
+        let unique_suffix = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            TEST_TEMP_DIR_COUNTER.fetch_add(1, AtomicOrdering::SeqCst),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(format!("dictate-record-tests-{unique_suffix}"));
+        (dir.clone(), SavedRecordingStore::open_at(dir))
     }
 
     fn make_verbose_result(text: &str, seg_id: u32, start: f64, end: f64) -> TranscriptionResult {
@@ -1783,6 +1956,54 @@ mod tests {
         assert!(chunks.is_empty());
     }
 
+    static TEST_TEMP_DIR_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn cancelled_before_transcription_start_preserves_saved_audio() {
+        let (dir, store) = make_temp_saved_recording_store();
+        let existing = test_saved_recording(vec![0.1, 0.2, 0.3], 15, Some(ResponseFormat::Text));
+        store.save(&existing).unwrap();
+
+        let controller = SessionController::new(SessionPhase::Recording);
+        assert!(controller.begin_saving_last_audio());
+        assert!(!controller.request_cancel_session());
+
+        let replacement = test_saved_recording(vec![0.9, 0.8], 30, Some(ResponseFormat::Json));
+        let result = store.save_with_cancellation(&replacement, controller.cancellation());
+
+        assert!(matches!(result, Err(CancellationError::Cancelled)));
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.samples.len(), existing.samples.len());
+        for (actual, expected) in loaded.samples.iter().zip(&existing.samples) {
+            assert!((actual - expected).abs() < 1.0e-4);
+        }
+        assert_eq!(
+            loaded.manifest.chunk_target_duration_secs,
+            existing.manifest.chunk_target_duration_secs
+        );
+        assert_eq!(loaded.manifest.sample_count, existing.manifest.sample_count);
+        assert_eq!(
+            loaded.manifest.output_format,
+            existing.manifest.output_format
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancel_during_output_commit_still_finishes_successfully() {
+        let controller = SessionController::new(SessionPhase::Transcribing);
+
+        assert!(controller.begin_output_commit());
+        assert!(!controller.request_cancel_session());
+        controller.finish_success();
+
+        let state = controller.lock();
+        assert_eq!(state.phase, SessionPhase::Completed);
+        assert_eq!(state.requested_action, RequestedAction::None);
+        drop(state);
+    }
+
     #[test]
     fn cancelled_after_partial_transcription_suppresses_results() {
         let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
@@ -1872,6 +2093,56 @@ mod tests {
         assert!(!controller.should_continue_recording());
         assert!(controller.begin_transcribing());
         assert!(!controller.request_stop_recording());
+    }
+
+    #[test]
+    fn helper_request_recording_stop_marks_recording_as_stopped() {
+        let controller = SessionController::new(SessionPhase::Recording);
+        let active_recording_stop = Mutex::new(None);
+
+        request_recording_stop(&controller, &active_recording_stop, None);
+
+        assert!(!controller.should_continue_recording());
+    }
+
+    #[test]
+    fn stdin_stop_requires_newline_terminated_read() {
+        assert!(should_stop_after_stdin_read(&Ok(1), "\n"));
+        assert!(should_stop_after_stdin_read(&Ok(5), "stop\n"));
+        assert!(!should_stop_after_stdin_read(&Ok(0), ""));
+        assert!(!should_stop_after_stdin_read(&Ok(4), "stop"));
+    }
+
+    #[test]
+    fn stdin_stop_ignores_interrupted_reads() {
+        assert!(!should_stop_after_stdin_read(
+            &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            "",
+        ));
+    }
+
+    #[test]
+    fn recording_wait_timeout_defaults_to_recv_timeout_without_deadline() {
+        assert_eq!(recording_wait_timeout(None), RECV_TIMEOUT);
+    }
+
+    #[test]
+    fn recording_wait_timeout_shrinks_to_near_deadline() {
+        let deadline = Instant::now() + Duration::from_millis(10);
+        assert!(recording_wait_timeout(Some(deadline)) <= Duration::from_millis(10));
+    }
+
+    #[test]
+    fn resolve_stop_deadline_handles_overflow() {
+        let deadline = resolve_stop_deadline(Some(Duration::MAX)).unwrap();
+        assert!(deadline <= Instant::now());
+    }
+
+    #[test]
+    fn format_duration_uses_human_readable_units() {
+        assert_eq!(format_duration(Duration::from_secs(30)), "30s");
+        assert_eq!(format_duration(Duration::from_secs_f64(2.5)), "2.5s");
+        assert_eq!(format_duration(Duration::from_millis(250)), "250ms");
     }
 
     #[test]

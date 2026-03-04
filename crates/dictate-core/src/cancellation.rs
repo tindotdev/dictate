@@ -6,9 +6,51 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::error::TranscriptionError;
-
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Marker error returned when an operation is cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("cancelled")]
+pub struct Cancelled;
+
+/// Result type for operations that may either fail normally or be cancelled.
+pub type CancellationResult<T, E> = Result<T, CancellationError<E>>;
+
+/// Wrapper error for APIs that preserve the underlying error type while also
+/// surfacing user cancellation.
+#[derive(Debug, thiserror::Error)]
+pub enum CancellationError<E> {
+    /// The operation was cancelled before it completed.
+    #[error("cancelled")]
+    Cancelled,
+
+    /// The underlying operation failed normally.
+    #[error("{0}")]
+    Error(E),
+}
+
+impl<E> CancellationError<E> {
+    /// Whether this value represents cancellation rather than an underlying error.
+    #[must_use]
+    pub const fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
+
+    /// Return the underlying error, if present.
+    #[must_use]
+    pub fn into_error(self) -> Option<E> {
+        match self {
+            Self::Cancelled => None,
+            Self::Error(err) => Some(err),
+        }
+    }
+}
+
+impl<E> From<Cancelled> for CancellationError<E> {
+    fn from(_: Cancelled) -> Self {
+        Self::Cancelled
+    }
+}
 
 /// A core-owned cancellation context for a single dictate session.
 ///
@@ -43,10 +85,10 @@ impl CancellationContext {
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError::Cancelled`] once cancellation is observed.
-    pub fn check(&self) -> Result<(), TranscriptionError> {
+    /// Returns [`Cancelled`] once cancellation is observed.
+    pub fn check(&self) -> Result<(), Cancelled> {
         if self.is_cancelled() {
-            return Err(TranscriptionError::Cancelled);
+            return Err(Cancelled);
         }
 
         Ok(())
@@ -56,9 +98,9 @@ impl CancellationContext {
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError::Cancelled`] if cancellation is requested
-    /// before the full delay elapses.
-    pub fn sleep(&self, duration: Duration) -> Result<(), TranscriptionError> {
+    /// Returns [`Cancelled`] if cancellation is requested before the full
+    /// delay elapses.
+    pub fn sleep(&self, duration: Duration) -> Result<(), Cancelled> {
         let deadline = Instant::now() + duration;
 
         loop {
@@ -78,14 +120,14 @@ impl CancellationContext {
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError::Cancelled`] if cancellation is requested
-    /// before the full delay elapses.
-    pub async fn sleep_async(&self, duration: Duration) -> Result<(), TranscriptionError> {
+    /// Returns [`Cancelled`] if cancellation is requested before the full
+    /// delay elapses.
+    pub async fn sleep_async(&self, duration: Duration) -> Result<(), Cancelled> {
         self.check()?;
 
         let token = self.token.clone();
         tokio::select! {
-            () = token.cancelled() => Err(TranscriptionError::Cancelled),
+            () = token.cancelled() => Err(Cancelled),
             () = tokio::time::sleep(duration) => Ok(()),
         }
     }
@@ -94,9 +136,9 @@ impl CancellationContext {
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError::Cancelled`] when the cancellation token
-    /// wins the race before `future` completes.
-    pub(crate) async fn run_until_cancelled<T, F>(&self, future: F) -> Result<T, TranscriptionError>
+    /// Returns [`Cancelled`] when the cancellation token wins the race before
+    /// `future` completes.
+    pub(crate) async fn run_until_cancelled<T, F>(&self, future: F) -> Result<T, Cancelled>
     where
         F: Future<Output = T>,
     {
@@ -104,7 +146,7 @@ impl CancellationContext {
 
         let token = self.token.clone();
         tokio::select! {
-            () = token.cancelled() => Err(TranscriptionError::Cancelled),
+            () = token.cancelled() => Err(Cancelled),
             output = future => Ok(output),
         }
     }
@@ -119,10 +161,7 @@ mod tests {
         let context = CancellationContext::new();
         context.cancel();
 
-        assert!(matches!(
-            context.check(),
-            Err(TranscriptionError::Cancelled)
-        ));
+        assert!(matches!(context.check(), Err(Cancelled)));
     }
 
     #[test]
@@ -132,7 +171,7 @@ mod tests {
 
         assert!(matches!(
             context.sleep(Duration::from_millis(10)),
-            Err(TranscriptionError::Cancelled)
+            Err(Cancelled)
         ));
     }
 }

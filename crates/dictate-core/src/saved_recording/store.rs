@@ -12,6 +12,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
 use super::SavedRecordingError;
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::encoder::{AudioEncoder, WavEncoder};
 use crate::model_id::ModelId;
 use crate::pipeline::PipelineConfig;
@@ -250,29 +251,87 @@ impl SavedRecordingStore {
     /// Returns [`SavedRecordingError`] on serialization, encoding, or file IO
     /// failures.
     pub fn save(&self, recording: &SavedRecording) -> Result<(), SavedRecordingError> {
+        self.save_with_cancellation(recording, &CancellationContext::new())
+            .map_err(|err| match err {
+                CancellationError::Cancelled => {
+                    unreachable!("fresh cancellation context cannot be cancelled")
+                }
+                CancellationError::Error(err) => err,
+            })
+    }
+
+    /// Save the given recording while allowing cancellation before activation.
+    ///
+    /// The new audio is staged on disk first. Cancellation is checked before
+    /// the active manifest is replaced so a cancelled session does not become
+    /// the new retry target. Any staged files are cleaned up on cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`SavedRecordingError`] if
+    /// serialization, encoding, or file IO fails, or `Cancelled` if
+    /// cancellation is requested before the new manifest is activated.
+    pub fn save_with_cancellation(
+        &self,
+        recording: &SavedRecording,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<(), SavedRecordingError> {
         let manifest = recording.manifest.clone();
-        manifest.validate()?;
+        manifest.validate().map_err(CancellationError::Error)?;
         let audio = WavEncoder
             .encode(&recording.samples, TRANSCRIPTION_SAMPLE_RATE)
-            .map_err(|err| SavedRecordingError::InvalidAudio(err.to_string()))?;
+            .map_err(|err| {
+                CancellationError::Error(SavedRecordingError::InvalidAudio(err.to_string()))
+            })?;
 
         if let Some(parent) = self.dir.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent)
+                .map_err(SavedRecordingError::from)
+                .map_err(CancellationError::Error)?;
         }
-        std::fs::create_dir_all(&self.dir)?;
+        std::fs::create_dir_all(&self.dir)
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
 
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
+        let manifest_json = serde_json::to_string_pretty(&manifest)
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
         let manifest_tmp_path = self.dir.join(MANIFEST_TMP_FILENAME);
         let audio_tmp_path = self.dir.join(AUDIO_TMP_FILENAME);
         let audio_path = self.audio_path_for_filename(&manifest.audio_filename);
 
-        std::fs::write(&audio_tmp_path, audio.data())?;
-        std::fs::write(&manifest_tmp_path, manifest_json)?;
-        std::fs::rename(&audio_tmp_path, &audio_path)?;
-        std::fs::rename(&manifest_tmp_path, &self.manifest_path)?;
-        self.cleanup_stale_audio_files(&manifest.audio_filename)?;
+        std::fs::write(&audio_tmp_path, audio.data())
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
+        std::fs::write(&manifest_tmp_path, manifest_json)
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
+        if cancellation.check().is_err() {
+            cleanup_staged_save_paths([
+                audio_tmp_path.as_path(),
+                manifest_tmp_path.as_path(),
+                audio_path.as_path(),
+            ]);
+            return Err(CancellationError::Cancelled);
+        }
+        std::fs::rename(&audio_tmp_path, &audio_path)
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
+        if cancellation.check().is_err() {
+            cleanup_staged_save_paths([
+                audio_tmp_path.as_path(),
+                manifest_tmp_path.as_path(),
+                audio_path.as_path(),
+            ]);
+            return Err(CancellationError::Cancelled);
+        }
+        std::fs::rename(&manifest_tmp_path, &self.manifest_path)
+            .map_err(SavedRecordingError::from)
+            .map_err(CancellationError::Error)?;
+        self.cleanup_stale_audio_files(&manifest.audio_filename)
+            .map_err(CancellationError::Error)?;
 
         Ok(())
     }
@@ -361,6 +420,15 @@ fn next_audio_filename() -> String {
         "{AUDIO_GENERATION_PREFIX}{}-{timestamp_nanos}-{counter}.wav",
         std::process::id()
     )
+}
+
+fn cleanup_staged_save_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(()) | Err(_) => {}
+        }
+    }
 }
 
 fn validate_audio_filename(value: &str) -> Result<(), SavedRecordingError> {
@@ -581,6 +649,37 @@ mod tests {
         let audio_tmp = store.dir.join(AUDIO_TMP_FILENAME);
         assert!(!manifest_tmp.exists());
         assert!(!audio_tmp.exists());
+    }
+
+    #[test]
+    fn cancelled_save_preserves_previous_recording_and_cleans_up_staged_files() {
+        let (_dir, store) = temp_store();
+        let existing = sample_recording();
+        store.save(&existing).unwrap();
+
+        let replacement = SavedRecording {
+            manifest: SavedRecordingManifest::new(
+                12,
+                45,
+                Some(ResponseFormat::Json),
+                &PipelineConfig::default(),
+            ),
+            samples: vec![0.5; 12],
+        };
+        let replacement_audio_path =
+            store.audio_path_for_filename(&replacement.manifest.audio_filename);
+        let cancellation = CancellationContext::new();
+        cancellation.cancel();
+
+        let result = store.save_with_cancellation(&replacement, &cancellation);
+
+        assert!(matches!(result, Err(CancellationError::Cancelled)));
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.manifest, existing.manifest);
+        assert_eq!(loaded.samples.len(), existing.samples.len());
+        assert!(!replacement_audio_path.exists());
+        assert!(!store.dir.join(AUDIO_TMP_FILENAME).exists());
+        assert!(!store.dir.join(MANIFEST_TMP_FILENAME).exists());
     }
 
     #[test]

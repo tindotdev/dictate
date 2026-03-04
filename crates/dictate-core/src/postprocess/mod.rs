@@ -8,21 +8,18 @@ mod eval;
 
 pub mod groq;
 
-use async_trait::async_trait;
-
 pub use groq::{DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor};
 
-use crate::cancellation::CancellationContext;
+use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::request_policy::{RequestPolicies, RequestPolicy};
 
 /// A text post-processor that refines transcribed text.
-#[async_trait]
 pub trait PostProcessor: Send + Sync {
     /// Human-readable name of this post-processor (e.g. `"groq-chat"`).
     fn name(&self) -> &'static str;
 
-    /// Synchronous convenience wrapper around [`Self::process_async`].
+    /// Clean up the given transcription text.
     ///
     /// # Errors
     ///
@@ -31,50 +28,48 @@ pub trait PostProcessor: Send + Sync {
         &self,
         text: &str,
         config: PostProcessConfig<'_>,
-    ) -> Result<String, TranscriptionError> {
-        crate::runtime::block_on(self.process_async(text, config))
-    }
-
-    /// Clean up the given transcription text.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TranscriptionError`] on network, API, or parsing failures.
-    async fn process_async(
-        &self,
-        text: &str,
-        config: PostProcessConfig<'_>,
-    ) -> Result<String, TranscriptionError> {
-        self.process_with_cancellation_async(text, config, &CancellationContext::new())
-            .await
-    }
-
-    /// Synchronous convenience wrapper around
-    /// [`Self::process_with_cancellation_async`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    fn process_with_cancellation(
-        &self,
-        text: &str,
-        config: PostProcessConfig<'_>,
-        cancellation: &CancellationContext,
-    ) -> Result<String, TranscriptionError> {
-        crate::runtime::block_on(self.process_with_cancellation_async(text, config, cancellation))
-    }
+    ) -> Result<String, TranscriptionError>;
 
     /// Clean up the given transcription text while observing cancellation.
     ///
     /// # Errors
     ///
-    /// Returns [`TranscriptionError`] on network, API, parsing, or cancellation failures.
-    async fn process_with_cancellation_async(
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_cancellation(
         &self,
         text: &str,
         config: PostProcessConfig<'_>,
         cancellation: &CancellationContext,
-    ) -> Result<String, TranscriptionError>;
+    ) -> CancellationResult<String, TranscriptionError> {
+        cancellation.check()?;
+        let result = self
+            .process(text, config)
+            .map_err(CancellationError::Error)?;
+        cancellation.check()?;
+        Ok(result)
+    }
+
+    /// Clean up the given transcription text using the supplied transport
+    /// policy while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_cancellation_and_request_policy(
+        &self,
+        text: &str,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        self.process_with_cancellation(
+            text,
+            config.with_request_policy(request_policy),
+            cancellation,
+        )
+    }
 }
 
 /// Configuration for a post-processing request.

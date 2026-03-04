@@ -25,6 +25,3 @@ dialoguer.workspace = true
 serde_json.workspace = true
 clap_complete.workspace = true
 signal-hook.workspace = true
-
-[dev-dependencies]
-async-trait.workspace = true
