@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-03-04
+
+### Added
+
+- Add cancellation-aware recording pipeline ([#19](https://github.com/tindotdev/dictate/pull/19))
+
+
+
 ### Added
 
 - Add `dictate record --stop-after <duration>` as a built-in non-interactive stop path for headless/scripted recording flows
