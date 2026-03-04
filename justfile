@@ -6,12 +6,15 @@ export TMPDIR := justfile_directory() + "/tmp"
 
 dictate_bin := "target/debug/dictate"
 
+_ensure-tmp:
+    mkdir -p "{{ justfile_directory() }}/tmp"
+
 # Format all Rust code
-fmt:
+fmt: _ensure-tmp
     cargo fmt --all
 
 # Check formatting without modifying files
-fmt-check:
+fmt-check: _ensure-tmp
     cargo fmt --all -- --check
 
 # Format launcher and shell test scripts (requires shfmt)
@@ -25,11 +28,11 @@ fmt-launchers:
         tests/launchers/run.sh
 
 # Run clippy lints with auto-fix (lint levels configured in workspace Cargo.toml)
-clippy:
+clippy: _ensure-tmp
     cargo clippy --workspace --all-targets --fix --allow-dirty -- -D warnings
 
 # Run Rust tests only
-test-rust:
+test-rust: _ensure-tmp
     cargo test --workspace
 
 # Run launcher integration tests with fake binaries
@@ -50,20 +53,19 @@ lint-launchers:
 test: test-rust test-launchers
 
 # Build the dictate CLI binary (debug)
-build-cli:
+build-cli: _ensure-tmp
     cargo build -p dictate-cli
 
 # Build all crates (debug)
-build:
+build: _ensure-tmp
     cargo build --workspace
 
 # Build all crates (release)
-build-release:
+build-release: _ensure-tmp
     cargo build --workspace --release
 
 # Install dictate CLI to ~/.cargo/bin/
-install:
-    mkdir -p tmp/
+install: _ensure-tmp
     cargo install --path crates/dictate-cli
 
 # Uninstall dictate CLI from ~/.cargo/bin/
