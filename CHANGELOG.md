@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-03-05
+
+### Changed
+
+- Replace dictionary commands with vocab editor ([#22](https://github.com/tindotdev/dictate/pull/22))
+
+### Miscellaneous
+
+- Automate root changelog with release-plz
+
+
 ### Added
 
 - Add `dictate record --stop-after <duration>` as a built-in non-interactive stop path for headless/scripted recording flows
