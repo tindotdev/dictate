@@ -87,13 +87,6 @@ pub enum Commands {
     /// Reuse the last saved recording and rerun transcription; Ctrl+C cancels the session
     Retry(RetryArgs),
 
-    /// Add custom terms to dictionary (improves accuracy for technical terms, names, jargon)
-    Remember,
-
-    /// List dictionary entries
-    #[command(alias = "dict")]
-    Dictionary,
-
     /// Manage vocabulary words for transcription biasing
     Vocab(VocabArgs),
 
@@ -113,9 +106,7 @@ pub enum VocabCommand {
     /// Add one or more vocabulary words
     #[command(
         long_about = "Add one or more vocabulary words used to bias transcription.\n\
-Words that already exist in vocabulary are skipped with a warning.\n\
-Words that already exist as dictionary correction values are also skipped,\n\
-since they are already included in prompt hints."
+Words that already exist in vocabulary are skipped with a warning."
     )]
     Add {
         /// Words to add (e.g., `AWS` `OpenAI` `Kubernetes`)
@@ -132,6 +123,9 @@ since they are already included in prompt hints."
 
     /// List all vocabulary words
     List,
+
+    /// Edit vocabulary words in `$VISUAL` or `$EDITOR`
+    Edit,
 }
 
 #[derive(Args)]
@@ -620,20 +614,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // --- Dictionary subcommand tests ---
-
-    #[test]
-    fn parse_remember_subcommand() {
-        let cli = Cli::parse_from(["dictate", "remember"]);
-        assert!(matches!(cli.command, Some(Commands::Remember)));
-    }
-
-    #[test]
-    fn parse_dictionary_subcommand() {
-        let cli = Cli::parse_from(["dictate", "dictionary"]);
-        assert!(matches!(cli.command, Some(Commands::Dictionary)));
-    }
-
     // --- Vocab subcommand tests ---
 
     #[test]
@@ -678,6 +658,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_vocab_edit_subcommand() {
+        let cli = Cli::parse_from(["dictate", "vocab", "edit"]);
+
+        let Some(Commands::Vocab(vocab)) = cli.command else {
+            panic!("expected vocab subcommand");
+        };
+
+        assert!(matches!(vocab.command, VocabCommand::Edit));
+    }
+
+    #[test]
     fn vocab_add_requires_words() {
         let result = Cli::try_parse_from(["dictate", "vocab", "add"]);
         assert!(result.is_err());
@@ -690,9 +681,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_dict_alias() {
-        let cli = Cli::parse_from(["dictate", "dict"]);
-        assert!(matches!(cli.command, Some(Commands::Dictionary)));
+    fn remember_is_rejected() {
+        let result = Cli::try_parse_from(["dictate", "remember"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dictionary_is_rejected() {
+        let result = Cli::try_parse_from(["dictate", "dictionary"]);
+        assert!(result.is_err());
     }
 
     // --- Post-processing flag tests ---

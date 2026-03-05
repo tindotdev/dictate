@@ -9,16 +9,6 @@ pub fn info(text: &str) {
     println!("{} {}", "ℹ".blue(), text);
 }
 
-/// Format a device index badge (colored bracket)
-pub fn device_index(index: usize) -> String {
-    format!("[{index}]").cyan().to_string()
-}
-
-/// Format a default marker (green checkmark)
-pub fn default_marker() -> String {
-    " ✓".green().bold().to_string()
-}
-
 // Future: Interactive prompts
 //
 // When implementing setup wizard (Phase 2+), use dialoguer for device selection:

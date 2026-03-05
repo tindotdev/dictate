@@ -14,12 +14,6 @@ enum CliError {
     #[error("recording failed")]
     Record(#[from] commands::record::RecordError),
 
-    #[error("dictionary error")]
-    Dictionary(#[from] dictate_core::DictionaryError),
-
-    #[error("remember failed")]
-    Remember(#[from] commands::remember::RememberError),
-
     #[error("vocab command failed")]
     Vocab(#[from] commands::vocab::VocabError),
 }
@@ -32,12 +26,6 @@ fn run() -> Result<commands::record::RunOutcome> {
     match cli.command {
         Some(args::Commands::Devices) => {
             commands::devices::run()?;
-        }
-        Some(args::Commands::Remember) => {
-            commands::remember::run()?;
-        }
-        Some(args::Commands::Dictionary) => {
-            commands::dictionary::run()?;
         }
         Some(args::Commands::Vocab(args)) => {
             commands::vocab::run(&args)?;

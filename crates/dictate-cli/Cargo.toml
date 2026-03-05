@@ -19,9 +19,10 @@ dictate-core.workspace = true
 ctrlc.workspace = true
 clap.workspace = true
 thiserror.workspace = true
-tabled = { workspace = true, features = ["ansi"] }
 owo-colors.workspace = true
-dialoguer.workspace = true
 serde_json.workspace = true
 clap_complete.workspace = true
 signal-hook.workspace = true
+tempfile.workspace = true
+shlex.workspace = true
+unicode-width.workspace = true
