@@ -5,12 +5,12 @@ use std::time::{Duration, Instant};
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, CancellationContext, CancellationError,
-    ChunkerConfig, ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, Dictionary,
-    DictionaryStore, GroqPostProcessor, GroqProvider, ModelId, PipelineConfig, PostProcessOutcome,
-    PostProcessor, ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult,
-    RequestPolicies, ResponseFormat, SavedRecording, SavedRecordingManifest, SavedRecordingStore,
-    Segment, TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionResult,
-    Vocabulary, VocabularyStore, WhisperModel, Word, format_hint_within_budget, merge_prompt_hints,
+    ChunkerConfig, ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, GroqPostProcessor,
+    GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker,
+    RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies, ResponseFormat,
+    SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment, TimestampGranularity,
+    TranscriptionError, TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore,
+    WhisperModel, Word, format_hint_within_budget,
 };
 use thiserror::Error;
 #[cfg(unix)]
@@ -571,7 +571,7 @@ fn resolve_run_config(
         .or_else(|| defaults.and_then(|saved| saved.pipeline_config.post_process_base_url.clone()))
         .or_else(|| std::env::var(GROQ_CHAT_BASE_URL_VAR).ok());
 
-    // Load prompt hints (dictionary + vocabulary) for prompt injection.
+    // Load vocabulary prompt hints for prompt injection.
     // Best-effort: warn and continue on store errors.
     let effective_prompt = if options.prompt.is_some() || defaults.is_none() {
         load_prompt_hints(options.prompt.as_deref())
@@ -1232,16 +1232,13 @@ fn rechunk_saved_audio(samples: Vec<f32>, target_duration_secs: u64) -> Captured
     }
 }
 
-/// Load dictionary and vocabulary hints, then compose the effective prompt.
+/// Load vocabulary hints, then compose the effective prompt.
 ///
-/// This is best-effort: if either store cannot be loaded, a warning is printed
-/// and prompt composition continues with the available source(s).
+/// This is best-effort: if the store cannot be loaded, a warning is printed
+/// and prompt composition continues with the user prompt only.
 fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
-    let dictionary = load_dictionary_best_effort();
     let vocabulary = load_vocabulary_best_effort();
-
-    let merged_hints = merge_prompt_hints(&dictionary, &vocabulary);
-    if merged_hints.is_empty() {
+    if vocabulary.is_empty() {
         return user_prompt.map(String::from);
     }
 
@@ -1252,7 +1249,7 @@ fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
     let joiner_cost = if user_prompt.is_some() { 2 } else { 0 };
     let remaining_budget = MAX_PROMPT_TOKENS.saturating_sub(user_tokens + joiner_cost);
 
-    let hint = format_hint_within_budget(merged_hints.iter().map(String::as_str), remaining_budget);
+    let hint = format_hint_within_budget(vocabulary.iter(), remaining_budget);
 
     if let Some(ref h) = hint {
         if h.included < h.total {
@@ -1269,25 +1266,7 @@ fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
         }
     }
 
-    build_effective_prompt(user_prompt, hint.as_ref().map(|h| h.text.as_str()))
-}
-
-fn load_dictionary_best_effort() -> Dictionary {
-    let store = match DictionaryStore::open() {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("[dictate] warning: could not open dictionary store: {err}");
-            return Dictionary::new();
-        }
-    };
-
-    match store.load() {
-        Ok(d) => d,
-        Err(err) => {
-            eprintln!("[dictate] warning: could not load dictionary: {err}");
-            Dictionary::new()
-        }
-    }
+    build_effective_prompt(user_prompt, hint.as_ref().map(|entry| entry.text.as_str()))
 }
 
 fn load_vocabulary_best_effort() -> Vocabulary {

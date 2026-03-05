@@ -111,18 +111,10 @@ Custom terms improve transcription accuracy for technical jargon, names, and abb
 dictate vocab add AWS OpenAI
 dictate vocab remove AWS
 dictate vocab list
+dictate vocab edit
 ```
 
-### Dictionary
-
-Corrections for commonly misheard words. Interactive editor.
-
-```bash
-dictate remember   # add correction (interactive)
-dictate dictionary # list entries
-```
-
-Both are injected into Whisper's prompt parameter and stored at `~/.config/dictate/`.
+Vocabulary hints are injected into Whisper's prompt parameter and stored at `~/.config/dictate/`.
 
 ## Configuration
 
