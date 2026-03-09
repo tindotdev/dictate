@@ -143,6 +143,99 @@ dictate completions bash > ~/.local/share/bash-completion/completions/dictate
 dictate completions zsh > ~/.zfunc/_dictate  # then add ~/.zfunc to fpath
 ```
 
+## Neovim
+
+`dictate.nvim` controls `dictate-cli` directly from Neovim. It starts `dictate record`,
+stops capture with `SIGUSR1`, and cancels in-flight transcription with `SIGINT`.
+Transcript text is inserted into the buffer instead of relying on the clipboard.
+
+Install with `lazy.nvim` using `opts`, `cmd`, and `keys`:
+
+```lua
+{
+  "tindotdev/dictate",
+  opts = {},
+  cmd = { "DictateStart", "DictateStop", "DictateToggle" },
+  keys = {
+    {
+      "<F9>",
+      "<cmd>DictateToggle<cr>",
+      desc = "Dictate Toggle",
+    },
+  },
+}
+```
+
+Default plugin options:
+
+```lua
+require("dictate").setup({
+  cmd = { "dictate" },
+  args = {},
+  clipboard = false,
+  insert_trailing_space = true,
+  disabled_filetypes = { "help", "lazy", "mason", "TelescopePrompt" },
+  disabled_buftypes = { "nofile", "prompt", "quickfix", "terminal" },
+})
+```
+
+Commands (available after the plugin is loaded):
+
+- `:DictateStart`
+- `:DictateStop`
+- `:DictateToggle`
+
+Health checks:
+
+```vim
+:checkhealth dictate
+```
+
+### Local plugin development
+
+For local plugin work, use the in-repo minimal Neovim profile instead of your full
+editor config. It prepends this repo to `runtimepath`, maps `<F9>` to
+`:DictateToggle`, and keeps the test loop isolated from unrelated plugins.
+
+Fixture-backed smoke test (no microphone or API key required):
+
+```bash
+just nvim-dev-fake
+```
+
+Useful variants:
+
+```bash
+just nvim-dev-fake scenario=post_process
+just nvim-dev-fake transcript="custom fixture text"
+```
+
+Real end-to-end test against the local debug binary:
+
+```bash
+cargo build -p dictate-cli
+GROQ_API_KEY=... just nvim-dev-real
+```
+
+`just nvim-dev-real` now isolates `dictate-cli` from your normal user config by
+pointing `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at repo-local directories under
+`tmp/nvim-dev-real/`. It seeds empty `vocabulary.json` and `dictionary.json`
+from [tests/manual/fixtures/config/dictate/vocabulary.json](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/tests/manual/fixtures/config/dictate/vocabulary.json)
+and [tests/manual/fixtures/config/dictate/dictionary.json](/mnt/68ce8b89-5b49-4f3f-857c-8c9edca5b28e/code/github/tindotdev/dictate/tests/manual/fixtures/config/dictate/dictionary.json),
+so malformed files in `~/.config/dictate` do not affect plugin testing.
+
+Inside the minimal profile:
+
+- Run `:checkhealth dictate`
+- Use `<F9>` or `:DictateToggle` to start and stop
+- Run `:DictateDevInfo` to confirm which command/profile is active
+
+Automated Neovim regression coverage remains available with:
+
+```bash
+just test-nvim
+```
+
 ## Platform requirements
 
 Linux:

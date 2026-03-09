@@ -33,6 +33,12 @@ Every ExecPlan should include:
 - Active work: `docs/exec-plans/active/`
 - Finished work: `docs/exec-plans/completed/`
 
+## Retention And Cleanup
+
+- Keep completed ExecPlans that document cross-cutting work, user-visible behavior changes, or integration contracts.
+- When work finishes, move the plan to `docs/exec-plans/completed/` and trim it into a short historical record with accurate final decisions and validation.
+- Delete abandoned or throwaway plans only when they never became meaningful implementation history and would add noise rather than context.
+
 ## Minimal Template
 
 ```md
