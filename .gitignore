@@ -41,3 +41,6 @@ crates/dictate-core/src/postprocess/prompts/candidates/
 
 tmp/
 .gitkeep
+.tests/
+.nvimlog
+__pycache__/
