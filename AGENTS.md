@@ -5,6 +5,12 @@ It records microphone audio, transcribes with Groq Whisper, and outputs text to 
 
 This guide applies to the repository root and all subdirectories unless a deeper `AGENTS.md` overrides it.
 
+## ExecPlans
+
+- Use an ExecPlan for cross-cutting features, significant refactors, or supported integration contract changes.
+- Do not use one for small, local fixes or docs-only changes.
+- Follow `PLANS.md` for when to use one and how to keep it concise.
+
 ## Project Scope
 
 - Features: vocabulary management, dictionary/corrections, output formats (JSON, timestamps), post-processing.

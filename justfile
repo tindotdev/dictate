@@ -13,6 +13,10 @@ _ensure-tmp:
 fmt: _ensure-tmp
     cargo fmt --all
 
+# Format Markdown docs with global prettier
+fmt-md:
+    prettier --write AGENTS.md PLANS.md README.md
+
 # Check formatting without modifying files
 fmt-check: _ensure-tmp
     cargo fmt --all -- --check
