@@ -9,7 +9,7 @@ jobs:
   rust-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
@@ -29,10 +29,37 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+  nvim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tools
+        run: cargo install stylua selene --locked
+
+      - name: Setup Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: stable
+
+      - name: Check Lua formatting
+        run: stylua --check lua tests
+
+      - name: Lint Lua
+        run: selene lua tests
+
+      - name: Run Neovim tests
+        run: |
+          chmod +x tests/fixtures/fake-dictate.sh tests/fixtures/fake-dictate-no-json.sh
+          nvim --headless -l tests/run.lua tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua
+
   rust-macos:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
