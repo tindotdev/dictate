@@ -5,12 +5,18 @@ default:
 export TMPDIR := justfile_directory() + "/tmp"
 
 dictate_bin := "target/debug/dictate"
+nvim_test_files := "tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua"
+manual_nvim_init := "tests/manual/init.lua"
+manual_nvim_fixture_config_dir := "tests/manual/fixtures/config/dictate"
+manual_nvim_tmp_root := "tmp/nvim-dev-real"
 
 _ensure-tmp:
     mkdir -p "{{ justfile_directory() }}/tmp"
 
 # Format all Rust code
-fmt: _ensure-tmp
+fmt: fmt-rust fmt-nvim
+
+fmt-rust: _ensure-tmp
     cargo fmt --all
 
 # Format Markdown docs with global prettier
@@ -18,8 +24,18 @@ fmt-md:
     prettier --write AGENTS.md PLANS.md README.md
 
 # Check formatting without modifying files
-fmt-check: _ensure-tmp
+fmt-check: fmt-rust-check fmt-nvim-check
+
+fmt-rust-check: _ensure-tmp
     cargo fmt --all -- --check
+
+# Format Neovim plugin code
+fmt-nvim:
+    stylua lua tests
+
+# Check Neovim plugin formatting without modifying files
+fmt-nvim-check:
+    stylua --check lua tests
 
 # Format launcher and shell test scripts (requires shfmt)
 fmt-launchers:
@@ -39,6 +55,31 @@ clippy: _ensure-tmp
 test-rust: _ensure-tmp
     cargo test --workspace
 
+# Run Neovim plugin tests
+test-nvim:
+    chmod +x tests/fixtures/fake-dictate.sh tests/fixtures/fake-dictate-no-json.sh
+    nvim --headless -l tests/run.lua {{nvim_test_files}}
+
+# Launch a minimal Neovim profile wired to the fake dictate fixture.
+nvim-dev-fake scenario="success" transcript="hello from fixture":
+    chmod +x tests/fixtures/fake-dictate.sh
+    env \
+        DICTATE_NVIM_MODE=fake \
+        DICTATE_FIXTURE_SCENARIO="{{scenario}}" \
+        DICTATE_FIXTURE_TRANSCRIPT="{{transcript}}" \
+        nvim --clean -u {{manual_nvim_init}}
+
+# Launch a minimal Neovim profile wired to the local debug dictate binary.
+nvim-dev-real: build-cli
+    mkdir -p {{manual_nvim_tmp_root}}/config/dictate {{manual_nvim_tmp_root}}/data
+    cp {{manual_nvim_fixture_config_dir}}/vocabulary.json {{manual_nvim_tmp_root}}/config/dictate/vocabulary.json
+    cp {{manual_nvim_fixture_config_dir}}/dictionary.json {{manual_nvim_tmp_root}}/config/dictate/dictionary.json
+    env \
+        DICTATE_NVIM_MODE=real \
+        XDG_CONFIG_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/config" \
+        XDG_DATA_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/data" \
+        nvim --clean -u {{manual_nvim_init}}
+
 # Run launcher integration tests with fake binaries
 test-launchers:
     bash tests/launchers/run.sh
@@ -53,8 +94,12 @@ lint-launchers:
         contrib/dictate-kitty \
         tests/launchers/run.sh
 
+# Lint Neovim plugin Lua code
+lint-nvim:
+    selene lua tests
+
 # Run all tests
-test: test-rust test-launchers
+test: test-rust test-launchers test-nvim
 
 # Build the dictate CLI binary (debug)
 build-cli: _ensure-tmp
@@ -345,4 +390,4 @@ eval-matrix:
     cargo test -p dictate-core matrix_eval_models_x_prompts -- --ignored --nocapture
 
 # Run all checks (fmt + clippy + test)
-check: fmt-check clippy test
+check: fmt-check clippy lint-nvim test
