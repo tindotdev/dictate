@@ -3,6 +3,7 @@ mod commands;
 mod ui;
 
 use clap::Parser;
+use serde_json::json;
 use std::process::ExitCode;
 use thiserror::Error;
 
@@ -20,9 +21,7 @@ enum CliError {
 
 type Result<T> = std::result::Result<T, CliError>;
 
-fn run() -> Result<commands::record::RunOutcome> {
-    let cli = args::Cli::parse();
-
+fn run(cli: args::Cli) -> Result<commands::record::RunOutcome> {
     match cli.command {
         Some(args::Commands::Devices) => {
             commands::devices::run()?;
@@ -48,6 +47,17 @@ fn run() -> Result<commands::record::RunOutcome> {
     }
 
     Ok(commands::record::RunOutcome::Completed)
+}
+
+const fn cli_requests_json_events(cli: &args::Cli) -> bool {
+    match &cli.command {
+        Some(args::Commands::Record(args)) => args.transcription.json_events,
+        Some(args::Commands::Retry(args)) => args.transcription.json_events,
+        Some(
+            args::Commands::Devices | args::Commands::Vocab(_) | args::Commands::Completions(_),
+        ) => false,
+        None => cli.record_args.transcription.json_events,
+    }
 }
 
 fn build_record_options(args: args::RecordArgs) -> commands::record::RecordOptions {
@@ -108,6 +118,9 @@ fn apply_transcription_options(
     if let Some(temperature) = args.temperature {
         options = options.temperature(temperature);
     }
+    if args.json_events {
+        options = options.json_events(true);
+    }
     if let Some(granularity_strs) = args.timestamp_granularities {
         let granularities = granularity_strs
             .iter()
@@ -161,17 +174,43 @@ fn apply_retry_post_process(
     options.post_process_options(post_process)
 }
 
-fn exit_code_for_run_result(result: Result<commands::record::RunOutcome>) -> ExitCode {
+fn emit_json_failure(err: &CliError) {
+    let mut causes = Vec::new();
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        causes.push(cause.to_string());
+        source = cause.source();
+    }
+
+    eprintln!(
+        "{}",
+        serde_json::to_string(&json!({
+            "event": "result",
+            "status": "failed",
+            "message": err.to_string(),
+            "causes": causes,
+        }))
+        .expect("JSON failure event should serialize")
+    );
+}
+
+fn exit_code_for_run_result(
+    result: Result<commands::record::RunOutcome>,
+    json_events: bool,
+) -> ExitCode {
     match result {
         Ok(commands::record::RunOutcome::Completed) => ExitCode::SUCCESS,
         Ok(commands::record::RunOutcome::Cancelled) => ExitCode::from(130),
         Err(err) => {
-            eprintln!("[dictate] error: {err}");
-            // Show the full error chain for debugging
-            let mut source = std::error::Error::source(&err);
-            while let Some(cause) = source {
-                eprintln!("  caused by: {cause}");
-                source = cause.source();
+            if json_events {
+                emit_json_failure(&err);
+            } else {
+                eprintln!("[dictate] error: {err}");
+                let mut source = std::error::Error::source(&err);
+                while let Some(cause) = source {
+                    eprintln!("  caused by: {cause}");
+                    source = cause.source();
+                }
             }
             ExitCode::FAILURE
         }
@@ -179,7 +218,9 @@ fn exit_code_for_run_result(result: Result<commands::record::RunOutcome>) -> Exi
 }
 
 fn main() -> ExitCode {
-    exit_code_for_run_result(run())
+    let cli = args::Cli::parse();
+    let json_events = cli_requests_json_events(&cli);
+    exit_code_for_run_result(run(cli), json_events)
 }
 
 #[cfg(test)]
@@ -190,7 +231,7 @@ mod tests {
     #[test]
     fn cancelled_run_maps_to_exit_code_130() {
         assert_eq!(
-            exit_code_for_run_result(Ok(commands::record::RunOutcome::Cancelled)),
+            exit_code_for_run_result(Ok(commands::record::RunOutcome::Cancelled), false),
             ExitCode::from(130)
         );
     }
@@ -198,7 +239,7 @@ mod tests {
     #[test]
     fn completed_run_maps_to_success() {
         assert_eq!(
-            exit_code_for_run_result(Ok(commands::record::RunOutcome::Completed)),
+            exit_code_for_run_result(Ok(commands::record::RunOutcome::Completed), false),
             ExitCode::SUCCESS
         );
     }
@@ -210,6 +251,7 @@ mod tests {
             stop_after: Some(Duration::from_secs(30)),
             transcription: args::TranscriptionArgs {
                 base_url: None,
+                json_events: false,
                 language: None,
                 prompt: None,
                 format: None,

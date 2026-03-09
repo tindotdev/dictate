@@ -136,7 +136,7 @@ pub struct CompletionsArgs {
 
 #[derive(Args)]
 pub struct OutputArgs {
-    /// Print transcript to stdout instead of copying to clipboard
+    /// Print transcript to stdout while still copying to clipboard
     #[arg(long, conflicts_with = "no_clipboard")]
     pub stdout: bool,
 
@@ -150,6 +150,10 @@ pub struct TranscriptionArgs {
     /// Override Groq transcription API URL (falls back to `GROQ_BASE_URL` when omitted)
     #[arg(long)]
     pub base_url: Option<String>,
+
+    /// Emit machine-readable JSONL progress events on stderr
+    #[arg(long)]
+    pub json_events: bool,
 
     /// ISO-639-1 language code (e.g., "en", "es", "fr") to improve accuracy and latency
     #[arg(long)]
@@ -349,6 +353,7 @@ mod tests {
         let cli = Cli::parse_from([
             "dictate",
             "retry",
+            "--json-events",
             "--base-url",
             "http://127.0.0.1:8080/openai/v1/audio/transcriptions",
         ]);
@@ -361,6 +366,18 @@ mod tests {
             args.transcription.base_url.as_deref(),
             Some("http://127.0.0.1:8080/openai/v1/audio/transcriptions")
         );
+        assert!(args.transcription.json_events);
+    }
+
+    #[test]
+    fn record_accepts_json_events_flag() {
+        let cli = Cli::parse_from(["dictate", "record", "--json-events"]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert!(args.transcription.json_events);
     }
 
     #[test]
