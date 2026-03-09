@@ -51,6 +51,15 @@ enum RunMode {
     Retry,
 }
 
+impl RunMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::Retry => "retry",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunOutcome {
     Completed,
@@ -66,6 +75,20 @@ enum SessionPhase {
     EmittingOutput,
     Completed,
     Cancelled,
+}
+
+impl SessionPhase {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Recording => "recording",
+            Self::SavingLastAudio => "saving_last_audio",
+            Self::Transcribing => "transcribing",
+            Self::PostProcessing => "post_processing",
+            Self::EmittingOutput => "emitting_output",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +233,106 @@ impl SessionController {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reporter {
+    json_events: bool,
+}
+
+impl Reporter {
+    const fn new(json_events: bool) -> Self {
+        Self { json_events }
+    }
+
+    fn session_started(self, mode: RunMode, phase: SessionPhase, stop_after: Option<Duration>) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "session",
+                "mode": mode.as_str(),
+                "phase": phase.as_str(),
+                "stop_after_ms": stop_after.map(|duration| duration.as_millis()),
+            }));
+        }
+    }
+
+    fn phase(self, phase: SessionPhase, chunk_count: Option<usize>, model: Option<&str>) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "phase",
+                "phase": phase.as_str(),
+                "chunk_count": chunk_count,
+                "model": model,
+            }));
+        }
+    }
+
+    fn status(self, message: impl std::fmt::Display) {
+        if !self.json_events {
+            eprintln!("[dictate] {message}");
+        }
+    }
+
+    fn warning(self, message: impl std::fmt::Display) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "warning",
+                "message": message.to_string(),
+            }));
+        } else {
+            eprintln!("[dictate] warning: {message}");
+        }
+    }
+
+    fn completed(self, char_count: usize, copied_to_clipboard: bool) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "result",
+                "status": "completed",
+                "char_count": char_count,
+                "copied_to_clipboard": copied_to_clipboard,
+            }));
+        } else {
+            let suffix = if copied_to_clipboard {
+                ", copied to clipboard"
+            } else {
+                ""
+            };
+            eprintln!("[dictate] done ({char_count} chars{suffix})");
+        }
+    }
+
+    fn completed_without_transcript(self, message: &str) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "result",
+                "status": "completed",
+                "char_count": 0,
+                "copied_to_clipboard": false,
+                "message": message,
+            }));
+        } else {
+            eprintln!("[dictate] {message}");
+        }
+    }
+
+    fn cancelled(self) {
+        if self.json_events {
+            Self::emit_json(&serde_json::json!({
+                "event": "result",
+                "status": "cancelled",
+            }));
+        } else {
+            eprintln!("[dictate] cancelled");
+        }
+    }
+
+    fn emit_json(value: &serde_json::Value) {
+        eprintln!(
+            "{}",
+            serde_json::to_string(value).expect("JSON event should serialize")
+        );
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  Builder: RecordOptions
 // ══════════════════════════════════════════════════════════════════════════════
@@ -228,7 +351,7 @@ impl OutputOptions {
         Self::default()
     }
 
-    /// Print transcript to stdout instead of clipboard.
+    /// Print transcript to stdout while still copying to clipboard.
     pub const fn stdout(mut self, enabled: bool) -> Self {
         self.stdout = enabled;
         self
@@ -240,8 +363,12 @@ impl OutputOptions {
         self
     }
 
+    const fn write_to_stdout(self) -> bool {
+        self.stdout || self.no_clipboard
+    }
+
     const fn use_clipboard(self) -> bool {
-        !self.stdout && !self.no_clipboard
+        !self.no_clipboard
     }
 }
 
@@ -291,6 +418,7 @@ pub struct RecordOptions {
     post_process: PostProcessOptions,
     pub(crate) stop_after: Option<Duration>,
     save_last_audio: bool,
+    json_events: bool,
 }
 
 impl RecordOptions {
@@ -370,6 +498,12 @@ impl RecordOptions {
         self.save_last_audio = enabled;
         self
     }
+
+    /// Emit machine-readable JSONL progress events on stderr.
+    pub const fn json_events(mut self, enabled: bool) -> Self {
+        self.json_events = enabled;
+        self
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -377,17 +511,17 @@ impl RecordOptions {
 // ══════════════════════════════════════════════════════════════════════════════
 
 pub fn run(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
-    let resolved = resolve_run_config(options, None, RunMode::Record)?;
+    let reporter = Reporter::new(options.json_events);
+    let resolved = resolve_run_config(options, None, RunMode::Record, reporter)?;
 
     // Fail fast if clipboard is requested but unavailable (missing tool / headless)
     if options.output.use_clipboard() {
         dictate_core::check_clipboard_available()?;
     }
 
-    // Set up interrupt handling
-    let controller = Arc::new(SessionController::new(SessionPhase::Recording));
-    let active_recording_stop = Arc::new(Mutex::new(None));
-    install_stop_handlers(&controller, &active_recording_stop, true);
+    let (controller, active_recording_stop) =
+        prepare_session_control(SessionPhase::Recording, true, reporter);
+    reporter.session_started(RunMode::Record, SessionPhase::Recording, options.stop_after);
 
     // Record audio chunks
     let session = capture_recording_session(
@@ -396,58 +530,67 @@ pub fn run(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
         options.stop_after,
         &controller,
         &active_recording_stop,
+        reporter,
     )?;
 
     if session.chunks.is_empty() {
         if controller.is_cancelled() {
-            eprintln!("[dictate] cancelled");
+            reporter.cancelled();
             return Ok(RunOutcome::Cancelled);
         }
 
-        eprintln!("[dictate] no audio captured");
+        reporter.completed_without_transcript("no audio captured");
         return Ok(RunOutcome::Completed);
     }
 
     if options.save_last_audio && !session.samples.is_empty() {
         if !controller.begin_saving_last_audio() {
-            eprintln!("[dictate] cancelled");
+            reporter.cancelled();
             return Ok(RunOutcome::Cancelled);
         }
 
-        if let Err(outcome) = maybe_save_last_audio(options, &session, &resolved, &controller) {
+        reporter.phase(SessionPhase::SavingLastAudio, None, None);
+        if let Err(outcome) =
+            maybe_save_last_audio(options, &session, &resolved, &controller, reporter)
+        {
+            if outcome == RunOutcome::Cancelled {
+                reporter.cancelled();
+            }
             return Ok(outcome);
         }
     }
 
     if !controller.begin_transcribing() {
-        eprintln!("[dictate] cancelled");
+        reporter.cancelled();
         return Ok(RunOutcome::Cancelled);
     }
 
-    process_transcription_session(options, &resolved, session.chunks, &controller)
+    process_transcription_session(options, &resolved, session.chunks, &controller, reporter)
 }
 
 /// Reuse the last saved recording and rerun transcription/post-processing.
 pub fn run_retry(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
+    let reporter = Reporter::new(options.json_events);
     if options.output.use_clipboard() {
         dictate_core::check_clipboard_available()?;
     }
 
     let saved = SavedRecordingStore::open()?.load()?;
     let defaults = saved_defaults_from_manifest(&saved.manifest)?;
-    let resolved = resolve_run_config(options, Some(&defaults), RunMode::Retry)?;
+    let resolved = resolve_run_config(options, Some(&defaults), RunMode::Retry, reporter)?;
     let session = rechunk_saved_audio(saved.samples, saved.manifest.chunk_target_duration_secs);
 
+    let (controller, _active_recording_stop) =
+        prepare_session_control(SessionPhase::Transcribing, false, reporter);
+    reporter.session_started(RunMode::Retry, SessionPhase::Transcribing, None);
+
     if session.chunks.is_empty() {
-        eprintln!("[dictate] saved recording contains no audio");
+        reporter.completed_without_transcript("saved recording contains no audio");
         return Ok(RunOutcome::Completed);
     }
 
-    eprintln!("[dictate] reusing saved audio from last recording...");
-    let controller = Arc::new(SessionController::new(SessionPhase::Transcribing));
-    let active_recording_stop = Arc::new(Mutex::new(None));
-    install_stop_handlers(&controller, &active_recording_stop, false);
-    process_transcription_session(options, &resolved, session.chunks, &controller)
+    reporter.status("reusing saved audio from last recording...");
+    process_transcription_session(options, &resolved, session.chunks, &controller, reporter)
 }
 
 #[derive(Debug, Clone)]
@@ -471,14 +614,57 @@ struct CapturedSession {
     chunker_config: ChunkerConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OutputSummary {
+    char_count: usize,
+    copied_to_clipboard: bool,
+}
+
+struct CaptureCollector<'a> {
+    chunker: &'a mut ProgressiveChunker,
+    all_samples: &'a mut Option<Vec<f32>>,
+    chunks: &'a mut Vec<AudioChunk>,
+    reporter: Reporter,
+}
+
+impl CaptureCollector<'_> {
+    fn push_samples(&mut self, samples: &[f32]) {
+        if let Some(all_samples) = self.all_samples.as_mut() {
+            all_samples.extend_from_slice(samples);
+        }
+
+        if let Some(chunk) = self.chunker.push_samples(samples) {
+            self.reporter.status(format!(
+                "chunk {} ready ({:.1}s)",
+                chunk.index,
+                chunk.duration_secs()
+            ));
+            self.chunks.push(chunk);
+        }
+    }
+
+    fn flush_chunker(&mut self) {
+        if let Some(chunk) = self.chunker.flush() {
+            self.reporter.status(format!(
+                "final chunk {} ready ({:.1}s)",
+                chunk.index,
+                chunk.duration_secs()
+            ));
+            self.chunks.push(chunk);
+        }
+    }
+}
+
 fn process_transcription_session(
     options: &RecordOptions,
     resolved: &ResolvedRunConfig,
     chunks: Vec<AudioChunk>,
     controller: &SessionController,
+    reporter: Reporter,
 ) -> Result<RunOutcome, RecordError> {
-    let Some(results) = transcribe_chunks(&resolved.pipeline, chunks, controller)? else {
-        eprintln!("[dictate] cancelled");
+    reporter.phase(SessionPhase::Transcribing, Some(chunks.len()), None);
+    let Some(results) = transcribe_chunks(&resolved.pipeline, chunks, controller, reporter)? else {
+        reporter.cancelled();
         return Ok(RunOutcome::Cancelled);
     };
 
@@ -489,7 +675,7 @@ fn process_transcription_session(
     let (merged, post_process_outcome, post_process_requested) =
         if post_process_requested && !merged.text.is_empty() {
             if !controller.begin_post_processing() {
-                eprintln!("[dictate] cancelled");
+                reporter.cancelled();
                 return Ok(RunOutcome::Cancelled);
             }
 
@@ -498,7 +684,8 @@ fn process_transcription_session(
                 .post_process_model
                 .as_ref()
                 .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
-            eprintln!("[dictate] post-processing with {model}...");
+            reporter.phase(SessionPhase::PostProcessing, None, Some(model));
+            reporter.status(format!("post-processing with {model}..."));
 
             match resolved
                 .pipeline
@@ -506,7 +693,7 @@ fn process_transcription_session(
             {
                 Ok((merged, outcome)) => (merged, outcome, true),
                 Err(CancellationError::Cancelled) => {
-                    eprintln!("[dictate] cancelled");
+                    reporter.cancelled();
                     return Ok(RunOutcome::Cancelled);
                 }
                 Err(CancellationError::Error(err)) => return Err(RecordError::from(err)),
@@ -516,18 +703,20 @@ fn process_transcription_session(
         };
 
     if !controller.begin_output_commit() {
-        eprintln!("[dictate] cancelled");
+        reporter.cancelled();
         return Ok(RunOutcome::Cancelled);
     }
 
-    output_result(
+    let output = output_result(
         &merged,
         resolved.effective_format,
         post_process_requested,
         options,
         post_process_outcome,
+        reporter,
     );
     controller.finish_success();
+    reporter.completed(output.char_count, output.copied_to_clipboard);
 
     Ok(RunOutcome::Completed)
 }
@@ -541,6 +730,7 @@ fn resolve_run_config(
     options: &RecordOptions,
     defaults: Option<&SavedDefaults>,
     run_mode: RunMode,
+    reporter: Reporter,
 ) -> Result<ResolvedRunConfig, RecordError> {
     let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
 
@@ -550,6 +740,7 @@ fn resolve_run_config(
             .response_format
             .or_else(|| defaults.and_then(|saved| saved.output_format)),
         Some(&timestamp_granularities),
+        reporter,
     );
 
     // Validate API key upfront (fail fast)
@@ -574,7 +765,7 @@ fn resolve_run_config(
     // Load vocabulary prompt hints for prompt injection.
     // Best-effort: warn and continue on store errors.
     let effective_prompt = if options.prompt.is_some() || defaults.is_none() {
-        load_prompt_hints(options.prompt.as_deref())
+        load_prompt_hints(options.prompt.as_deref(), reporter)
     } else {
         defaults.and_then(|saved| saved.pipeline_config.prompt.clone())
     };
@@ -676,8 +867,9 @@ fn capture_recording_session(
     stop_after: Option<Duration>,
     controller: &SessionController,
     active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+    reporter: Reporter,
 ) -> Result<CapturedSession, RecordError> {
-    print_recording_start_message(stop_after);
+    print_recording_start_message(stop_after, reporter);
 
     let mut config = RecorderConfig::default();
     if let Some(query) = device {
@@ -686,28 +878,32 @@ fn capture_recording_session(
 
     let (mut recorder, mut rx, info) = AudioRecorder::start(config)?;
     set_active_recording_stop(active_recording_stop, Some(recorder.stop_handle()));
-    eprintln!(
-        "[dictate] device: {} ({} Hz, {}ch) -> resampling to {} Hz mono",
+    reporter.status(format!(
+        "device: {} ({} Hz, {}ch) -> resampling to {} Hz mono",
         info.device_name,
         info.device_sample_rate_hz,
         info.device_channels,
         info.target_sample_rate_hz
-    );
+    ));
 
     // Collect audio chunks
     let chunker_config = ChunkerConfig::default();
     let mut chunker = ProgressiveChunker::new(chunker_config.clone());
     let mut chunks: Vec<AudioChunk> = Vec::new();
     let mut samples = collect_samples.then(Vec::new);
+    let mut collector = CaptureCollector {
+        chunker: &mut chunker,
+        all_samples: &mut samples,
+        chunks: &mut chunks,
+        reporter,
+    };
 
     consume_until_stopped(
         &mut rx,
         controller,
         active_recording_stop,
         stop_after,
-        &mut chunker,
-        &mut samples,
-        &mut chunks,
+        &mut collector,
     );
     set_active_recording_stop(active_recording_stop, None);
 
@@ -716,39 +912,32 @@ fn capture_recording_session(
     // Check recording stats and warn about any issues.
     let stats = recorder.stats().snapshot();
     if stats.resample_errors > 0 {
-        eprintln!(
-            "[dictate] warning: {} audio samples lost due to resampling errors",
+        reporter.warning(format!(
+            "{} audio samples lost due to resampling errors",
             stats.resample_errors
-        );
+        ));
     }
     if stats.dropped_samples > 0 {
-        eprintln!(
-            "[dictate] warning: {} audio samples dropped (processing too slow)",
+        reporter.warning(format!(
+            "{} audio samples dropped (processing too slow)",
             stats.dropped_samples
-        );
+        ));
     }
     if stats.stream_errors > 0 {
-        eprintln!(
-            "[dictate] warning: {} audio stream errors occurred",
+        reporter.warning(format!(
+            "{} audio stream errors occurred",
             stats.stream_errors
-        );
+        ));
     }
 
-    drain_remaining(&mut rx, &mut chunker, &mut samples, &mut chunks);
+    drain_remaining(&mut rx, &mut collector);
 
     let tail = recorder.take_flushed_tail();
     if !tail.is_empty() {
-        push_samples_and_collect(&mut chunker, &tail, &mut samples, &mut chunks);
+        collector.push_samples(&tail);
     }
 
-    if let Some(chunk) = chunker.flush() {
-        eprintln!(
-            "[dictate] final chunk {} ready ({:.1}s)",
-            chunk.index,
-            chunk.duration_secs()
-        );
-        chunks.push(chunk);
-    }
+    collector.flush_chunker();
 
     Ok(CapturedSession {
         samples: samples.unwrap_or_default(),
@@ -766,27 +955,28 @@ fn transcribe_chunks(
     pipeline: &Arc<TranscriptionPipeline>,
     chunks: Vec<AudioChunk>,
     controller: &SessionController,
+    reporter: Reporter,
 ) -> Result<Option<Vec<TranscriptionResult>>, RecordError> {
-    eprintln!(
-        "[dictate] transcribing {} chunk{}...",
+    reporter.status(format!(
+        "transcribing {} chunk{}...",
         chunks.len(),
         if chunks.len() == 1 { "" } else { "s" }
-    );
+    ));
 
     let mut results: Vec<TranscriptionResult> = Vec::new();
     let mut timeline_offset: f64 = 0.0;
 
     for chunk in chunks {
         if controller.is_cancelled() {
-            eprintln!("[dictate] cancelled, skipping remaining chunks");
+            reporter.status("cancelled, skipping remaining chunks");
             return Ok(None);
         }
 
-        eprintln!(
-            "[dictate]   chunk {} ({:.1}s)...",
+        reporter.status(format!(
+            "  chunk {} ({:.1}s)...",
             chunk.index,
             chunk.duration_secs()
-        );
+        ));
 
         let chunk_offset = timeline_offset;
         let chunk_duration = f64::from(chunk.duration_secs());
@@ -796,7 +986,7 @@ fn transcribe_chunks(
             match pipeline.transcribe_chunk_with_cancellation(&chunk, controller.cancellation()) {
                 Ok(result) => result,
                 Err(CancellationError::Cancelled) => {
-                    eprintln!("[dictate] cancelled, abandoning in-flight transcription");
+                    reporter.status("cancelled, abandoning in-flight transcription");
                     return Ok(None);
                 }
                 Err(CancellationError::Error(err)) => return Err(RecordError::from(err)),
@@ -836,78 +1026,115 @@ fn offset_timestamps(result: &mut TranscriptionResult, offset: f64) {
 /// Format and output the transcription result.
 ///
 /// Output behavior:
-/// - If `--stdout` or `--no-clipboard`: print to stdout
-/// - Otherwise: copy to clipboard (with stderr fallback on failure)
+/// - If `--stdout`: print to stdout and copy to clipboard
+/// - If `--no-clipboard`: print to stdout only
+/// - Otherwise: copy to clipboard (with stderr/stdout fallback on failure)
 fn output_result(
     merged: &TranscriptionResult,
     format: Option<ResponseFormat>,
     post_process_requested: bool,
     options: &RecordOptions,
     post_process_outcome: PostProcessOutcome,
-) {
+    reporter: Reporter,
+) -> OutputSummary {
     if merged.text.is_empty() {
-        eprintln!("[dictate] no speech detected");
-        return;
+        if !reporter.json_events {
+            eprintln!("[dictate] no speech detected");
+        }
+        return OutputSummary {
+            char_count: 0,
+            copied_to_clipboard: false,
+        };
     }
 
-    // Determine output destination based on flags
+    // Determine output destinations based on flags
+    let write_to_stdout = options.output.write_to_stdout();
     let use_clipboard = options.output.use_clipboard();
 
     // Format the result according to --format flag
-    let formatted = format_to_string(merged, format, post_process_requested, post_process_outcome);
+    let formatted = format_to_string(
+        merged,
+        format,
+        post_process_requested,
+        post_process_outcome,
+        reporter,
+    );
+
+    if write_to_stdout {
+        println!("{formatted}");
+    }
 
     if use_clipboard {
-        // Default behavior: copy to clipboard
         match dictate_core::clipboard::copy_to_clipboard(&formatted) {
-            Ok(()) => {
-                print_completion_message(merged.text.len(), true);
-            }
+            Ok(()) => OutputSummary {
+                char_count: merged.text.len(),
+                copied_to_clipboard: true,
+            },
             Err(err) => {
-                // Failure safety: never lose transcribed text
-                eprintln!("[dictate] clipboard failed: {err}");
-                eprintln!("[dictate] transcript (saved to stderr to prevent data loss):");
-                eprintln!("{formatted}");
-                // Return success since text was not lost (important for shell scripts)
+                reporter.warning(format!("clipboard failed: {err}"));
+                if !write_to_stdout && reporter.json_events {
+                    println!("{formatted}");
+                } else if !write_to_stdout {
+                    eprintln!("[dictate] transcript (saved to stderr to prevent data loss):");
+                    eprintln!("{formatted}");
+                }
+                OutputSummary {
+                    char_count: merged.text.len(),
+                    copied_to_clipboard: false,
+                }
             }
         }
     } else {
-        // --stdout or --no-clipboard: print to stdout
-        println!("{formatted}");
-        print_completion_message(merged.text.len(), false);
+        OutputSummary {
+            char_count: merged.text.len(),
+            copied_to_clipboard: false,
+        }
     }
 }
 
-fn print_completion_message(char_count: usize, copied_to_clipboard: bool) {
-    let suffix = if copied_to_clipboard {
-        ", copied to clipboard"
-    } else {
-        ""
-    };
-
-    eprintln!("[dictate] done ({char_count} chars{suffix})");
+fn prepare_session_control(
+    phase: SessionPhase,
+    enable_stdin_stop: bool,
+    reporter: Reporter,
+) -> (
+    Arc<SessionController>,
+    Arc<Mutex<Option<RecorderStopHandle>>>,
+) {
+    let controller = Arc::new(SessionController::new(phase));
+    let active_recording_stop = Arc::new(Mutex::new(None));
+    install_stop_handlers(
+        &controller,
+        &active_recording_stop,
+        enable_stdin_stop,
+        reporter,
+    );
+    (controller, active_recording_stop)
 }
 
 fn install_stop_handlers(
     controller: &Arc<SessionController>,
     active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
     enable_stdin_stop: bool,
+    reporter: Reporter,
 ) {
     let controller_ctrlc = Arc::clone(controller);
     let active_recording_stop_ctrlc = Arc::clone(active_recording_stop);
     if let Err(err) = ctrlc::set_handler(move || {
         if controller_ctrlc.request_cancel_session() {
-            eprintln!("\n[dictate] forced exit");
+            if !reporter.json_events {
+                eprintln!("\n[dictate] forced exit");
+            }
             std::process::exit(130);
         }
 
         if controller_ctrlc.is_recording() {
-            request_active_recording_stop(&active_recording_stop_ctrlc);
+            request_active_recording_stop(&active_recording_stop_ctrlc, reporter);
         }
     }) {
-        eprintln!("[dictate] warning: failed to set Ctrl+C handler: {err}");
+        reporter.warning(format!("failed to set Ctrl+C handler: {err}"));
     }
 
-    install_sigusr1_stop_handler(controller, active_recording_stop);
+    install_sigusr1_stop_handler(controller, active_recording_stop, reporter);
 
     if enable_stdin_stop && std::io::stdin().is_terminal() {
         let active_recording_stop_stdin = Arc::clone(active_recording_stop);
@@ -916,7 +1143,12 @@ fn install_stop_handlers(
             let mut input = String::new();
             let read_result = std::io::stdin().read_line(&mut input);
             if should_stop_after_stdin_read(&read_result, &input) {
-                request_recording_stop(&controller_stdin, &active_recording_stop_stdin, None);
+                request_recording_stop(
+                    &controller_stdin,
+                    &active_recording_stop_stdin,
+                    None,
+                    reporter,
+                );
             }
         });
     }
@@ -930,13 +1162,14 @@ fn should_stop_after_stdin_read(read_result: &std::io::Result<usize>, input: &st
 fn install_sigusr1_stop_handler(
     controller: &Arc<SessionController>,
     active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
+    reporter: Reporter,
 ) {
     let controller_sigusr1 = Arc::clone(controller);
     let active_recording_stop_sigusr1 = Arc::clone(active_recording_stop);
     let signals = match Signals::new([SIGUSR1]) {
         Ok(signals) => signals,
         Err(err) => {
-            eprintln!("[dictate] warning: failed to set SIGUSR1 handler: {err}");
+            reporter.warning(format!("failed to set SIGUSR1 handler: {err}"));
             return;
         }
     };
@@ -945,9 +1178,14 @@ fn install_sigusr1_stop_handler(
         let mut signals = signals;
         for _signal in signals.forever() {
             if controller_sigusr1.is_recording() {
-                request_recording_stop(&controller_sigusr1, &active_recording_stop_sigusr1, None);
+                request_recording_stop(
+                    &controller_sigusr1,
+                    &active_recording_stop_sigusr1,
+                    None,
+                    reporter,
+                );
             } else if !controller_sigusr1.is_cancelled() {
-                eprintln!("[dictate] warning: ignoring SIGUSR1 outside recording");
+                reporter.warning("ignoring SIGUSR1 outside recording");
             }
         }
     });
@@ -957,6 +1195,7 @@ fn install_sigusr1_stop_handler(
 fn install_sigusr1_stop_handler(
     _controller: &Arc<SessionController>,
     _active_recording_stop: &Arc<Mutex<Option<RecorderStopHandle>>>,
+    _reporter: Reporter,
 ) {
 }
 
@@ -973,7 +1212,10 @@ fn set_active_recording_stop(
     }
 }
 
-fn request_active_recording_stop(active_recording_stop: &Mutex<Option<RecorderStopHandle>>) {
+fn request_active_recording_stop(
+    active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
+    reporter: Reporter,
+) {
     let stop_handle = match active_recording_stop.lock() {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
@@ -982,7 +1224,7 @@ fn request_active_recording_stop(active_recording_stop: &Mutex<Option<RecorderSt
     if let Some(stop_handle) = stop_handle
         && let Err(err) = stop_handle.request_stop()
     {
-        eprintln!("[dictate] warning: failed to stop recording promptly: {err}");
+        reporter.warning(format!("failed to stop recording promptly: {err}"));
     }
 }
 
@@ -990,16 +1232,17 @@ fn request_recording_stop(
     controller: &SessionController,
     active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
     reason: Option<&str>,
+    reporter: Reporter,
 ) {
     if controller.request_stop_recording() {
         if let Some(reason) = reason {
-            eprintln!("[dictate] {reason}");
+            reporter.status(reason);
         }
-        request_active_recording_stop(active_recording_stop);
+        request_active_recording_stop(active_recording_stop, reporter);
     }
 }
 
-fn print_recording_start_message(stop_after: Option<Duration>) {
+fn print_recording_start_message(stop_after: Option<Duration>, reporter: Reporter) {
     let stop_hint = if std::io::stdin().is_terminal() {
         "press Enter to stop"
     } else {
@@ -1010,7 +1253,9 @@ fn print_recording_start_message(stop_after: Option<Duration>) {
         format!(", auto-stop after {}", format_duration(duration))
     });
 
-    eprintln!("[dictate] recording... {stop_hint}{auto_stop_hint}, Ctrl+C to cancel");
+    reporter.status(format!(
+        "recording... {stop_hint}{auto_stop_hint}, Ctrl+C to cancel"
+    ));
 }
 
 fn format_duration(duration: Duration) -> String {
@@ -1029,44 +1274,14 @@ fn format_duration(duration: Duration) -> String {
     format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
 }
 
-/// Push samples to chunker and collect any produced chunk.
-fn push_and_collect(
-    chunker: &mut ProgressiveChunker,
-    samples: &[f32],
-    chunks: &mut Vec<AudioChunk>,
-) {
-    if let Some(chunk) = chunker.push_samples(samples) {
-        eprintln!(
-            "[dictate] chunk {} ready ({:.1}s)",
-            chunk.index,
-            chunk.duration_secs()
-        );
-        chunks.push(chunk);
-    }
-}
-
-fn push_samples_and_collect(
-    chunker: &mut ProgressiveChunker,
-    samples: &[f32],
-    all_samples: &mut Option<Vec<f32>>,
-    chunks: &mut Vec<AudioChunk>,
-) {
-    if let Some(all_samples) = all_samples.as_mut() {
-        all_samples.extend_from_slice(samples);
-    }
-    push_and_collect(chunker, samples, chunks);
-}
-
 fn consume_until_stopped(
     rx: &mut AudioReceiver,
     controller: &SessionController,
     active_recording_stop: &Mutex<Option<RecorderStopHandle>>,
     stop_after: Option<Duration>,
-    chunker: &mut ProgressiveChunker,
-    all_samples: &mut Option<Vec<f32>>,
-    chunks: &mut Vec<AudioChunk>,
+    collector: &mut CaptureCollector<'_>,
 ) {
-    let stop_deadline = resolve_stop_deadline(stop_after);
+    let stop_deadline = resolve_stop_deadline(stop_after, collector.reporter);
 
     loop {
         if stop_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -1074,6 +1289,7 @@ fn consume_until_stopped(
                 controller,
                 active_recording_stop,
                 Some("stop-after elapsed; finishing capture"),
+                collector.reporter,
             );
         }
 
@@ -1083,7 +1299,7 @@ fn consume_until_stopped(
 
         match rx.recv_timeout(recording_wait_timeout(stop_deadline)) {
             RecvResult::Data(samples) => {
-                push_samples_and_collect(chunker, samples, all_samples, chunks);
+                collector.push_samples(samples);
             }
             RecvResult::Timeout => {}
             RecvResult::Disconnected => break,
@@ -1091,12 +1307,10 @@ fn consume_until_stopped(
     }
 }
 
-fn resolve_stop_deadline(stop_after: Option<Duration>) -> Option<Instant> {
+fn resolve_stop_deadline(stop_after: Option<Duration>, reporter: Reporter) -> Option<Instant> {
     let duration = stop_after?;
     Some(Instant::now().checked_add(duration).unwrap_or_else(|| {
-        eprintln!(
-            "[dictate] warning: --stop-after is too large on this platform; stopping immediately"
-        );
+        reporter.warning("--stop-after is too large on this platform; stopping immediately");
         Instant::now()
     }))
 }
@@ -1116,18 +1330,13 @@ fn recording_wait_timeout(stop_deadline: Option<Instant>) -> Duration {
 ///
 /// Loops: non-blocking drain → disconnected check → blocking wait with timeout
 /// counting, until the producer is dropped and the buffer is empty.
-fn drain_remaining(
-    rx: &mut AudioReceiver,
-    chunker: &mut ProgressiveChunker,
-    all_samples: &mut Option<Vec<f32>>,
-    chunks: &mut Vec<AudioChunk>,
-) {
+fn drain_remaining(rx: &mut AudioReceiver, collector: &mut CaptureCollector<'_>) {
     let mut consecutive_timeouts = 0_u8;
 
     loop {
         while let Some(samples) = rx.try_recv() {
             consecutive_timeouts = 0;
-            push_samples_and_collect(chunker, samples, all_samples, chunks);
+            collector.push_samples(samples);
         }
 
         if rx.is_disconnected() {
@@ -1137,7 +1346,7 @@ fn drain_remaining(
         match rx.recv_timeout(RECV_TIMEOUT) {
             RecvResult::Data(samples) => {
                 consecutive_timeouts = 0;
-                push_samples_and_collect(chunker, samples, all_samples, chunks);
+                collector.push_samples(samples);
             }
             RecvResult::Timeout => {
                 consecutive_timeouts += 1;
@@ -1155,6 +1364,7 @@ fn maybe_save_last_audio(
     session: &CapturedSession,
     resolved: &ResolvedRunConfig,
     controller: &SessionController,
+    reporter: Reporter,
 ) -> Result<(), RunOutcome> {
     if !options.save_last_audio || session.samples.is_empty() {
         return Ok(());
@@ -1172,16 +1382,15 @@ fn maybe_save_last_audio(
 
     match SavedRecordingStore::open() {
         Ok(store) => match store.save_with_cancellation(&recording, controller.cancellation()) {
-            Ok(()) => eprintln!("[dictate] saved audio for later reuse"),
+            Ok(()) => reporter.status("saved audio for later reuse"),
             Err(CancellationError::Cancelled) => {
-                eprintln!("[dictate] cancelled");
                 return Err(RunOutcome::Cancelled);
             }
             Err(CancellationError::Error(err)) => {
-                eprintln!("[dictate] warning: could not save audio for retry: {err}");
+                reporter.warning(format!("could not save audio for retry: {err}"));
             }
         },
-        Err(err) => eprintln!("[dictate] warning: could not save audio for retry: {err}"),
+        Err(err) => reporter.warning(format!("could not save audio for retry: {err}")),
     }
 
     Ok(())
@@ -1236,8 +1445,8 @@ fn rechunk_saved_audio(samples: Vec<f32>, target_duration_secs: u64) -> Captured
 ///
 /// This is best-effort: if the store cannot be loaded, a warning is printed
 /// and prompt composition continues with the user prompt only.
-fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
-    let vocabulary = load_vocabulary_best_effort();
+fn load_prompt_hints(user_prompt: Option<&str>, reporter: Reporter) -> Option<String> {
+    let vocabulary = load_vocabulary_best_effort(reporter);
     if vocabulary.is_empty() {
         return user_prompt.map(String::from);
     }
@@ -1253,27 +1462,27 @@ fn load_prompt_hints(user_prompt: Option<&str>) -> Option<String> {
 
     if let Some(ref h) = hint {
         if h.included < h.total {
-            eprintln!(
-                "[dictate] prompt hints: using {}/{} entries (token limit)",
+            reporter.status(format!(
+                "prompt hints: using {}/{} entries (token limit)",
                 h.included, h.total
-            );
+            ));
         } else {
-            eprintln!(
-                "[dictate] prompt hints loaded ({} {})",
+            reporter.status(format!(
+                "prompt hints loaded ({} {})",
                 h.included,
                 if h.included == 1 { "entry" } else { "entries" }
-            );
+            ));
         }
     }
 
     build_effective_prompt(user_prompt, hint.as_ref().map(|entry| entry.text.as_str()))
 }
 
-fn load_vocabulary_best_effort() -> Vocabulary {
+fn load_vocabulary_best_effort(reporter: Reporter) -> Vocabulary {
     let store = match VocabularyStore::open() {
         Ok(s) => s,
         Err(err) => {
-            eprintln!("[dictate] warning: could not open vocabulary store: {err}");
+            reporter.warning(format!("could not open vocabulary store: {err}"));
             return Vocabulary::new();
         }
     };
@@ -1281,7 +1490,7 @@ fn load_vocabulary_best_effort() -> Vocabulary {
     match store.load() {
         Ok(v) => v,
         Err(err) => {
-            eprintln!("[dictate] warning: could not load vocabulary: {err}");
+            reporter.warning(format!("could not load vocabulary: {err}"));
             Vocabulary::new()
         }
     }
@@ -1306,6 +1515,7 @@ fn build_effective_prompt(user_prompt: Option<&str>, prompt_hint: Option<&str>) 
 fn auto_upgrade_format(
     explicit_format: Option<ResponseFormat>,
     timestamps: Option<&Vec<TimestampGranularity>>,
+    reporter: Reporter,
 ) -> Option<ResponseFormat> {
     let has_timestamps = timestamps.is_some_and(|ts| !ts.is_empty());
 
@@ -1316,11 +1526,10 @@ fn auto_upgrade_format(
     match explicit_format {
         Some(ResponseFormat::VerboseJson) => explicit_format,
         Some(other) => {
-            eprintln!(
-                "[dictate] warning: --timestamps requires verbose_json; \
-                 overriding --format {}",
+            reporter.warning(format!(
+                "--timestamps requires verbose_json; overriding --format {}",
                 other.as_str()
-            );
+            ));
             Some(ResponseFormat::VerboseJson)
         }
         None => Some(ResponseFormat::VerboseJson),
@@ -1395,6 +1604,7 @@ fn format_to_string(
     format: Option<ResponseFormat>,
     post_process_requested: bool,
     post_process_outcome: PostProcessOutcome,
+    reporter: Reporter,
 ) -> String {
     match format {
         Some(ResponseFormat::VerboseJson) => {
@@ -1402,7 +1612,7 @@ fn format_to_string(
             let mut payload = match serde_json::to_value(result) {
                 Ok(value) => value,
                 Err(err) => {
-                    eprintln!("[dictate] warning: JSON serialization failed: {err}");
+                    reporter.warning(format!("JSON serialization failed: {err}"));
                     return result.text.clone();
                 }
             };
@@ -1417,7 +1627,7 @@ fn format_to_string(
             match serde_json::to_string_pretty(&payload) {
                 Ok(json) => json,
                 Err(err) => {
-                    eprintln!("[dictate] warning: JSON serialization failed: {err}");
+                    reporter.warning(format!("JSON serialization failed: {err}"));
                     result.text.clone()
                 }
             }
@@ -1435,7 +1645,7 @@ fn format_to_string(
             match serde_json::to_string_pretty(&payload) {
                 Ok(json) => json,
                 Err(err) => {
-                    eprintln!("[dictate] warning: JSON serialization failed: {err}");
+                    reporter.warning(format!("JSON serialization failed: {err}"));
                     result.text.clone()
                 }
             }
@@ -1737,14 +1947,18 @@ mod tests {
 
     #[test]
     fn no_timestamps_preserves_format() {
-        assert_eq!(auto_upgrade_format(None, None), None);
+        assert_eq!(auto_upgrade_format(None, None, Reporter::new(false)), None);
         assert_eq!(
-            auto_upgrade_format(Some(ResponseFormat::Json), None),
+            auto_upgrade_format(Some(ResponseFormat::Json), None, Reporter::new(false)),
             Some(ResponseFormat::Json)
         );
         let empty: Vec<TimestampGranularity> = vec![];
         assert_eq!(
-            auto_upgrade_format(Some(ResponseFormat::Text), Some(&empty)),
+            auto_upgrade_format(
+                Some(ResponseFormat::Text),
+                Some(&empty),
+                Reporter::new(false),
+            ),
             Some(ResponseFormat::Text)
         );
     }
@@ -1753,7 +1967,7 @@ mod tests {
     fn timestamps_upgrade_none_format() {
         let ts = vec![TimestampGranularity::Word];
         assert_eq!(
-            auto_upgrade_format(None, Some(&ts)),
+            auto_upgrade_format(None, Some(&ts), Reporter::new(false)),
             Some(ResponseFormat::VerboseJson)
         );
     }
@@ -1762,7 +1976,7 @@ mod tests {
     fn timestamps_override_explicit_non_verbose_format() {
         let ts = vec![TimestampGranularity::Segment];
         assert_eq!(
-            auto_upgrade_format(Some(ResponseFormat::Json), Some(&ts)),
+            auto_upgrade_format(Some(ResponseFormat::Json), Some(&ts), Reporter::new(false),),
             Some(ResponseFormat::VerboseJson)
         );
     }
@@ -1771,7 +1985,11 @@ mod tests {
     fn timestamps_keep_verbose_json() {
         let ts = vec![TimestampGranularity::Word];
         assert_eq!(
-            auto_upgrade_format(Some(ResponseFormat::VerboseJson), Some(&ts)),
+            auto_upgrade_format(
+                Some(ResponseFormat::VerboseJson),
+                Some(&ts),
+                Reporter::new(false),
+            ),
             Some(ResponseFormat::VerboseJson)
         );
     }
@@ -1915,8 +2133,14 @@ mod tests {
         let input = vec![0.25_f32, -0.5, 0.75];
         let mut all_samples = Some(Vec::new());
         let mut chunks = Vec::new();
+        let mut collector = CaptureCollector {
+            chunker: &mut chunker,
+            all_samples: &mut all_samples,
+            chunks: &mut chunks,
+            reporter: Reporter::new(false),
+        };
 
-        push_samples_and_collect(&mut chunker, &input, &mut all_samples, &mut chunks);
+        collector.push_samples(&input);
 
         assert_eq!(all_samples.unwrap(), input);
         assert!(chunks.is_empty());
@@ -1928,8 +2152,14 @@ mod tests {
         let input = vec![0.25_f32, -0.5, 0.75];
         let mut all_samples = None;
         let mut chunks = Vec::new();
+        let mut collector = CaptureCollector {
+            chunker: &mut chunker,
+            all_samples: &mut all_samples,
+            chunks: &mut chunks,
+            reporter: Reporter::new(false),
+        };
 
-        push_samples_and_collect(&mut chunker, &input, &mut all_samples, &mut chunks);
+        collector.push_samples(&input);
 
         assert!(all_samples.is_none());
         assert!(chunks.is_empty());
@@ -1991,7 +2221,8 @@ mod tests {
         let pipeline = test_pipeline(provider, None);
         let chunks = vec![test_chunk(0, 1.0), test_chunk(1, 1.0)];
 
-        let results = transcribe_chunks(&pipeline, chunks, &controller).unwrap();
+        let results =
+            transcribe_chunks(&pipeline, chunks, &controller, Reporter::new(false)).unwrap();
 
         assert!(results.is_none());
     }
@@ -2024,6 +2255,7 @@ mod tests {
             &resolved,
             vec![test_chunk(0, 1.0), test_chunk(1, 1.0)],
             &controller,
+            Reporter::new(false),
         )
         .unwrap();
 
@@ -2057,6 +2289,7 @@ mod tests {
             &resolved,
             vec![test_chunk(0, 1.0)],
             &controller,
+            Reporter::new(false),
         )
         .unwrap();
 
@@ -2079,7 +2312,12 @@ mod tests {
         let controller = SessionController::new(SessionPhase::Recording);
         let active_recording_stop = Mutex::new(None);
 
-        request_recording_stop(&controller, &active_recording_stop, None);
+        request_recording_stop(
+            &controller,
+            &active_recording_stop,
+            None,
+            Reporter::new(false),
+        );
 
         assert!(!controller.should_continue_recording());
     }
@@ -2090,6 +2328,22 @@ mod tests {
         assert!(should_stop_after_stdin_read(&Ok(5), "stop\n"));
         assert!(!should_stop_after_stdin_read(&Ok(0), ""));
         assert!(!should_stop_after_stdin_read(&Ok(4), "stop"));
+    }
+
+    #[test]
+    fn stdout_output_keeps_clipboard_enabled() {
+        let output = OutputOptions::new().stdout(true);
+
+        assert!(output.write_to_stdout());
+        assert!(output.use_clipboard());
+    }
+
+    #[test]
+    fn no_clipboard_output_prints_without_clipboard() {
+        let output = OutputOptions::new().no_clipboard(true);
+
+        assert!(output.write_to_stdout());
+        assert!(!output.use_clipboard());
     }
 
     #[test]
@@ -2113,7 +2367,7 @@ mod tests {
 
     #[test]
     fn resolve_stop_deadline_handles_overflow() {
-        let deadline = resolve_stop_deadline(Some(Duration::MAX)).unwrap();
+        let deadline = resolve_stop_deadline(Some(Duration::MAX), Reporter::new(false)).unwrap();
         assert!(deadline <= Instant::now());
     }
 
@@ -2208,6 +2462,7 @@ mod tests {
             Some(ResponseFormat::Json),
             false,
             PostProcessOutcome::NotConfigured,
+            Reporter::new(false),
         );
 
         let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
@@ -2222,6 +2477,7 @@ mod tests {
             Some(ResponseFormat::Json),
             true,
             PostProcessOutcome::FailedFallback,
+            Reporter::new(false),
         );
 
         let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
@@ -2243,6 +2499,7 @@ mod tests {
             Some(ResponseFormat::VerboseJson),
             true,
             PostProcessOutcome::SkippedVerboseJson,
+            Reporter::new(false),
         );
 
         let json: serde_json::Value = serde_json::from_str(&formatted).unwrap();
