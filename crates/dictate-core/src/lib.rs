@@ -6,8 +6,8 @@ pub mod clipboard;
 pub mod dictionary;
 pub mod encoder;
 pub mod error;
-mod groq_error;
 pub mod model_id;
+mod openai_error;
 pub mod pipeline;
 pub mod postprocess;
 pub mod prompt;
@@ -33,12 +33,15 @@ pub use error::{AudioError, ModelIdError, TranscriptionError};
 pub use model_id::{LLAMA_3_1_8B, LLAMA_3_3_70B, ModelId};
 pub use pipeline::{PipelineConfig, PostProcessOutcome, TranscriptionPipeline};
 pub use postprocess::{
-    DEFAULT_POST_PROCESS_MODEL, GroqPostProcessor, PostProcessConfig, PostProcessor,
+    DEFAULT_POST_PROCESS_MODEL, FIREWORKS_DEFAULT_POST_PROCESS_MODEL, FireworksPostProcessor,
+    GroqPostProcessor, OpenAiCompatiblePostProcessor, PostProcessConfig, PostProcessProviderKind,
+    PostProcessor, ResolvedPostProcessTarget,
 };
 pub use prompt::{PromptHint, format_hint_within_budget, merge_prompt_hints};
 pub use provider::{
-    GroqProvider, ResponseFormat, Segment, TimestampGranularity, TranscriptionProvider,
-    TranscriptionResult, WhisperModel, Word,
+    FireworksProvider, GroqProvider, OpenAiCompatibleProvider, ResolvedTranscriptionTarget,
+    ResponseFormat, Segment, TimestampGranularity, TranscriptionProvider,
+    TranscriptionProviderKind, TranscriptionResult, WhisperModel, Word,
 };
 pub use request_policy::{RequestPolicies, RequestPolicy};
 pub use resampler::TRANSCRIPTION_SAMPLE_RATE;

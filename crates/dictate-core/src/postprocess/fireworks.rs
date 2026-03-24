@@ -1,4 +1,4 @@
-//! Groq chat completion post-processor.
+//! Fireworks chat completion post-processor.
 
 use super::openai_compatible::SharedOpenAiCompatiblePostProcessor;
 use super::{PostProcessConfig, PostProcessor};
@@ -6,16 +6,16 @@ use crate::cancellation::{CancellationContext, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::request_policy::RequestPolicy;
 
-/// Default LLM model used for Groq post-processing when no override is provided.
-pub const DEFAULT_POST_PROCESS_MODEL: &str = "openai/gpt-oss-20b";
+/// Default Fireworks LLM model used for post-processing.
+pub const FIREWORKS_DEFAULT_POST_PROCESS_MODEL: &str = "accounts/fireworks/models/gpt-oss-120b";
 
-/// Groq-based post-processor using chat completions.
+/// Fireworks-based post-processor using chat completions.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct GroqPostProcessor;
+pub struct FireworksPostProcessor;
 
-impl PostProcessor for GroqPostProcessor {
+impl PostProcessor for FireworksPostProcessor {
     fn name(&self) -> &'static str {
-        "groq-chat"
+        "fireworks-chat"
     }
 
     fn process(
@@ -23,7 +23,7 @@ impl PostProcessor for GroqPostProcessor {
         text: &str,
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError> {
-        SharedOpenAiCompatiblePostProcessor::groq().process(text, config)
+        SharedOpenAiCompatiblePostProcessor::fireworks().process(text, config)
     }
 
     fn process_with_cancellation(
@@ -32,7 +32,7 @@ impl PostProcessor for GroqPostProcessor {
         config: PostProcessConfig<'_>,
         cancellation: &CancellationContext,
     ) -> CancellationResult<String, TranscriptionError> {
-        SharedOpenAiCompatiblePostProcessor::groq().process_with_cancellation(
+        SharedOpenAiCompatiblePostProcessor::fireworks().process_with_cancellation(
             text,
             config,
             cancellation,
@@ -46,11 +46,12 @@ impl PostProcessor for GroqPostProcessor {
         request_policy: RequestPolicy,
         cancellation: &CancellationContext,
     ) -> CancellationResult<String, TranscriptionError> {
-        SharedOpenAiCompatiblePostProcessor::groq().process_with_cancellation_and_request_policy(
-            text,
-            config,
-            request_policy,
-            cancellation,
-        )
+        SharedOpenAiCompatiblePostProcessor::fireworks()
+            .process_with_cancellation_and_request_policy(
+                text,
+                config,
+                request_policy,
+                cancellation,
+            )
     }
 }

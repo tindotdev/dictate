@@ -31,6 +31,8 @@ dictate --language en          # language hint for accuracy
 dictate --device <query>       # select device by name or index
 dictate --save-last-audio      # save audio locally for retry
 dictate retry                  # rerun Whisper + post-process on saved audio
+dictate --transcription-provider fireworks
+dictate -p --post-process-provider fireworks
 dictate devices                # list audio input devices
 ```
 
@@ -50,7 +52,8 @@ rerun transcription without speaking again:
 ```bash
 dictate --save-last-audio -p
 dictate retry
-dictate retry --transcription-model whisper-large-v3
+dictate retry --transcription-model large-v3
+dictate retry --transcription-provider fireworks --post-process-provider fireworks
 dictate retry --prompt "Keep the wording literal" -p
 dictate retry --no-post-process
 ```
@@ -60,9 +63,29 @@ Notes:
 - `dictate retry` reuses the last audio saved with `--save-last-audio`
 - Retry inherits the saved recording's transcription and post-process settings by default
 - Any flags passed to `dictate retry` override the saved settings for that run
+- Retry replays the saved provider, endpoint, and raw model choices unless you override them
 - Direct `dictate` recordings use shorter network timeouts and fewer retries so interactive/hotkey use stays bounded; `dictate retry` keeps longer, more persistent budgets
 - Use `dictate retry --no-post-process` to compare raw Whisper output against a previously cleaned-up run
 - The saved audio stays available until it is replaced by a later `--save-last-audio` recording
+
+### Providers
+
+Transcription and post-processing can be resolved independently:
+
+```bash
+dictate --transcription-provider groq
+dictate --transcription-provider fireworks
+dictate --transcription-provider openai-compatible --base-url https://host/v1/audio/transcriptions --transcription-model-id my-whisper-model
+dictate -p --post-process-provider openai-compatible --post-process-base-url https://host/v1/chat/completions --post-process-model my-chat-model
+```
+
+Notes:
+
+- `--transcription-model` stays semantic and provider-aware: `large-v3-turbo` or `large-v3`
+- `--transcription-model-id` sets the raw provider ASR model id directly
+- `openai-compatible` transcription requires both a raw model id and an explicit endpoint
+- `openai-compatible` post-processing requires both a raw chat model and an explicit endpoint
+- `--base-url` and `--post-process-base-url` still override the transcription and post-process endpoints for the current run
 
 ### Output formats
 
@@ -83,14 +106,16 @@ Optional post-processing cleans raw Whisper output (filler words, punctuation, c
 ```bash
 dictate -p
 dictate -p --post-process-model openai/gpt-oss-120b
+dictate -p --post-process-provider fireworks
 ```
 
 Notes:
 
-- Default post-processing model: `openai/gpt-oss-20b`
+- Groq default post-processing model: `openai/gpt-oss-20b`
+- Fireworks default post-processing model: `accounts/fireworks/models/gpt-oss-120b`
 - Fail-safe behavior: if post-processing fails, raw transcription text is still returned
 - `--format verbose_json` skips post-processing to avoid mismatches between top-level `text` and timestamped `segments`/`words`
-- `--post-process-base-url` is available for OpenAI-compatible chat endpoints, but this branch has only been validated against Groq API endpoints
+- `--post-process-base-url` is available for OpenAI-compatible chat endpoints
 
 Quality is tracked with golden-case evaluations (`just eval-prompt`, `just eval-matrix`):
 
@@ -129,6 +154,12 @@ Optional:
 ```bash
 export GROQ_BASE_URL="..."       # override transcription endpoint
 export GROQ_CHAT_BASE_URL="..."  # override post-process chat endpoint
+export FIREWORKS_API_KEY="..."   # fireworks.ai account key
+export FIREWORKS_BASE_URL="..."  # override Fireworks transcription endpoint
+export FIREWORKS_CHAT_BASE_URL="..."  # override Fireworks chat endpoint
+export OPENAI_COMPATIBLE_API_KEY="..."
+export OPENAI_COMPATIBLE_BASE_URL="..."
+export OPENAI_COMPATIBLE_CHAT_BASE_URL="..."
 ```
 
 Add to your shell profile for persistence. From source installs, `just add-secret` can help.
@@ -323,14 +354,14 @@ On macOS outside Kitty, create a system shortcut (Shortcuts or Automator) that r
 ## Architecture
 
 ```text
-microphone -> cpal -> resample (16kHz mono) -> chunking -> Groq Whisper -> optional LLM cleanup -> clipboard/stdout
+microphone -> cpal -> resample (16kHz mono) -> chunking -> OpenAI-compatible ASR -> optional OpenAI-compatible LLM cleanup -> clipboard/stdout
 ```
 
 - Audio capture: cpal with real-time resampling
 - Ring buffer: lock-free SPSC for zero-allocation transfer
 - Progressive chunking: overlapping chunks for long recordings
-- Transcription: Groq Whisper API (OpenAI-compatible)
-- Post-processing: optional Groq chat cleanup with fail-safe fallback
+- Transcription: Groq, Fireworks, or another OpenAI-compatible ASR endpoint
+- Post-processing: optional Groq, Fireworks, or OpenAI-compatible chat cleanup with fail-safe fallback
 - Clipboard: platform-aware with fallback to stderr
 
 ## Troubleshooting
@@ -356,11 +387,12 @@ API errors:
 
 ## Privacy
 
-Audio is sent to [Groq](https://groq.com) for transcription. By default, audio is
-not stored locally. If you pass `--save-last-audio`, dictate stores one reusable
-local recording until it is replaced by a later saved recording. See Groq's
-[privacy policy](https://groq.com/privacy-policy/) and
-[terms of use](https://groq.com/terms-of-use/).
+Audio is sent to the provider you configure for transcription and optional
+post-processing. By default, audio is not stored locally. If you pass
+`--save-last-audio`, dictate stores one reusable local recording until it is
+replaced by a later saved recording. Review the privacy policy and terms for
+whichever provider you use, such as [Groq](https://groq.com) or
+[Fireworks](https://fireworks.ai/).
 
 ## Acknowledgments
 

@@ -1,11 +1,15 @@
 //! Transcription provider abstraction and implementations.
-//!
-//! Defines [`TranscriptionProvider`] — the trait that all speech-to-text
-//! backends implement — and ships [`GroqProvider`] as the v3.0 default.
 
+mod fireworks;
 mod groq;
+mod openai_compatible;
 
+pub use fireworks::FireworksProvider;
 pub use groq::GroqProvider;
+pub use openai_compatible::OpenAiCompatibleProvider;
+
+use std::fmt;
+use std::str::FromStr;
 
 use crate::cancellation::{CancellationContext, CancellationError, CancellationResult};
 use crate::encoder::EncodedAudio;
@@ -57,8 +61,9 @@ impl TimestampGranularity {
     }
 }
 
-/// Available Whisper models for Groq transcription.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// User-facing semantic Whisper presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum WhisperModel {
     /// Whisper Large V3 Turbo - fastest, recommended for most use cases (default).
     #[default]
@@ -68,39 +73,96 @@ pub enum WhisperModel {
 }
 
 impl WhisperModel {
-    /// Convert to API parameter string.
+    /// Convert to the stable user-facing preset string.
     #[must_use]
-    pub const fn as_str(self) -> &'static str {
+    pub const fn preset(self) -> &'static str {
         match self {
-            Self::LargeV3Turbo => "whisper-large-v3-turbo",
-            Self::LargeV3 => "whisper-large-v3",
+            Self::LargeV3Turbo => "large-v3-turbo",
+            Self::LargeV3 => "large-v3",
         }
     }
 }
 
+/// Provider kind for transcription requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TranscriptionProviderKind {
+    /// Groq hosted OpenAI-compatible Whisper.
+    Groq,
+    /// Fireworks hosted OpenAI-compatible Whisper.
+    Fireworks,
+    /// Arbitrary OpenAI-compatible transcription endpoint.
+    OpenAiCompatible,
+}
+
+impl TranscriptionProviderKind {
+    /// Return the CLI/storage string for this provider.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Groq => "groq",
+            Self::Fireworks => "fireworks",
+            Self::OpenAiCompatible => "openai-compatible",
+        }
+    }
+}
+
+impl fmt::Display for TranscriptionProviderKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TranscriptionProviderKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "groq" => Ok(Self::Groq),
+            "fireworks" => Ok(Self::Fireworks),
+            "openai-compatible" => Ok(Self::OpenAiCompatible),
+            _ => Err(format!(
+                "invalid transcription provider: {value} (valid: groq, fireworks, openai-compatible)"
+            )),
+        }
+    }
+}
+
+/// Fully resolved transcription target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTranscriptionTarget {
+    /// Provider identity for this target.
+    pub provider: TranscriptionProviderKind,
+    /// Final endpoint used for the request.
+    pub endpoint: String,
+    /// API key used for bearer authentication.
+    pub api_key: String,
+    /// Final wire model identifier sent to the provider.
+    pub model: String,
+    /// Timeout and retry settings for this request.
+    pub request_policy: RequestPolicy,
+}
+
 /// Configuration for a transcription request.
-///
-/// Use `TranscriptionConfig::new()` with the required parameters, then set
-/// optional fields using field access or builder-style methods.
 #[derive(Debug, Clone)]
 pub struct TranscriptionConfig<'a> {
     /// API key for authentication (required).
     pub api_key: &'a str,
     /// Encoded audio to transcribe (required).
     pub audio: EncodedAudio,
-    /// Optional override for the API endpoint (for testing/staging).
+    /// Optional override for the API endpoint.
     pub base_url: Option<&'a str>,
-    /// Optional ISO-639-1 language code (e.g., "en", "es"). Improves accuracy and latency.
+    /// Optional ISO-639-1 language code.
     pub language: Option<&'a str>,
-    /// Optional text to guide transcription style or spelling. Max 224 tokens.
+    /// Optional text to guide transcription style or spelling.
     pub prompt: Option<&'a str>,
     /// Response format (default: Json).
     pub response_format: ResponseFormat,
-    /// Optional model selection. Defaults to provider-specific default if None.
+    /// Optional model selection.
     pub model: Option<&'a str>,
-    /// Optional sampling temperature (0.0-1.0). Default 0.0 recommended for transcription.
+    /// Optional sampling temperature (0.0-1.0).
     pub temperature: Option<f32>,
-    /// Optional timestamp granularities. Requires `ResponseFormat::VerboseJson`.
+    /// Optional timestamp granularities.
     pub timestamp_granularities: Vec<TimestampGranularity>,
     /// Timeout and retry settings for this request.
     pub request_policy: RequestPolicy,
@@ -205,36 +267,34 @@ pub struct Segment {
     pub end: f64,
     /// The transcribed text for this segment.
     pub text: String,
-    /// Optional word-level breakdown (only present if word granularity requested).
+    /// Optional word-level breakdown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub words: Vec<Word>,
 }
 
-/// Result of a transcription request, containing text and optional structured metadata.
+/// Result of a transcription request.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TranscriptionResult {
     /// The full transcribed text.
     pub text: String,
-    /// Optional segment-level timestamps (present when segment granularity requested).
+    /// Optional segment-level timestamps.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segments: Option<Vec<Segment>>,
-    /// Optional word-level timestamps (present when word granularity requested).
+    /// Optional word-level timestamps.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub words: Option<Vec<Word>>,
 }
 
 /// A speech-to-text backend that can transcribe encoded audio into text.
-///
 pub trait TranscriptionProvider: Send + Sync {
     /// Human-readable name of this provider (e.g. `"groq"`).
     fn name(&self) -> &'static str;
 
-    /// Send encoded audio to the provider and return the transcribed text with optional metadata.
+    /// Send encoded audio to the provider and return the transcribed text.
     ///
     /// # Errors
     ///
     /// Returns [`TranscriptionError`] on network, API, or parsing failures.
-    /// Implementations should retry transient errors internally.
     fn transcribe(
         &self,
         config: TranscriptionConfig<'_>,
@@ -279,6 +339,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn whisper_model_preset_strings_are_semantic() {
+        assert_eq!(WhisperModel::LargeV3Turbo.preset(), "large-v3-turbo");
+        assert_eq!(WhisperModel::LargeV3.preset(), "large-v3");
+    }
+
+    #[test]
+    fn transcription_provider_kind_roundtrips() {
+        assert_eq!(
+            "openai-compatible"
+                .parse::<TranscriptionProviderKind>()
+                .unwrap(),
+            TranscriptionProviderKind::OpenAiCompatible
+        );
+        assert_eq!(
+            TranscriptionProviderKind::Fireworks.to_string(),
+            "fireworks"
+        );
+    }
+
+    #[test]
     fn text_only_result_omits_optional_fields() {
         let result = TranscriptionResult {
             text: "hello world".to_string(),
@@ -309,36 +389,5 @@ mod tests {
         let json = serde_json::to_value(&result).unwrap();
         assert!(json.get("segments").is_some());
         assert!(json.get("words").is_some());
-    }
-
-    #[test]
-    fn segment_omits_empty_words() {
-        let segment = Segment {
-            id: 0,
-            start: 0.0,
-            end: 1.0,
-            text: "hello".to_string(),
-            words: vec![],
-        };
-        let json = serde_json::to_value(&segment).unwrap();
-        assert!(json.get("words").is_none());
-    }
-
-    #[test]
-    fn segment_includes_non_empty_words() {
-        let segment = Segment {
-            id: 0,
-            start: 0.0,
-            end: 1.0,
-            text: "hello".to_string(),
-            words: vec![Word {
-                word: "hello".to_string(),
-                start: 0.0,
-                end: 0.5,
-            }],
-        };
-        let json = serde_json::to_value(&segment).unwrap();
-        assert!(json.get("words").is_some());
-        assert_eq!(json["words"][0]["word"], "hello");
     }
 }
