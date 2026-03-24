@@ -42,6 +42,18 @@ pub struct SavedRecording {
     pub samples: Vec<f32>,
 }
 
+/// Provenance for a saved transcription base URL.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedBaseUrlSource {
+    /// The endpoint came from an explicit CLI override or inherited custom URL.
+    Explicit,
+    /// The endpoint came from a provider-specific environment variable.
+    Environment,
+    /// The endpoint came from the provider default for the selected model.
+    ProviderDefault,
+}
+
 /// JSON manifest describing a saved recording.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedRecordingManifest {
@@ -71,6 +83,7 @@ impl SavedRecordingManifest {
         chunk_target_duration_secs: u64,
         output_format: Option<ResponseFormat>,
         pipeline_config: &PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
     ) -> Self {
         Self {
             version: MANIFEST_VERSION,
@@ -80,7 +93,10 @@ impl SavedRecordingManifest {
             audio_filename: next_audio_filename(),
             chunk_target_duration_secs,
             output_format: output_format.map(|format| format.as_str().to_string()),
-            pipeline: SavedPipelineConfig::from_pipeline_config(pipeline_config),
+            pipeline: SavedPipelineConfig::from_pipeline_config(
+                pipeline_config,
+                transcription_base_url_source,
+            ),
         }
     }
 
@@ -131,6 +147,9 @@ pub struct SavedPipelineConfig {
     pub transcription_provider: Option<String>,
     /// Optional API endpoint override for transcription.
     pub base_url: Option<String>,
+    /// Where the saved transcription endpoint came from.
+    #[serde(default)]
+    pub transcription_base_url_source: Option<SavedBaseUrlSource>,
     /// Optional ISO-639-1 language code.
     pub language: Option<String>,
     /// Effective prompt sent to Whisper.
@@ -160,10 +179,14 @@ pub struct SavedPipelineConfig {
 impl SavedPipelineConfig {
     /// Convert the runtime pipeline config into a manifest-safe shape.
     #[must_use]
-    pub fn from_pipeline_config(config: &PipelineConfig) -> Self {
+    pub fn from_pipeline_config(
+        config: &PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
+    ) -> Self {
         Self {
             transcription_provider: Some(config.transcription_provider.to_string()),
             base_url: config.base_url.clone(),
+            transcription_base_url_source,
             language: config.language.clone(),
             prompt: config.prompt.clone(),
             response_format: config.response_format.as_str().to_string(),
@@ -632,6 +655,7 @@ mod tests {
                 90,
                 Some(ResponseFormat::VerboseJson),
                 &pipeline,
+                Some(SavedBaseUrlSource::Explicit),
             ),
             samples,
         }
@@ -729,6 +753,7 @@ mod tests {
                 45,
                 Some(ResponseFormat::Json),
                 &PipelineConfig::default(),
+                None,
             ),
             samples: vec![0.5; 12],
         };
@@ -845,6 +870,10 @@ mod tests {
         assert_eq!(config.transcription_model, Some(WhisperModel::LargeV3));
         assert_eq!(config.transcription_model_id.as_deref(), Some("whisper-v3"));
         assert_eq!(config.temperature, Some(0.2));
+        assert_eq!(
+            recording.manifest.pipeline.transcription_base_url_source,
+            Some(SavedBaseUrlSource::Explicit)
+        );
         assert_eq!(
             config.timestamp_granularities,
             vec![TimestampGranularity::Word, TimestampGranularity::Segment]

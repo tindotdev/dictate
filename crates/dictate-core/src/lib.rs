@@ -46,7 +46,7 @@ pub use provider::{
 pub use request_policy::{RequestPolicies, RequestPolicy};
 pub use resampler::TRANSCRIPTION_SAMPLE_RATE;
 pub use saved_recording::{
-    SavedPipelineConfig, SavedRecording, SavedRecordingError, SavedRecordingManifest,
-    SavedRecordingStore,
+    SavedBaseUrlSource, SavedPipelineConfig, SavedRecording, SavedRecordingError,
+    SavedRecordingManifest, SavedRecordingStore,
 };
 pub use vocabulary::{Vocabulary, VocabularyError, VocabularyStore};

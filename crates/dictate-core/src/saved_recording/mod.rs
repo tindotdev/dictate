@@ -4,4 +4,7 @@ mod error;
 mod store;
 
 pub use error::SavedRecordingError;
-pub use store::{SavedPipelineConfig, SavedRecording, SavedRecordingManifest, SavedRecordingStore};
+pub use store::{
+    SavedBaseUrlSource, SavedPipelineConfig, SavedRecording, SavedRecordingManifest,
+    SavedRecordingStore,
+};

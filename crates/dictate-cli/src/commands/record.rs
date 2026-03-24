@@ -11,10 +11,10 @@ use dictate_core::{
     OpenAiCompatibleProvider, PipelineConfig, PostProcessOutcome, PostProcessProviderKind,
     PostProcessor, ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult,
     RequestPolicies, ResolvedPostProcessTarget, ResolvedTranscriptionTarget, ResponseFormat,
-    SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment, TimestampGranularity,
-    TranscriptionError, TranscriptionPipeline, TranscriptionProvider, TranscriptionProviderKind,
-    TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel, Word,
-    format_hint_within_budget,
+    SavedBaseUrlSource, SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment,
+    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionProvider,
+    TranscriptionProviderKind, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel,
+    Word, format_hint_within_budget,
 };
 use thiserror::Error;
 #[cfg(unix)]
@@ -624,6 +624,7 @@ pub fn run_retry(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
 struct ResolvedRunConfig {
     effective_format: Option<ResponseFormat>,
     effective_post_process: bool,
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
     pipeline_config: PipelineConfig,
     transcription_target: ResolvedTranscriptionTarget,
     post_process_target: Option<ResolvedPostProcessTarget>,
@@ -633,6 +634,7 @@ struct ResolvedRunConfig {
 #[derive(Debug, Clone)]
 struct SavedDefaults {
     output_format: Option<ResponseFormat>,
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
     pipeline_config: PipelineConfig,
 }
 
@@ -814,9 +816,18 @@ fn resolve_run_config(
         transcription_provider,
         transcription_model,
     )?;
+    let transcription_base_url_source = resolve_transcription_base_url_source(
+        options,
+        saved_transcription_config,
+        defaults.and_then(|saved| saved.transcription_base_url_source),
+        transcription_provider,
+        run_mode,
+        &transcription_model_id,
+    );
     let base_url = resolve_transcription_base_url(
         options,
         saved_transcription_config,
+        defaults.and_then(|saved| saved.transcription_base_url_source),
         transcription_provider,
         run_mode,
         &transcription_model_id,
@@ -871,6 +882,7 @@ fn resolve_run_config(
     Ok(ResolvedRunConfig {
         effective_format,
         effective_post_process,
+        transcription_base_url_source,
         pipeline_config: config,
         transcription_target,
         post_process_target,
@@ -946,6 +958,7 @@ fn resolve_transcription_model_id(
 fn resolve_transcription_base_url(
     options: &RecordOptions,
     saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
     provider: TranscriptionProviderKind,
     run_mode: RunMode,
     effective_model_id: &str,
@@ -957,6 +970,7 @@ fn resolve_transcription_base_url(
     let saved_base_url = saved_config.and_then(|config| config.base_url.clone())?;
     if should_refresh_saved_transcription_endpoint(
         saved_config,
+        saved_base_url_source,
         provider,
         run_mode,
         effective_model_id,
@@ -967,14 +981,53 @@ fn resolve_transcription_base_url(
     Some(saved_base_url)
 }
 
+fn resolve_transcription_base_url_source(
+    options: &RecordOptions,
+    saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> Option<SavedBaseUrlSource> {
+    if options.base_url.is_some() {
+        return Some(SavedBaseUrlSource::Explicit);
+    }
+
+    if saved_config
+        .and_then(|config| config.base_url.as_ref())
+        .is_some()
+        && !should_refresh_saved_transcription_endpoint(
+            saved_config,
+            saved_base_url_source,
+            provider,
+            run_mode,
+            effective_model_id,
+        )
+    {
+        return saved_base_url_source;
+    }
+
+    if std::env::var_os(provider_transcription_base_url_var(provider)).is_some() {
+        return Some(SavedBaseUrlSource::Environment);
+    }
+
+    default_transcription_endpoint(provider, effective_model_id)
+        .map(|_| SavedBaseUrlSource::ProviderDefault)
+}
+
 fn should_refresh_saved_transcription_endpoint(
     saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
     provider: TranscriptionProviderKind,
     run_mode: RunMode,
     effective_model_id: &str,
 ) -> bool {
     run_mode == RunMode::Retry
         && provider == TranscriptionProviderKind::Fireworks
+        && matches!(
+            saved_base_url_source,
+            Some(SavedBaseUrlSource::Environment | SavedBaseUrlSource::ProviderDefault)
+        )
         && saved_config
             .and_then(|config| saved_transcription_model_id(config, provider))
             .is_some_and(|saved_model_id| saved_model_id != effective_model_id)
@@ -1242,6 +1295,7 @@ fn saved_defaults_from_manifest(
 ) -> Result<SavedDefaults, RecordError> {
     Ok(SavedDefaults {
         output_format: manifest.output_format()?,
+        transcription_base_url_source: manifest.pipeline.transcription_base_url_source,
         pipeline_config: manifest.pipeline.to_pipeline_config()?,
     })
 }
@@ -1762,6 +1816,7 @@ fn maybe_save_last_audio(
             session.chunker_config.target_duration_secs,
             resolved.effective_format,
             &resolved.pipeline_config,
+            resolved.transcription_base_url_source,
         ),
         samples: session.samples.clone(),
     };
@@ -2227,6 +2282,7 @@ mod tests {
                 target_duration_secs,
                 format,
                 &PipelineConfig::default(),
+                None,
             ),
             samples,
         }
@@ -2408,6 +2464,7 @@ mod tests {
     ) -> SavedDefaults {
         SavedDefaults {
             output_format: Some(ResponseFormat::VerboseJson),
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 timestamp_granularities,
                 ..PipelineConfig::default()
@@ -2418,6 +2475,18 @@ mod tests {
     fn saved_defaults_with_pipeline(pipeline_config: PipelineConfig) -> SavedDefaults {
         SavedDefaults {
             output_format: Some(ResponseFormat::Json),
+            transcription_base_url_source: None,
+            pipeline_config,
+        }
+    }
+
+    fn saved_defaults_with_pipeline_and_source(
+        pipeline_config: PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
+    ) -> SavedDefaults {
+        SavedDefaults {
+            output_format: Some(ResponseFormat::Json),
+            transcription_base_url_source,
             pipeline_config,
         }
     }
@@ -2428,6 +2497,7 @@ mod tests {
             30,
             resolved.effective_format,
             &resolved.pipeline_config,
+            resolved.transcription_base_url_source,
         );
         saved_defaults_from_manifest(&manifest).unwrap()
     }
@@ -2742,6 +2812,45 @@ mod tests {
     }
 
     #[test]
+    fn retry_fireworks_model_override_preserves_saved_explicit_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(
+            FIREWORKS_BASE_URL_VAR,
+            "https://env.example.com/v1/audio/transcriptions",
+        );
+        let explicit_endpoint = "https://proxy.example.com/v1/audio/transcriptions";
+        let defaults = saved_defaults_with_pipeline_and_source(
+            PipelineConfig {
+                transcription_provider: TranscriptionProviderKind::Fireworks,
+                base_url: Some(explicit_endpoint.to_string()),
+                transcription_model_id: Some("whisper-v3-turbo".to_string()),
+                ..PipelineConfig::default()
+            },
+            Some(SavedBaseUrlSource::Explicit),
+        );
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, explicit_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(explicit_endpoint)
+        );
+        assert_eq!(
+            retried.transcription_base_url_source,
+            Some(SavedBaseUrlSource::Explicit)
+        );
+    }
+
+    #[test]
     fn retry_fireworks_model_override_prefers_current_env_endpoint() {
         let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
         EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
@@ -3020,6 +3129,7 @@ mod tests {
         let resolved = ResolvedRunConfig {
             effective_format: None,
             effective_post_process: true,
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 post_process: true,
                 ..PipelineConfig::default()
@@ -3056,6 +3166,7 @@ mod tests {
         let resolved = ResolvedRunConfig {
             effective_format: None,
             effective_post_process: true,
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 post_process: true,
                 ..PipelineConfig::default()
