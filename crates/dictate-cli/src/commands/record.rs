@@ -788,11 +788,6 @@ fn resolve_run_config(
     let saved_post_process_config =
         saved_post_process_config_for_provider(defaults, post_process_provider);
 
-    let base_url = options
-        .base_url
-        .clone()
-        .or_else(|| saved_transcription_config.and_then(|config| config.base_url.clone()));
-
     let post_process_base_url = options.post_process.base_url.clone().or_else(|| {
         saved_post_process_config.and_then(|config| config.post_process_base_url.clone())
     });
@@ -819,6 +814,13 @@ fn resolve_run_config(
         transcription_provider,
         transcription_model,
     )?;
+    let base_url = resolve_transcription_base_url(
+        options,
+        saved_transcription_config,
+        transcription_provider,
+        run_mode,
+        &transcription_model_id,
+    );
     let transcription_target = resolve_transcription_target(
         transcription_provider,
         base_url.clone(),
@@ -939,6 +941,54 @@ fn resolve_transcription_model_id(
     }
 
     default_transcription_model_id(provider)
+}
+
+fn resolve_transcription_base_url(
+    options: &RecordOptions,
+    saved_config: Option<&PipelineConfig>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> Option<String> {
+    if let Some(base_url) = options.base_url.clone() {
+        return Some(base_url);
+    }
+
+    let saved_base_url = saved_config.and_then(|config| config.base_url.clone())?;
+    if should_refresh_saved_transcription_endpoint(
+        saved_config,
+        provider,
+        run_mode,
+        effective_model_id,
+    ) {
+        return None;
+    }
+
+    Some(saved_base_url)
+}
+
+fn should_refresh_saved_transcription_endpoint(
+    saved_config: Option<&PipelineConfig>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> bool {
+    run_mode == RunMode::Retry
+        && provider == TranscriptionProviderKind::Fireworks
+        && saved_config
+            .and_then(|config| saved_transcription_model_id(config, provider))
+            .is_some_and(|saved_model_id| saved_model_id != effective_model_id)
+}
+
+fn saved_transcription_model_id(
+    config: &PipelineConfig,
+    provider: TranscriptionProviderKind,
+) -> Option<String> {
+    config.transcription_model_id.clone().or_else(|| {
+        config
+            .transcription_model
+            .and_then(|model| semantic_transcription_model_id(provider, model).ok())
+    })
 }
 
 fn semantic_transcription_model_id(
@@ -2620,6 +2670,107 @@ mod tests {
         assert_eq!(
             resolved.pipeline_config.post_process_base_url.as_deref(),
             Some("https://api.fireworks.ai/inference/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_override_recomputes_default_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried.transcription_target.endpoint,
+            "https://audio-prod.api.fireworks.ai/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some("https://audio-prod.api.fireworks.ai/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_id_override_recomputes_default_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model_id("whisper-v3"),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried.transcription_target.endpoint,
+            "https://audio-prod.api.fireworks.ai/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some("https://audio-prod.api.fireworks.ai/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_override_prefers_current_env_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+        let current_endpoint = "https://env.example.com/v1/audio/transcriptions";
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, current_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, current_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(current_endpoint)
         );
     }
 
