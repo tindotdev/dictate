@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-03-24
+
+### Added
+
+- Add --json-events flag for JSONL progress events on stderr
+- Add multi-provider support for transcription and post-processing ([#30](https://github.com/tindotdev/dictate/pull/30))
+
+
 ## [1.8.1] - 2026-03-05
 
 ### Changed
