@@ -837,7 +837,7 @@ fn resolve_run_config(
         None
     };
 
-    let config = PipelineConfig {
+    let mut config = PipelineConfig {
         transcription_provider,
         base_url,
         language: options
@@ -858,6 +858,11 @@ fn resolve_run_config(
         post_process_base_url,
         request_policies,
     };
+
+    config.base_url = Some(transcription_target.endpoint.clone());
+    config.post_process_base_url = post_process_target
+        .as_ref()
+        .map(|target| target.endpoint.clone());
 
     let pipeline = build_pipeline(&transcription_target, post_process_target.as_ref(), &config);
 
@@ -2010,6 +2015,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_result(text: &str) -> TranscriptionResult {
@@ -2366,6 +2372,70 @@ mod tests {
         }
     }
 
+    fn saved_defaults_from_resolved_run(resolved: &ResolvedRunConfig) -> SavedDefaults {
+        let manifest = SavedRecordingManifest::new(
+            1,
+            30,
+            resolved.effective_format,
+            &resolved.pipeline_config,
+        );
+        saved_defaults_from_manifest(&manifest).unwrap()
+    }
+
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            let lock = ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap();
+            let saved = vars
+                .iter()
+                .map(|&key| (key, std::env::var(key).ok()))
+                .collect();
+
+            Self { _lock: lock, saved }
+        }
+
+        fn set_var(key: &'static str, value: &str) {
+            // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+
+        fn remove_var(key: &'static str) {
+            // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => {
+                        // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+                    }
+                    None => {
+                        // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+                        unsafe {
+                            std::env::remove_var(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn explicit_retry_format_clears_inherited_timestamps() {
         let options = RecordOptions::new().response_format(ResponseFormat::Json);
@@ -2415,6 +2485,162 @@ mod tests {
             request_policies_for_mode(RunMode::Retry),
             RequestPolicies::persistent()
         );
+    }
+
+    #[test]
+    fn save_last_audio_persists_env_resolved_transcription_endpoint_for_retry() {
+        let original_endpoint = "https://env-one.example.com/v1/audio/transcriptions";
+        let changed_endpoint = "https://env-two.example.com/v1/audio/transcriptions";
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, original_endpoint);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        assert_eq!(
+            recorded.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            defaults.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, changed_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new(),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, original_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+    }
+
+    #[test]
+    fn save_last_audio_persists_env_resolved_post_process_endpoint_for_retry() {
+        let original_endpoint = "https://chat-one.example.com/v1/chat/completions";
+        let changed_endpoint = "https://chat-two.example.com/v1/chat/completions";
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_CHAT_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(FIREWORKS_CHAT_BASE_URL_VAR, original_endpoint);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new()
+                .transcription_provider(TranscriptionProviderKind::Fireworks)
+                .post_process_options(
+                    PostProcessOptions::new()
+                        .enabled(true)
+                        .provider(PostProcessProviderKind::Fireworks),
+                ),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        assert_eq!(
+            recorded.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            defaults.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+
+        EnvGuard::set_var(FIREWORKS_CHAT_BASE_URL_VAR, changed_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new(),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried
+                .post_process_target
+                .as_ref()
+                .map(|target| target.endpoint.as_str()),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            retried.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+    }
+
+    #[test]
+    fn resolved_run_config_persists_default_provider_endpoints() {
+        let env = EnvGuard::new(&[
+            FIREWORKS_API_KEY_VAR,
+            FIREWORKS_BASE_URL_VAR,
+            FIREWORKS_CHAT_BASE_URL_VAR,
+        ]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+        EnvGuard::remove_var(FIREWORKS_CHAT_BASE_URL_VAR);
+
+        let resolved = resolve_run_config(
+            &RecordOptions::new()
+                .transcription_provider(TranscriptionProviderKind::Fireworks)
+                .post_process_options(
+                    PostProcessOptions::new()
+                        .enabled(true)
+                        .provider(PostProcessProviderKind::Fireworks),
+                ),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            resolved.pipeline_config.base_url.as_deref(),
+            Some("https://audio-turbo.api.fireworks.ai/v1/audio/transcriptions")
+        );
+        assert_eq!(
+            resolved.pipeline_config.post_process_base_url.as_deref(),
+            Some("https://api.fireworks.ai/inference/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn disabled_post_process_does_not_persist_chat_endpoint() {
+        let env = EnvGuard::new(&[GROQ_API_KEY_VAR, GROQ_BASE_URL_VAR, GROQ_CHAT_BASE_URL_VAR]);
+        EnvGuard::set_var(GROQ_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(GROQ_BASE_URL_VAR);
+        EnvGuard::remove_var(GROQ_CHAT_BASE_URL_VAR);
+
+        let resolved = resolve_run_config(
+            &RecordOptions::new(),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert!(!resolved.pipeline_config.post_process);
+        assert_eq!(resolved.pipeline_config.post_process_base_url, None);
     }
 
     #[test]
