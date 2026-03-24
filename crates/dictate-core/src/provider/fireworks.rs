@@ -1,4 +1,4 @@
-//! Groq Whisper transcription provider.
+//! Fireworks Whisper transcription provider.
 
 use super::openai_compatible::SharedOpenAiCompatibleProvider;
 use super::{TranscriptionConfig, TranscriptionProvider, TranscriptionResult};
@@ -6,20 +6,20 @@ use crate::cancellation::{CancellationContext, CancellationResult};
 use crate::error::TranscriptionError;
 use crate::request_policy::RequestPolicy;
 
-/// Groq Whisper transcription provider.
+/// Fireworks Whisper transcription provider.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct GroqProvider;
+pub struct FireworksProvider;
 
-impl TranscriptionProvider for GroqProvider {
+impl TranscriptionProvider for FireworksProvider {
     fn name(&self) -> &'static str {
-        "groq"
+        "fireworks"
     }
 
     fn transcribe(
         &self,
         config: TranscriptionConfig<'_>,
     ) -> Result<TranscriptionResult, TranscriptionError> {
-        SharedOpenAiCompatibleProvider::groq().transcribe(config)
+        SharedOpenAiCompatibleProvider::fireworks().transcribe(config)
     }
 
     fn transcribe_with_cancellation(
@@ -27,7 +27,8 @@ impl TranscriptionProvider for GroqProvider {
         config: TranscriptionConfig<'_>,
         cancellation: &CancellationContext,
     ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
-        SharedOpenAiCompatibleProvider::groq().transcribe_with_cancellation(config, cancellation)
+        SharedOpenAiCompatibleProvider::fireworks()
+            .transcribe_with_cancellation(config, cancellation)
     }
 
     fn transcribe_with_cancellation_and_request_policy(
@@ -36,7 +37,7 @@ impl TranscriptionProvider for GroqProvider {
         request_policy: RequestPolicy,
         cancellation: &CancellationContext,
     ) -> CancellationResult<TranscriptionResult, TranscriptionError> {
-        SharedOpenAiCompatibleProvider::groq().transcribe_with_cancellation_and_request_policy(
+        SharedOpenAiCompatibleProvider::fireworks().transcribe_with_cancellation_and_request_policy(
             config,
             request_policy,
             cancellation,

@@ -370,6 +370,51 @@ record-postprocess model="" device="": build-cli
         fi; \
     fi
 
+# Live smoke test for the default Groq flow.
+smoke-groq seconds="5s" device="": build-cli
+    echo "== Groq transcription smoke test =="
+    if [ -n "{{device}}" ]; then \
+        {{dictate_bin}} record --no-clipboard --save-last-audio --stop-after "{{seconds}}" --device "{{device}}"; \
+    else \
+        {{dictate_bin}} record --no-clipboard --save-last-audio --stop-after "{{seconds}}"; \
+    fi
+    echo ""
+    echo "== Groq retry smoke test =="
+    {{dictate_bin}} retry --no-clipboard
+    echo ""
+    echo "== Groq post-process smoke test =="
+    {{dictate_bin}} retry --no-clipboard --post-process
+
+# Live smoke test for the Fireworks flow.
+smoke-fireworks seconds="5s" device="": build-cli
+    if [ -z "${FIREWORKS_API_KEY:-}" ]; then \
+        echo "Error: FIREWORKS_API_KEY is not set"; \
+        exit 1; \
+    fi
+    echo "== Fireworks transcription smoke test =="
+    if [ -n "{{device}}" ]; then \
+        {{dictate_bin}} record --no-clipboard --save-last-audio --stop-after "{{seconds}}" --transcription-provider fireworks --device "{{device}}"; \
+    else \
+        {{dictate_bin}} record --no-clipboard --save-last-audio --stop-after "{{seconds}}" --transcription-provider fireworks; \
+    fi
+    echo ""
+    echo "== Fireworks retry smoke test =="
+    {{dictate_bin}} retry --no-clipboard --transcription-provider fireworks
+    echo ""
+    echo "== Fireworks full pipeline smoke test =="
+    {{dictate_bin}} retry --no-clipboard --post-process --transcription-provider fireworks --post-process-provider fireworks
+
+# Live smoke test for Groq plus Fireworks when FIREWORKS_API_KEY is set.
+smoke-all seconds="5s" device="":
+    just smoke-groq "{{seconds}}" "{{device}}"
+    if [ -n "${FIREWORKS_API_KEY:-}" ]; then \
+        echo ""; \
+        just smoke-fireworks "{{seconds}}" "{{device}}"; \
+    else \
+        echo ""; \
+        echo "Skipping Fireworks smoke test because FIREWORKS_API_KEY is not set."; \
+    fi
+
 # Add a dictionary entry (interactive)
 remember: build-cli
     {{dictate_bin}} remember

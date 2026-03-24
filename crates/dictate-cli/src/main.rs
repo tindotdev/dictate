@@ -94,6 +94,12 @@ fn apply_transcription_options(
         .stdout(args.output.stdout)
         .no_clipboard(args.output.no_clipboard);
 
+    if let Some(provider) = args.provider {
+        let provider = provider
+            .parse::<dictate_core::TranscriptionProviderKind>()
+            .expect("clap-validated provider should parse");
+        options = options.transcription_provider(provider);
+    }
     if let Some(base_url) = args.base_url {
         options = options.base_url(base_url);
     }
@@ -114,6 +120,9 @@ fn apply_transcription_options(
             .parse::<dictate_core::WhisperModel>()
             .expect("clap-validated model should parse");
         options = options.transcription_model(model);
+    }
+    if let Some(model_id) = args.transcription_model_id {
+        options = options.transcription_model_id(model_id);
     }
     if let Some(temperature) = args.temperature {
         options = options.temperature(temperature);
@@ -143,6 +152,12 @@ fn apply_record_post_process(
     if args.enabled {
         post_process = post_process.enabled(true);
     }
+    if let Some(provider) = args.provider {
+        let provider = provider
+            .parse::<dictate_core::PostProcessProviderKind>()
+            .expect("clap-validated provider should parse");
+        post_process = post_process.provider(provider);
+    }
     if let Some(model) = args.model {
         post_process = post_process.model(model);
     }
@@ -163,6 +178,12 @@ fn apply_retry_post_process(
         post_process = post_process.enabled(false);
     } else if args.enabled {
         post_process = post_process.enabled(true);
+    }
+    if let Some(provider) = args.provider {
+        let provider = provider
+            .parse::<dictate_core::PostProcessProviderKind>()
+            .expect("clap-validated provider should parse");
+        post_process = post_process.provider(provider);
     }
     if let Some(model) = args.model {
         post_process = post_process.model(model);
@@ -250,12 +271,14 @@ mod tests {
             device: None,
             stop_after: Some(Duration::from_secs(30)),
             transcription: args::TranscriptionArgs {
+                provider: None,
                 base_url: None,
                 json_events: false,
                 language: None,
                 prompt: None,
                 format: None,
                 transcription_model: None,
+                transcription_model_id: None,
                 temperature: None,
                 timestamp_granularities: None,
                 output: args::OutputArgs {
@@ -265,6 +288,7 @@ mod tests {
             },
             post_process: args::RecordPostProcessArgs {
                 enabled: false,
+                provider: None,
                 model: None,
                 base_url: None,
             },

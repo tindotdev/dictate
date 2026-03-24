@@ -16,14 +16,18 @@ use crate::cancellation::{CancellationContext, CancellationError, CancellationRe
 use crate::encoder::{AudioEncoder, WavEncoder};
 use crate::model_id::ModelId;
 use crate::pipeline::PipelineConfig;
-use crate::provider::{ResponseFormat, TimestampGranularity, WhisperModel};
+use crate::postprocess::PostProcessProviderKind;
+use crate::provider::{
+    ResponseFormat, TimestampGranularity, TranscriptionProviderKind, WhisperModel,
+};
 use crate::resampler::TRANSCRIPTION_SAMPLE_RATE;
 
 const MANIFEST_FILENAME: &str = "last-recording.json";
 const MANIFEST_TMP_FILENAME: &str = "last-recording.json.tmp";
 const AUDIO_TMP_FILENAME: &str = "last-recording.wav.tmp";
 const AUDIO_GENERATION_PREFIX: &str = "last-recording-";
-const MANIFEST_VERSION: u32 = 1;
+const MANIFEST_VERSION: u32 = 2;
+const LEGACY_MANIFEST_VERSION: u32 = 1;
 const SUPPORTED_CHANNELS: u16 = 1;
 const SUPPORTED_BITS_PER_SAMPLE: u16 = 16;
 const WAV_HEADER_SIZE: usize = 44;
@@ -36,6 +40,18 @@ pub struct SavedRecording {
     pub manifest: SavedRecordingManifest,
     /// Full normalized 16 kHz mono audio samples.
     pub samples: Vec<f32>,
+}
+
+/// Provenance for a saved transcription base URL.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SavedBaseUrlSource {
+    /// The endpoint came from an explicit CLI override or inherited custom URL.
+    Explicit,
+    /// The endpoint came from a provider-specific environment variable.
+    Environment,
+    /// The endpoint came from the provider default for the selected model.
+    ProviderDefault,
 }
 
 /// JSON manifest describing a saved recording.
@@ -67,6 +83,7 @@ impl SavedRecordingManifest {
         chunk_target_duration_secs: u64,
         output_format: Option<ResponseFormat>,
         pipeline_config: &PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
     ) -> Self {
         Self {
             version: MANIFEST_VERSION,
@@ -76,7 +93,10 @@ impl SavedRecordingManifest {
             audio_filename: next_audio_filename(),
             chunk_target_duration_secs,
             output_format: output_format.map(|format| format.as_str().to_string()),
-            pipeline: SavedPipelineConfig::from_pipeline_config(pipeline_config),
+            pipeline: SavedPipelineConfig::from_pipeline_config(
+                pipeline_config,
+                transcription_base_url_source,
+            ),
         }
     }
 
@@ -94,7 +114,7 @@ impl SavedRecordingManifest {
     }
 
     fn validate(&self) -> Result<(), SavedRecordingError> {
-        if self.version != MANIFEST_VERSION {
+        if self.version != MANIFEST_VERSION && self.version != LEGACY_MANIFEST_VERSION {
             return Err(SavedRecordingError::InvalidManifest(format!(
                 "unsupported manifest version {}",
                 self.version
@@ -122,8 +142,14 @@ impl SavedRecordingManifest {
 /// Serializable pipeline settings stored alongside the saved recording.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SavedPipelineConfig {
+    /// Selected transcription provider.
+    #[serde(default)]
+    pub transcription_provider: Option<String>,
     /// Optional API endpoint override for transcription.
     pub base_url: Option<String>,
+    /// Where the saved transcription endpoint came from.
+    #[serde(default)]
+    pub transcription_base_url_source: Option<SavedBaseUrlSource>,
     /// Optional ISO-639-1 language code.
     pub language: Option<String>,
     /// Effective prompt sent to Whisper.
@@ -132,12 +158,18 @@ pub struct SavedPipelineConfig {
     pub response_format: String,
     /// Optional Whisper model string.
     pub transcription_model: Option<String>,
+    /// Optional raw wire model identifier for exact retry replay.
+    #[serde(default)]
+    pub transcription_model_id: Option<String>,
     /// Optional sampling temperature.
     pub temperature: Option<f32>,
     /// Optional timestamp granularities.
     pub timestamp_granularities: Vec<String>,
     /// Whether post-processing was enabled.
     pub post_process: bool,
+    /// Selected post-process provider.
+    #[serde(default)]
+    pub post_process_provider: Option<String>,
     /// Optional saved post-processing model identifier.
     pub post_process_model: Option<String>,
     /// Optional base URL for post-processing.
@@ -147,15 +179,21 @@ pub struct SavedPipelineConfig {
 impl SavedPipelineConfig {
     /// Convert the runtime pipeline config into a manifest-safe shape.
     #[must_use]
-    pub fn from_pipeline_config(config: &PipelineConfig) -> Self {
+    pub fn from_pipeline_config(
+        config: &PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
+    ) -> Self {
         Self {
+            transcription_provider: Some(config.transcription_provider.to_string()),
             base_url: config.base_url.clone(),
+            transcription_base_url_source,
             language: config.language.clone(),
             prompt: config.prompt.clone(),
             response_format: config.response_format.as_str().to_string(),
             transcription_model: config
                 .transcription_model
-                .map(|model| model.as_str().to_string()),
+                .map(|model| model.preset().to_string()),
+            transcription_model_id: config.transcription_model_id.clone(),
             temperature: config.temperature,
             timestamp_granularities: config
                 .timestamp_granularities
@@ -163,6 +201,7 @@ impl SavedPipelineConfig {
                 .map(|granularity| granularity.as_str().to_string())
                 .collect(),
             post_process: config.post_process,
+            post_process_provider: Some(config.post_process_provider.to_string()),
             post_process_model: config
                 .post_process_model
                 .as_ref()
@@ -178,17 +217,44 @@ impl SavedPipelineConfig {
     /// Returns [`SavedRecordingError::InvalidManifest`] when any stored enum or
     /// model identifier cannot be parsed.
     pub fn to_pipeline_config(&self) -> Result<PipelineConfig, SavedRecordingError> {
+        let transcription_provider = self
+            .transcription_provider
+            .as_deref()
+            .unwrap_or("groq")
+            .parse::<TranscriptionProviderKind>()
+            .map_err(|err| {
+                SavedRecordingError::InvalidManifest(format!(
+                    "invalid transcription provider {:?}: {err}",
+                    self.transcription_provider
+                ))
+            })?;
         let response_format = parse_response_format(&self.response_format)?;
         let transcription_model = self
             .transcription_model
             .as_deref()
             .map(parse_whisper_model)
             .transpose()?;
+        let transcription_model_id = self.transcription_model_id.clone().or_else(|| {
+            transcription_model.and_then(|model| {
+                default_transcription_model_id(transcription_provider, model).map(str::to_string)
+            })
+        });
         let timestamp_granularities = self
             .timestamp_granularities
             .iter()
             .map(|granularity| parse_timestamp_granularity(granularity))
             .collect::<Result<Vec<_>, _>>()?;
+        let post_process_provider = self
+            .post_process_provider
+            .as_deref()
+            .unwrap_or("groq")
+            .parse::<PostProcessProviderKind>()
+            .map_err(|err| {
+                SavedRecordingError::InvalidManifest(format!(
+                    "invalid post-process provider {:?}: {err}",
+                    self.post_process_provider
+                ))
+            })?;
         let post_process_model = self
             .post_process_model
             .as_deref()
@@ -202,14 +268,17 @@ impl SavedPipelineConfig {
             .transpose()?;
 
         Ok(PipelineConfig {
+            transcription_provider,
             base_url: self.base_url.clone(),
             language: self.language.clone(),
             prompt: self.prompt.clone(),
             response_format,
             transcription_model,
+            transcription_model_id,
             temperature: self.temperature,
             timestamp_granularities,
             post_process: self.post_process,
+            post_process_provider,
             post_process_model,
             post_process_base_url: self.post_process_base_url.clone(),
             ..PipelineConfig::default()
@@ -459,6 +528,23 @@ fn parse_whisper_model(value: &str) -> Result<WhisperModel, SavedRecordingError>
     })
 }
 
+const fn default_transcription_model_id(
+    provider: TranscriptionProviderKind,
+    model: WhisperModel,
+) -> Option<&'static str> {
+    match provider {
+        TranscriptionProviderKind::Groq => match model {
+            WhisperModel::LargeV3Turbo => Some("whisper-large-v3-turbo"),
+            WhisperModel::LargeV3 => Some("whisper-large-v3"),
+        },
+        TranscriptionProviderKind::Fireworks => match model {
+            WhisperModel::LargeV3Turbo => Some("whisper-v3-turbo"),
+            WhisperModel::LargeV3 => Some("whisper-v3"),
+        },
+        TranscriptionProviderKind::OpenAiCompatible => None,
+    }
+}
+
 fn parse_timestamp_granularity(value: &str) -> Result<TimestampGranularity, SavedRecordingError> {
     value.parse::<TimestampGranularity>().map_err(|err| {
         SavedRecordingError::InvalidManifest(format!(
@@ -542,17 +628,20 @@ mod tests {
     fn sample_recording() -> SavedRecording {
         let samples = vec![0.0, 0.25, -0.5, 1.0, -1.0];
         let pipeline = PipelineConfig {
+            transcription_provider: TranscriptionProviderKind::Fireworks,
             base_url: Some("https://whisper.example.com/v1/audio/transcriptions".to_string()),
             language: Some("en".to_string()),
             prompt: Some("Use correct punctuation.".to_string()),
             response_format: ResponseFormat::VerboseJson,
             transcription_model: Some(WhisperModel::LargeV3),
+            transcription_model_id: Some("whisper-v3".to_string()),
             temperature: Some(0.2),
             timestamp_granularities: vec![
                 TimestampGranularity::Word,
                 TimestampGranularity::Segment,
             ],
             post_process: true,
+            post_process_provider: PostProcessProviderKind::Fireworks,
             post_process_model: Some(ModelId::new("openai/gpt-oss-20b").unwrap()),
             post_process_base_url: Some(
                 "https://chat.example.com/openai/v1/chat/completions".to_string(),
@@ -566,6 +655,7 @@ mod tests {
                 90,
                 Some(ResponseFormat::VerboseJson),
                 &pipeline,
+                Some(SavedBaseUrlSource::Explicit),
             ),
             samples,
         }
@@ -663,6 +753,7 @@ mod tests {
                 45,
                 Some(ResponseFormat::Json),
                 &PipelineConfig::default(),
+                None,
             ),
             samples: vec![0.5; 12],
         };
@@ -769,16 +860,29 @@ mod tests {
             config.base_url.as_deref(),
             Some("https://whisper.example.com/v1/audio/transcriptions")
         );
+        assert_eq!(
+            config.transcription_provider,
+            TranscriptionProviderKind::Fireworks
+        );
         assert_eq!(config.language.as_deref(), Some("en"));
         assert_eq!(config.prompt.as_deref(), Some("Use correct punctuation."));
         assert_eq!(config.response_format, ResponseFormat::VerboseJson);
         assert_eq!(config.transcription_model, Some(WhisperModel::LargeV3));
+        assert_eq!(config.transcription_model_id.as_deref(), Some("whisper-v3"));
         assert_eq!(config.temperature, Some(0.2));
+        assert_eq!(
+            recording.manifest.pipeline.transcription_base_url_source,
+            Some(SavedBaseUrlSource::Explicit)
+        );
         assert_eq!(
             config.timestamp_granularities,
             vec![TimestampGranularity::Word, TimestampGranularity::Segment]
         );
         assert!(config.post_process);
+        assert_eq!(
+            config.post_process_provider,
+            PostProcessProviderKind::Fireworks
+        );
         assert_eq!(
             config.post_process_model.as_ref().map(ModelId::as_str),
             Some("openai/gpt-oss-20b")
@@ -795,6 +899,45 @@ mod tests {
         assert_eq!(
             manifest.output_format().unwrap(),
             Some(ResponseFormat::VerboseJson)
+        );
+    }
+
+    #[test]
+    fn version_one_manifest_defaults_missing_providers_to_groq() {
+        let manifest_json = serde_json::json!({
+            "version": 1,
+            "sample_rate_hz": TRANSCRIPTION_SAMPLE_RATE,
+            "channels": SUPPORTED_CHANNELS,
+            "sample_count": 5,
+            "audio_filename": "last-recording-test.wav",
+            "chunk_target_duration_secs": 30,
+            "output_format": "json",
+            "pipeline": {
+                "base_url": "https://api.groq.com/openai/v1/audio/transcriptions",
+                "language": "en",
+                "prompt": "hello",
+                "response_format": "json",
+                "transcription_model": "whisper-large-v3",
+                "temperature": 0.0,
+                "timestamp_granularities": [],
+                "post_process": false,
+                "post_process_model": null,
+                "post_process_base_url": null
+            }
+        });
+
+        let manifest: SavedRecordingManifest = serde_json::from_value(manifest_json).unwrap();
+        manifest.validate().unwrap();
+        let config = manifest.pipeline.to_pipeline_config().unwrap();
+
+        assert_eq!(
+            config.transcription_provider,
+            TranscriptionProviderKind::Groq
+        );
+        assert_eq!(config.post_process_provider, PostProcessProviderKind::Groq);
+        assert_eq!(
+            config.transcription_model_id.as_deref(),
+            Some("whisper-large-v3")
         );
     }
 

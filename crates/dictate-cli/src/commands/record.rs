@@ -5,12 +5,16 @@ use std::time::{Duration, Instant};
 use dictate_core::token::{MAX_PROMPT_TOKENS, estimate_token_count};
 use dictate_core::{
     AudioChunk, AudioError, AudioReceiver, AudioRecorder, CancellationContext, CancellationError,
-    ChunkerConfig, ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection, GroqPostProcessor,
-    GroqProvider, ModelId, PipelineConfig, PostProcessOutcome, PostProcessor, ProgressiveChunker,
-    RecorderConfig, RecorderStopHandle, RecvResult, RequestPolicies, ResponseFormat,
-    SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment, TimestampGranularity,
-    TranscriptionError, TranscriptionPipeline, TranscriptionResult, Vocabulary, VocabularyStore,
-    WhisperModel, Word, format_hint_within_budget,
+    ChunkerConfig, ClipboardError, DEFAULT_POST_PROCESS_MODEL, DeviceSelection,
+    FIREWORKS_DEFAULT_POST_PROCESS_MODEL, FireworksPostProcessor, FireworksProvider,
+    GroqPostProcessor, GroqProvider, ModelId, OpenAiCompatiblePostProcessor,
+    OpenAiCompatibleProvider, PipelineConfig, PostProcessOutcome, PostProcessProviderKind,
+    PostProcessor, ProgressiveChunker, RecorderConfig, RecorderStopHandle, RecvResult,
+    RequestPolicies, ResolvedPostProcessTarget, ResolvedTranscriptionTarget, ResponseFormat,
+    SavedBaseUrlSource, SavedRecording, SavedRecordingManifest, SavedRecordingStore, Segment,
+    TimestampGranularity, TranscriptionError, TranscriptionPipeline, TranscriptionProvider,
+    TranscriptionProviderKind, TranscriptionResult, Vocabulary, VocabularyStore, WhisperModel,
+    Word, format_hint_within_budget,
 };
 use thiserror::Error;
 #[cfg(unix)]
@@ -23,12 +27,14 @@ const DEFAULT_RETRY_CHUNK_OVERLAP_SAMPLES: usize =
 
 /// Environment variable for the Groq API key.
 const GROQ_API_KEY_VAR: &str = "GROQ_API_KEY";
-
-/// Environment variable for an optional Groq API base URL override.
 const GROQ_BASE_URL_VAR: &str = "GROQ_BASE_URL";
-
-/// Environment variable for an optional post-processing chat API base URL override.
 const GROQ_CHAT_BASE_URL_VAR: &str = "GROQ_CHAT_BASE_URL";
+const FIREWORKS_API_KEY_VAR: &str = "FIREWORKS_API_KEY";
+const FIREWORKS_BASE_URL_VAR: &str = "FIREWORKS_BASE_URL";
+const FIREWORKS_CHAT_BASE_URL_VAR: &str = "FIREWORKS_CHAT_BASE_URL";
+const OPENAI_COMPATIBLE_API_KEY_VAR: &str = "OPENAI_COMPATIBLE_API_KEY";
+const OPENAI_COMPATIBLE_BASE_URL_VAR: &str = "OPENAI_COMPATIBLE_BASE_URL";
+const OPENAI_COMPATIBLE_CHAT_BASE_URL_VAR: &str = "OPENAI_COMPATIBLE_CHAT_BASE_URL";
 
 #[derive(Debug, Error)]
 pub enum RecordError {
@@ -375,6 +381,7 @@ impl OutputOptions {
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct PostProcessOptions {
     enabled: Option<bool>,
+    provider: Option<PostProcessProviderKind>,
     model: Option<ModelId>,
     base_url: Option<String>,
 }
@@ -388,6 +395,12 @@ impl PostProcessOptions {
     /// Enable or disable LLM post-processing.
     pub const fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = Some(enabled);
+        self
+    }
+
+    /// Select the post-process provider.
+    pub const fn provider(mut self, provider: PostProcessProviderKind) -> Self {
+        self.provider = Some(provider);
         self
     }
 
@@ -407,11 +420,13 @@ impl PostProcessOptions {
 #[derive(Default, Debug)]
 pub struct RecordOptions {
     device: Option<String>,
+    transcription_provider: Option<TranscriptionProviderKind>,
     base_url: Option<String>,
     language: Option<String>,
     prompt: Option<String>,
     response_format: Option<ResponseFormat>,
     transcription_model: Option<WhisperModel>,
+    transcription_model_id: Option<String>,
     temperature: Option<f32>,
     timestamp_granularities: Option<Vec<TimestampGranularity>>,
     output: OutputOptions,
@@ -430,6 +445,12 @@ impl RecordOptions {
     /// Select a specific audio input device.
     pub fn device(mut self, device: impl Into<String>) -> Self {
         self.device = Some(device.into());
+        self
+    }
+
+    /// Select the transcription provider.
+    pub const fn transcription_provider(mut self, provider: TranscriptionProviderKind) -> Self {
+        self.transcription_provider = Some(provider);
         self
     }
 
@@ -460,6 +481,12 @@ impl RecordOptions {
     /// Set the Whisper transcription model (`LargeV3Turbo` or `LargeV3`).
     pub const fn transcription_model(mut self, model: WhisperModel) -> Self {
         self.transcription_model = Some(model);
+        self
+    }
+
+    /// Set the raw provider transcription model id.
+    pub fn transcription_model_id(mut self, model: impl Into<String>) -> Self {
+        self.transcription_model_id = Some(model.into());
         self
     }
 
@@ -597,13 +624,38 @@ pub fn run_retry(options: &RecordOptions) -> Result<RunOutcome, RecordError> {
 struct ResolvedRunConfig {
     effective_format: Option<ResponseFormat>,
     effective_post_process: bool,
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
     pipeline_config: PipelineConfig,
+    transcription_target: ResolvedTranscriptionTarget,
+    post_process_target: Option<ResolvedPostProcessTarget>,
     pipeline: Arc<TranscriptionPipeline>,
+}
+
+struct ResolvedPipelineSettings {
+    timestamp_granularities: Vec<TimestampGranularity>,
+    effective_format: Option<ResponseFormat>,
+    inherited_response_format: ResponseFormat,
+    effective_prompt: Option<String>,
+    effective_post_process: bool,
+    transcription_provider: TranscriptionProviderKind,
+    post_process_provider: PostProcessProviderKind,
+    request_policies: RequestPolicies,
+    transcription_model: Option<WhisperModel>,
+    transcription_model_id: String,
+    post_process_model: Option<ModelId>,
+    post_process_base_url: Option<String>,
+}
+
+struct ResolvedRunTargets {
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
+    transcription_target: ResolvedTranscriptionTarget,
+    post_process_target: Option<ResolvedPostProcessTarget>,
 }
 
 #[derive(Debug, Clone)]
 struct SavedDefaults {
     output_format: Option<ResponseFormat>,
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
     pipeline_config: PipelineConfig,
 }
 
@@ -662,7 +714,11 @@ fn process_transcription_session(
     controller: &SessionController,
     reporter: Reporter,
 ) -> Result<RunOutcome, RecordError> {
-    reporter.phase(SessionPhase::Transcribing, Some(chunks.len()), None);
+    reporter.phase(
+        SessionPhase::Transcribing,
+        Some(chunks.len()),
+        Some(resolved.transcription_target.model.as_str()),
+    );
     let Some(results) = transcribe_chunks(&resolved.pipeline, chunks, controller, reporter)? else {
         reporter.cancelled();
         return Ok(RunOutcome::Cancelled);
@@ -680,10 +736,9 @@ fn process_transcription_session(
             }
 
             let model = resolved
-                .pipeline_config
-                .post_process_model
+                .post_process_target
                 .as_ref()
-                .map_or(DEFAULT_POST_PROCESS_MODEL, dictate_core::ModelId::as_str);
+                .map_or(DEFAULT_POST_PROCESS_MODEL, |target| target.model.as_str());
             reporter.phase(SessionPhase::PostProcessing, None, Some(model));
             reporter.status(format!("post-processing with {model}..."));
 
@@ -732,9 +787,33 @@ fn resolve_run_config(
     run_mode: RunMode,
     reporter: Reporter,
 ) -> Result<ResolvedRunConfig, RecordError> {
-    let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
+    let settings = resolve_pipeline_settings(options, defaults, run_mode, reporter)?;
+    let targets = resolve_run_targets(options, defaults, run_mode, &settings)?;
+    let config = build_resolved_pipeline_config(options, defaults, &settings, &targets);
+    let pipeline = build_pipeline(
+        &targets.transcription_target,
+        targets.post_process_target.as_ref(),
+        &config,
+    );
 
-    // Auto-upgrade format when timestamps are requested
+    Ok(ResolvedRunConfig {
+        effective_format: settings.effective_format,
+        effective_post_process: settings.effective_post_process,
+        transcription_base_url_source: targets.transcription_base_url_source,
+        pipeline_config: config,
+        transcription_target: targets.transcription_target,
+        post_process_target: targets.post_process_target,
+        pipeline,
+    })
+}
+
+fn resolve_pipeline_settings(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    run_mode: RunMode,
+    reporter: Reporter,
+) -> Result<ResolvedPipelineSettings, RecordError> {
+    let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
     let effective_format = auto_upgrade_format(
         options
             .response_format
@@ -742,72 +821,137 @@ fn resolve_run_config(
         Some(&timestamp_granularities),
         reporter,
     );
-
-    // Validate API key upfront (fail fast)
-    let api_key =
-        std::env::var(GROQ_API_KEY_VAR).map_err(|_| TranscriptionError::MissingApiKey {
-            env_var: GROQ_API_KEY_VAR,
-        })?;
-
-    let base_url = options
-        .base_url
-        .clone()
-        .or_else(|| defaults.and_then(|saved| saved.pipeline_config.base_url.clone()))
-        .or_else(|| std::env::var(GROQ_BASE_URL_VAR).ok());
-
-    let post_process_base_url = options
+    let transcription_provider = options
+        .transcription_provider
+        .or_else(|| defaults.map(|saved| saved.pipeline_config.transcription_provider))
+        .unwrap_or(TranscriptionProviderKind::Groq);
+    let post_process_provider = options
         .post_process
-        .base_url
-        .clone()
-        .or_else(|| defaults.and_then(|saved| saved.pipeline_config.post_process_base_url.clone()))
-        .or_else(|| std::env::var(GROQ_CHAT_BASE_URL_VAR).ok());
-
-    // Load vocabulary prompt hints for prompt injection.
-    // Best-effort: warn and continue on store errors.
+        .provider
+        .or_else(|| defaults.map(|saved| saved.pipeline_config.post_process_provider))
+        .unwrap_or(PostProcessProviderKind::Groq);
+    let saved_post_process_config =
+        saved_post_process_config_for_provider(defaults, post_process_provider);
+    let post_process_base_url = options.post_process.base_url.clone().or_else(|| {
+        saved_post_process_config.and_then(|config| config.post_process_base_url.clone())
+    });
     let effective_prompt = if options.prompt.is_some() || defaults.is_none() {
         load_prompt_hints(options.prompt.as_deref(), reporter)
     } else {
         defaults.and_then(|saved| saved.pipeline_config.prompt.clone())
     };
-
     let inherited_response_format = defaults.map_or(ResponseFormat::Json, |saved| {
         saved.pipeline_config.response_format
     });
     let inherited_post_process = defaults.is_some_and(|saved| saved.pipeline_config.post_process);
     let effective_post_process =
         resolve_post_process_enabled(options.post_process.enabled, inherited_post_process);
+    let request_policies = request_policies_for_mode(run_mode);
+    let transcription_model = resolve_transcription_model_preset(options, defaults);
+    let transcription_model_id = resolve_transcription_model_id(
+        options,
+        defaults,
+        transcription_provider,
+        transcription_model,
+    )?;
+    let post_process_model = resolve_post_process_model(options, defaults, post_process_provider)?;
 
-    let config = PipelineConfig {
-        base_url,
+    Ok(ResolvedPipelineSettings {
+        timestamp_granularities,
+        effective_format,
+        inherited_response_format,
+        effective_prompt,
+        effective_post_process,
+        transcription_provider,
+        post_process_provider,
+        request_policies,
+        transcription_model,
+        transcription_model_id,
+        post_process_model,
+        post_process_base_url,
+    })
+}
+
+fn resolve_run_targets(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    run_mode: RunMode,
+    settings: &ResolvedPipelineSettings,
+) -> Result<ResolvedRunTargets, RecordError> {
+    let saved_transcription_config =
+        saved_transcription_config_for_provider(defaults, settings.transcription_provider);
+    let transcription_base_url_source = resolve_transcription_base_url_source(
+        options,
+        saved_transcription_config,
+        defaults.and_then(|saved| saved.transcription_base_url_source),
+        settings.transcription_provider,
+        run_mode,
+        &settings.transcription_model_id,
+    );
+    let transcription_base_url = resolve_transcription_base_url(
+        options,
+        saved_transcription_config,
+        defaults.and_then(|saved| saved.transcription_base_url_source),
+        settings.transcription_provider,
+        run_mode,
+        &settings.transcription_model_id,
+    );
+    let transcription_target = resolve_transcription_target(
+        settings.transcription_provider,
+        transcription_base_url,
+        settings.transcription_model_id.clone(),
+        settings.request_policies.transcription,
+    )?;
+    let post_process_target = if settings.effective_post_process {
+        Some(resolve_post_process_target(
+            settings.post_process_provider,
+            settings.post_process_base_url.clone(),
+            settings.post_process_model.clone(),
+            settings.request_policies.post_process,
+        )?)
+    } else {
+        None
+    };
+
+    Ok(ResolvedRunTargets {
+        transcription_base_url_source,
+        transcription_target,
+        post_process_target,
+    })
+}
+
+fn build_resolved_pipeline_config(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    settings: &ResolvedPipelineSettings,
+    targets: &ResolvedRunTargets,
+) -> PipelineConfig {
+    PipelineConfig {
+        transcription_provider: settings.transcription_provider,
+        base_url: Some(targets.transcription_target.endpoint.clone()),
         language: options
             .language
             .clone()
             .or_else(|| defaults.and_then(|saved| saved.pipeline_config.language.clone())),
-        prompt: effective_prompt,
-        response_format: effective_format.unwrap_or(inherited_response_format),
-        transcription_model: options
-            .transcription_model
-            .or_else(|| defaults.and_then(|saved| saved.pipeline_config.transcription_model)),
+        prompt: settings.effective_prompt.clone(),
+        response_format: settings
+            .effective_format
+            .unwrap_or(settings.inherited_response_format),
+        transcription_model: settings.transcription_model,
+        transcription_model_id: Some(settings.transcription_model_id.clone()),
         temperature: options
             .temperature
             .or_else(|| defaults.and_then(|saved| saved.pipeline_config.temperature)),
-        timestamp_granularities,
-        post_process: effective_post_process,
-        post_process_model: options.post_process.model.clone().or_else(|| {
-            defaults.and_then(|saved| saved.pipeline_config.post_process_model.clone())
-        }),
-        post_process_base_url,
-        request_policies: request_policies_for_mode(run_mode),
-    };
-
-    let pipeline = build_pipeline(api_key, &config);
-
-    Ok(ResolvedRunConfig {
-        effective_format,
-        effective_post_process,
-        pipeline_config: config,
-        pipeline,
-    })
+        timestamp_granularities: settings.timestamp_granularities.clone(),
+        post_process: settings.effective_post_process,
+        post_process_provider: settings.post_process_provider,
+        post_process_model: settings.post_process_model.clone(),
+        post_process_base_url: targets
+            .post_process_target
+            .as_ref()
+            .map(|target| target.endpoint.clone()),
+        request_policies: settings.request_policies,
+    }
 }
 
 const fn request_policies_for_mode(run_mode: RunMode) -> RequestPolicies {
@@ -833,15 +977,374 @@ fn resolve_timestamp_granularities(
     }
 }
 
-fn build_pipeline(api_key: String, config: &PipelineConfig) -> Arc<TranscriptionPipeline> {
-    let mut pipeline = TranscriptionPipeline::new(Box::new(GroqProvider), api_key, config.clone());
+fn resolve_transcription_model_preset(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+) -> Option<WhisperModel> {
+    options
+        .transcription_model
+        .or_else(|| defaults.and_then(|saved| saved.pipeline_config.transcription_model))
+}
 
-    if config.post_process {
-        let pp: Box<dyn PostProcessor> = Box::new(GroqPostProcessor);
-        pipeline = pipeline.with_post_processor(pp);
+fn resolve_transcription_model_id(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    provider: TranscriptionProviderKind,
+    transcription_model: Option<WhisperModel>,
+) -> Result<String, RecordError> {
+    if let Some(model_id) = options.transcription_model_id.clone() {
+        return Ok(model_id);
+    }
+
+    if let Some(model) = options.transcription_model {
+        return semantic_transcription_model_id(provider, model);
+    }
+
+    let saved_config = defaults.map(|saved| &saved.pipeline_config);
+    let saved_provider_config = saved_transcription_config_for_provider(defaults, provider);
+    if let Some(model) = saved_config.and_then(|config| config.transcription_model) {
+        return semantic_transcription_model_id(provider, model);
+    }
+
+    if let Some(model_id) =
+        saved_provider_config.and_then(|config| config.transcription_model_id.clone())
+    {
+        return Ok(model_id);
+    }
+
+    if let Some(model) = transcription_model {
+        return semantic_transcription_model_id(provider, model);
+    }
+
+    default_transcription_model_id(provider)
+}
+
+fn resolve_transcription_base_url(
+    options: &RecordOptions,
+    saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> Option<String> {
+    if let Some(base_url) = options.base_url.clone() {
+        return Some(base_url);
+    }
+
+    let saved_base_url = saved_config.and_then(|config| config.base_url.clone())?;
+    if should_refresh_saved_transcription_endpoint(
+        saved_config,
+        saved_base_url_source,
+        provider,
+        run_mode,
+        effective_model_id,
+    ) {
+        return None;
+    }
+
+    Some(saved_base_url)
+}
+
+fn resolve_transcription_base_url_source(
+    options: &RecordOptions,
+    saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> Option<SavedBaseUrlSource> {
+    if options.base_url.is_some() {
+        return Some(SavedBaseUrlSource::Explicit);
+    }
+
+    if saved_config
+        .and_then(|config| config.base_url.as_ref())
+        .is_some()
+        && !should_refresh_saved_transcription_endpoint(
+            saved_config,
+            saved_base_url_source,
+            provider,
+            run_mode,
+            effective_model_id,
+        )
+    {
+        return saved_base_url_source;
+    }
+
+    if std::env::var_os(provider_transcription_base_url_var(provider)).is_some() {
+        return Some(SavedBaseUrlSource::Environment);
+    }
+
+    default_transcription_endpoint(provider, effective_model_id)
+        .map(|_| SavedBaseUrlSource::ProviderDefault)
+}
+
+fn should_refresh_saved_transcription_endpoint(
+    saved_config: Option<&PipelineConfig>,
+    saved_base_url_source: Option<SavedBaseUrlSource>,
+    provider: TranscriptionProviderKind,
+    run_mode: RunMode,
+    effective_model_id: &str,
+) -> bool {
+    run_mode == RunMode::Retry
+        && provider == TranscriptionProviderKind::Fireworks
+        && matches!(
+            saved_base_url_source,
+            Some(SavedBaseUrlSource::Environment | SavedBaseUrlSource::ProviderDefault)
+        )
+        && saved_config
+            .and_then(|config| saved_transcription_model_id(config, provider))
+            .is_some_and(|saved_model_id| saved_model_id != effective_model_id)
+}
+
+fn saved_transcription_model_id(
+    config: &PipelineConfig,
+    provider: TranscriptionProviderKind,
+) -> Option<String> {
+    config.transcription_model_id.clone().or_else(|| {
+        config
+            .transcription_model
+            .and_then(|model| semantic_transcription_model_id(provider, model).ok())
+    })
+}
+
+fn semantic_transcription_model_id(
+    provider: TranscriptionProviderKind,
+    model: WhisperModel,
+) -> Result<String, RecordError> {
+    let model_id = match provider {
+        TranscriptionProviderKind::Groq => match model {
+            WhisperModel::LargeV3Turbo => "whisper-large-v3-turbo",
+            WhisperModel::LargeV3 => "whisper-large-v3",
+        },
+        TranscriptionProviderKind::Fireworks => match model {
+            WhisperModel::LargeV3Turbo => "whisper-v3-turbo",
+            WhisperModel::LargeV3 => "whisper-v3",
+        },
+        TranscriptionProviderKind::OpenAiCompatible => {
+            return Err(RecordError::Transcription(TranscriptionError::InvalidResponse(
+                "openai-compatible transcription requires --transcription-model-id or a saved raw transcription model id".to_string(),
+            )));
+        }
+    };
+
+    Ok(model_id.to_string())
+}
+
+fn default_transcription_model_id(
+    provider: TranscriptionProviderKind,
+) -> Result<String, RecordError> {
+    match provider {
+        TranscriptionProviderKind::Groq => Ok("whisper-large-v3-turbo".to_string()),
+        TranscriptionProviderKind::Fireworks => Ok("whisper-v3-turbo".to_string()),
+        TranscriptionProviderKind::OpenAiCompatible => Err(RecordError::Transcription(
+            TranscriptionError::InvalidResponse(
+                "openai-compatible transcription requires --transcription-model-id or a saved raw transcription model id".to_string(),
+            ),
+        )),
+    }
+}
+
+fn resolve_transcription_target(
+    provider: TranscriptionProviderKind,
+    endpoint_override: Option<String>,
+    model_id: String,
+    request_policy: dictate_core::RequestPolicy,
+) -> Result<ResolvedTranscriptionTarget, RecordError> {
+    let api_key = resolve_stage_api_key(provider_api_key_var(provider))?;
+    let endpoint = endpoint_override
+        .or_else(|| std::env::var(provider_transcription_base_url_var(provider)).ok())
+        .or_else(|| default_transcription_endpoint(provider, &model_id).map(str::to_string))
+        .ok_or_else(|| {
+            RecordError::Transcription(TranscriptionError::InvalidResponse(format!(
+                "{provider} transcription requires --base-url or {}",
+                provider_transcription_base_url_var(provider)
+            )))
+        })?;
+
+    Ok(ResolvedTranscriptionTarget {
+        provider,
+        endpoint,
+        api_key,
+        model: model_id,
+        request_policy,
+    })
+}
+
+fn resolve_post_process_model(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    provider: PostProcessProviderKind,
+) -> Result<Option<ModelId>, RecordError> {
+    let explicit = options.post_process.model.clone().or_else(|| {
+        saved_post_process_config_for_provider(defaults, provider)
+            .and_then(|config| config.post_process_model.clone())
+    });
+
+    if let Some(model) = explicit {
+        return Ok(Some(model));
+    }
+
+    let default_model = match provider {
+        PostProcessProviderKind::Groq => Some(DEFAULT_POST_PROCESS_MODEL),
+        PostProcessProviderKind::Fireworks => Some(FIREWORKS_DEFAULT_POST_PROCESS_MODEL),
+        PostProcessProviderKind::OpenAiCompatible => None,
+    };
+
+    default_model
+        .map(ModelId::new)
+        .transpose()
+        .map_err(|err| TranscriptionError::InvalidResponse(err.to_string()))
+        .map_err(RecordError::Transcription)
+}
+
+fn saved_transcription_config_for_provider(
+    defaults: Option<&SavedDefaults>,
+    provider: TranscriptionProviderKind,
+) -> Option<&PipelineConfig> {
+    defaults
+        .map(|saved| &saved.pipeline_config)
+        .filter(|config| config.transcription_provider == provider)
+}
+
+fn saved_post_process_config_for_provider(
+    defaults: Option<&SavedDefaults>,
+    provider: PostProcessProviderKind,
+) -> Option<&PipelineConfig> {
+    defaults
+        .map(|saved| &saved.pipeline_config)
+        .filter(|config| config.post_process_provider == provider)
+}
+
+fn resolve_post_process_target(
+    provider: PostProcessProviderKind,
+    endpoint_override: Option<String>,
+    model: Option<ModelId>,
+    request_policy: dictate_core::RequestPolicy,
+) -> Result<ResolvedPostProcessTarget, RecordError> {
+    let model = model.ok_or_else(|| {
+        RecordError::Transcription(TranscriptionError::InvalidResponse(
+            "openai-compatible post-processing requires --post-process-model or a saved raw post-process model".to_string(),
+        ))
+    })?;
+    let api_key = resolve_stage_api_key(provider_post_process_api_key_var(provider))?;
+    let endpoint = endpoint_override
+        .or_else(|| std::env::var(provider_post_process_base_url_var(provider)).ok())
+        .or_else(|| default_post_process_endpoint(provider).map(str::to_string))
+        .ok_or_else(|| {
+            RecordError::Transcription(TranscriptionError::InvalidResponse(format!(
+                "{provider} post-processing requires --post-process-base-url or {}",
+                provider_post_process_base_url_var(provider)
+            )))
+        })?;
+
+    Ok(ResolvedPostProcessTarget {
+        provider,
+        endpoint,
+        api_key,
+        model: model.as_str().to_string(),
+        request_policy,
+    })
+}
+
+fn resolve_stage_api_key(env_var: &'static str) -> Result<String, RecordError> {
+    std::env::var(env_var)
+        .map_err(|_| RecordError::Transcription(TranscriptionError::MissingApiKey { env_var }))
+}
+
+const fn provider_api_key_var(provider: TranscriptionProviderKind) -> &'static str {
+    match provider {
+        TranscriptionProviderKind::Groq => GROQ_API_KEY_VAR,
+        TranscriptionProviderKind::Fireworks => FIREWORKS_API_KEY_VAR,
+        TranscriptionProviderKind::OpenAiCompatible => OPENAI_COMPATIBLE_API_KEY_VAR,
+    }
+}
+
+const fn provider_transcription_base_url_var(provider: TranscriptionProviderKind) -> &'static str {
+    match provider {
+        TranscriptionProviderKind::Groq => GROQ_BASE_URL_VAR,
+        TranscriptionProviderKind::Fireworks => FIREWORKS_BASE_URL_VAR,
+        TranscriptionProviderKind::OpenAiCompatible => OPENAI_COMPATIBLE_BASE_URL_VAR,
+    }
+}
+
+const fn provider_post_process_api_key_var(provider: PostProcessProviderKind) -> &'static str {
+    match provider {
+        PostProcessProviderKind::Groq => GROQ_API_KEY_VAR,
+        PostProcessProviderKind::Fireworks => FIREWORKS_API_KEY_VAR,
+        PostProcessProviderKind::OpenAiCompatible => OPENAI_COMPATIBLE_API_KEY_VAR,
+    }
+}
+
+const fn provider_post_process_base_url_var(provider: PostProcessProviderKind) -> &'static str {
+    match provider {
+        PostProcessProviderKind::Groq => GROQ_CHAT_BASE_URL_VAR,
+        PostProcessProviderKind::Fireworks => FIREWORKS_CHAT_BASE_URL_VAR,
+        PostProcessProviderKind::OpenAiCompatible => OPENAI_COMPATIBLE_CHAT_BASE_URL_VAR,
+    }
+}
+
+fn default_transcription_endpoint(
+    provider: TranscriptionProviderKind,
+    model_id: &str,
+) -> Option<&'static str> {
+    match provider {
+        TranscriptionProviderKind::Groq => {
+            Some("https://api.groq.com/openai/v1/audio/transcriptions")
+        }
+        TranscriptionProviderKind::Fireworks => match model_id {
+            "whisper-v3-turbo" => {
+                Some("https://audio-turbo.api.fireworks.ai/v1/audio/transcriptions")
+            }
+            _ => Some("https://audio-prod.api.fireworks.ai/v1/audio/transcriptions"),
+        },
+        TranscriptionProviderKind::OpenAiCompatible => None,
+    }
+}
+
+const fn default_post_process_endpoint(provider: PostProcessProviderKind) -> Option<&'static str> {
+    match provider {
+        PostProcessProviderKind::Groq => Some("https://api.groq.com/openai/v1/chat/completions"),
+        PostProcessProviderKind::Fireworks => {
+            Some("https://api.fireworks.ai/inference/v1/chat/completions")
+        }
+        PostProcessProviderKind::OpenAiCompatible => None,
+    }
+}
+
+fn build_pipeline(
+    transcription_target: &ResolvedTranscriptionTarget,
+    post_process_target: Option<&ResolvedPostProcessTarget>,
+    config: &PipelineConfig,
+) -> Arc<TranscriptionPipeline> {
+    let provider = transcription_provider_for(transcription_target.provider);
+    let mut pipeline =
+        TranscriptionPipeline::new(provider, transcription_target.clone(), config.clone());
+
+    if let Some(target) = post_process_target {
+        let pp = post_processor_for(target.provider);
+        pipeline = pipeline.with_post_processor(pp, target.clone());
     }
 
     Arc::new(pipeline)
+}
+
+fn transcription_provider_for(
+    provider: TranscriptionProviderKind,
+) -> Box<dyn TranscriptionProvider> {
+    match provider {
+        TranscriptionProviderKind::Groq => Box::new(GroqProvider),
+        TranscriptionProviderKind::Fireworks => Box::new(FireworksProvider),
+        TranscriptionProviderKind::OpenAiCompatible => Box::new(OpenAiCompatibleProvider),
+    }
+}
+
+fn post_processor_for(provider: PostProcessProviderKind) -> Box<dyn PostProcessor> {
+    match provider {
+        PostProcessProviderKind::Groq => Box::new(GroqPostProcessor),
+        PostProcessProviderKind::Fireworks => Box::new(FireworksPostProcessor),
+        PostProcessProviderKind::OpenAiCompatible => Box::new(OpenAiCompatiblePostProcessor),
+    }
 }
 
 const fn resolve_post_process_enabled(override_value: Option<bool>, inherited_value: bool) -> bool {
@@ -856,6 +1359,7 @@ fn saved_defaults_from_manifest(
 ) -> Result<SavedDefaults, RecordError> {
     Ok(SavedDefaults {
         output_format: manifest.output_format()?,
+        transcription_base_url_source: manifest.pipeline.transcription_base_url_source,
         pipeline_config: manifest.pipeline.to_pipeline_config()?,
     })
 }
@@ -1376,6 +1880,7 @@ fn maybe_save_last_audio(
             session.chunker_config.target_duration_secs,
             resolved.effective_format,
             &resolved.pipeline_config,
+            resolved.transcription_base_url_source,
         ),
         samples: session.samples.clone(),
     };
@@ -1679,6 +2184,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::sync::{MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_result(text: &str) -> TranscriptionResult {
@@ -1801,12 +2307,32 @@ mod tests {
         };
 
         let mut pipeline =
-            TranscriptionPipeline::new(Box::new(provider), "test-key".into(), config);
+            TranscriptionPipeline::new(Box::new(provider), test_transcription_target(), config);
         if let Some(post_processor) = post_processor {
-            pipeline = pipeline.with_post_processor(post_processor);
+            pipeline = pipeline.with_post_processor(post_processor, test_post_process_target());
         }
 
         Arc::new(pipeline)
+    }
+
+    fn test_transcription_target() -> ResolvedTranscriptionTarget {
+        ResolvedTranscriptionTarget {
+            provider: TranscriptionProviderKind::Groq,
+            endpoint: "https://transcribe.example.com/v1/audio/transcriptions".to_string(),
+            api_key: "test-key".to_string(),
+            model: "whisper-large-v3-turbo".to_string(),
+            request_policy: RequestPolicies::default().transcription,
+        }
+    }
+
+    fn test_post_process_target() -> ResolvedPostProcessTarget {
+        ResolvedPostProcessTarget {
+            provider: PostProcessProviderKind::Groq,
+            endpoint: "https://chat.example.com/v1/chat/completions".to_string(),
+            api_key: "test-key".to_string(),
+            model: DEFAULT_POST_PROCESS_MODEL.to_string(),
+            request_policy: RequestPolicies::default().post_process,
+        }
     }
 
     fn test_saved_recording(
@@ -1820,6 +2346,7 @@ mod tests {
                 target_duration_secs,
                 format,
                 &PipelineConfig::default(),
+                None,
             ),
             samples,
         }
@@ -2001,10 +2528,95 @@ mod tests {
     ) -> SavedDefaults {
         SavedDefaults {
             output_format: Some(ResponseFormat::VerboseJson),
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 timestamp_granularities,
                 ..PipelineConfig::default()
             },
+        }
+    }
+
+    fn saved_defaults_with_pipeline(pipeline_config: PipelineConfig) -> SavedDefaults {
+        SavedDefaults {
+            output_format: Some(ResponseFormat::Json),
+            transcription_base_url_source: None,
+            pipeline_config,
+        }
+    }
+
+    fn saved_defaults_with_pipeline_and_source(
+        pipeline_config: PipelineConfig,
+        transcription_base_url_source: Option<SavedBaseUrlSource>,
+    ) -> SavedDefaults {
+        SavedDefaults {
+            output_format: Some(ResponseFormat::Json),
+            transcription_base_url_source,
+            pipeline_config,
+        }
+    }
+
+    fn saved_defaults_from_resolved_run(resolved: &ResolvedRunConfig) -> SavedDefaults {
+        let manifest = SavedRecordingManifest::new(
+            1,
+            30,
+            resolved.effective_format,
+            &resolved.pipeline_config,
+            resolved.transcription_base_url_source,
+        );
+        saved_defaults_from_manifest(&manifest).unwrap()
+    }
+
+    static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(vars: &[&'static str]) -> Self {
+            let lock = ENV_MUTEX.get_or_init(|| Mutex::new(())).lock().unwrap();
+            let saved = vars
+                .iter()
+                .map(|&key| (key, std::env::var(key).ok()))
+                .collect();
+
+            Self { _lock: lock, saved }
+        }
+
+        fn set_var(key: &'static str, value: &str) {
+            // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+        }
+
+        fn remove_var(key: &'static str) {
+            // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+            unsafe {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(value) => {
+                        // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+                    }
+                    None => {
+                        // Safety: tests serialize process-env mutation through `ENV_MUTEX`.
+                        unsafe {
+                            std::env::remove_var(key);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2056,6 +2668,345 @@ mod tests {
         assert_eq!(
             request_policies_for_mode(RunMode::Retry),
             RequestPolicies::persistent()
+        );
+    }
+
+    #[test]
+    fn save_last_audio_persists_env_resolved_transcription_endpoint_for_retry() {
+        let original_endpoint = "https://env-one.example.com/v1/audio/transcriptions";
+        let changed_endpoint = "https://env-two.example.com/v1/audio/transcriptions";
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, original_endpoint);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        assert_eq!(
+            recorded.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            defaults.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, changed_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new(),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, original_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(original_endpoint)
+        );
+    }
+
+    #[test]
+    fn save_last_audio_persists_env_resolved_post_process_endpoint_for_retry() {
+        let original_endpoint = "https://chat-one.example.com/v1/chat/completions";
+        let changed_endpoint = "https://chat-two.example.com/v1/chat/completions";
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_CHAT_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(FIREWORKS_CHAT_BASE_URL_VAR, original_endpoint);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new()
+                .transcription_provider(TranscriptionProviderKind::Fireworks)
+                .post_process_options(
+                    PostProcessOptions::new()
+                        .enabled(true)
+                        .provider(PostProcessProviderKind::Fireworks),
+                ),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        assert_eq!(
+            recorded.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            defaults.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+
+        EnvGuard::set_var(FIREWORKS_CHAT_BASE_URL_VAR, changed_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new(),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried
+                .post_process_target
+                .as_ref()
+                .map(|target| target.endpoint.as_str()),
+            Some(original_endpoint)
+        );
+        assert_eq!(
+            retried.pipeline_config.post_process_base_url.as_deref(),
+            Some(original_endpoint)
+        );
+    }
+
+    #[test]
+    fn resolved_run_config_persists_default_provider_endpoints() {
+        let env = EnvGuard::new(&[
+            FIREWORKS_API_KEY_VAR,
+            FIREWORKS_BASE_URL_VAR,
+            FIREWORKS_CHAT_BASE_URL_VAR,
+        ]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+        EnvGuard::remove_var(FIREWORKS_CHAT_BASE_URL_VAR);
+
+        let resolved = resolve_run_config(
+            &RecordOptions::new()
+                .transcription_provider(TranscriptionProviderKind::Fireworks)
+                .post_process_options(
+                    PostProcessOptions::new()
+                        .enabled(true)
+                        .provider(PostProcessProviderKind::Fireworks),
+                ),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            resolved.pipeline_config.base_url.as_deref(),
+            Some("https://audio-turbo.api.fireworks.ai/v1/audio/transcriptions")
+        );
+        assert_eq!(
+            resolved.pipeline_config.post_process_base_url.as_deref(),
+            Some("https://api.fireworks.ai/inference/v1/chat/completions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_override_recomputes_default_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried.transcription_target.endpoint,
+            "https://audio-prod.api.fireworks.ai/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some("https://audio-prod.api.fireworks.ai/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_id_override_recomputes_default_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model_id("whisper-v3"),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(
+            retried.transcription_target.endpoint,
+            "https://audio-prod.api.fireworks.ai/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some("https://audio-prod.api.fireworks.ai/v1/audio/transcriptions")
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_override_preserves_saved_explicit_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::set_var(
+            FIREWORKS_BASE_URL_VAR,
+            "https://env.example.com/v1/audio/transcriptions",
+        );
+        let explicit_endpoint = "https://proxy.example.com/v1/audio/transcriptions";
+        let defaults = saved_defaults_with_pipeline_and_source(
+            PipelineConfig {
+                transcription_provider: TranscriptionProviderKind::Fireworks,
+                base_url: Some(explicit_endpoint.to_string()),
+                transcription_model_id: Some("whisper-v3-turbo".to_string()),
+                ..PipelineConfig::default()
+            },
+            Some(SavedBaseUrlSource::Explicit),
+        );
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, explicit_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(explicit_endpoint)
+        );
+        assert_eq!(
+            retried.transcription_base_url_source,
+            Some(SavedBaseUrlSource::Explicit)
+        );
+    }
+
+    #[test]
+    fn retry_fireworks_model_override_prefers_current_env_endpoint() {
+        let env = EnvGuard::new(&[FIREWORKS_API_KEY_VAR, FIREWORKS_BASE_URL_VAR]);
+        EnvGuard::set_var(FIREWORKS_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(FIREWORKS_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().transcription_provider(TranscriptionProviderKind::Fireworks),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+        let current_endpoint = "https://env.example.com/v1/audio/transcriptions";
+        EnvGuard::set_var(FIREWORKS_BASE_URL_VAR, current_endpoint);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new().transcription_model(WhisperModel::LargeV3),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert_eq!(retried.transcription_target.endpoint, current_endpoint);
+        assert_eq!(
+            retried.pipeline_config.base_url.as_deref(),
+            Some(current_endpoint)
+        );
+    }
+
+    #[test]
+    fn disabled_post_process_does_not_persist_chat_endpoint() {
+        let env = EnvGuard::new(&[GROQ_API_KEY_VAR, GROQ_BASE_URL_VAR, GROQ_CHAT_BASE_URL_VAR]);
+        EnvGuard::set_var(GROQ_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(GROQ_BASE_URL_VAR);
+        EnvGuard::remove_var(GROQ_CHAT_BASE_URL_VAR);
+
+        let resolved = resolve_run_config(
+            &RecordOptions::new(),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert!(!resolved.pipeline_config.post_process);
+        assert_eq!(resolved.pipeline_config.post_process_base_url, None);
+    }
+
+    #[test]
+    fn provider_override_ignores_saved_transcription_model_id() {
+        let defaults = saved_defaults_with_pipeline(PipelineConfig {
+            transcription_provider: TranscriptionProviderKind::Groq,
+            transcription_model: None,
+            transcription_model_id: Some("whisper-large-v3".to_string()),
+            ..PipelineConfig::default()
+        });
+
+        assert_eq!(
+            resolve_transcription_model_id(
+                &RecordOptions::new(),
+                Some(&defaults),
+                TranscriptionProviderKind::Fireworks,
+                None,
+            )
+            .unwrap(),
+            "whisper-v3-turbo"
+        );
+    }
+
+    #[test]
+    fn provider_override_ignores_saved_post_process_model() {
+        let defaults = saved_defaults_with_pipeline(PipelineConfig {
+            post_process: true,
+            post_process_provider: PostProcessProviderKind::Groq,
+            post_process_model: Some(ModelId::new(DEFAULT_POST_PROCESS_MODEL).unwrap()),
+            ..PipelineConfig::default()
+        });
+
+        let model = resolve_post_process_model(
+            &RecordOptions::new().post_process_options(PostProcessOptions::new().enabled(true)),
+            Some(&defaults),
+            PostProcessProviderKind::Fireworks,
+        )
+        .unwrap();
+
+        assert_eq!(
+            model.as_ref().map(ModelId::as_str),
+            Some(FIREWORKS_DEFAULT_POST_PROCESS_MODEL)
         );
     }
 
@@ -2242,10 +3193,13 @@ mod tests {
         let resolved = ResolvedRunConfig {
             effective_format: None,
             effective_post_process: true,
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 post_process: true,
                 ..PipelineConfig::default()
             },
+            transcription_target: test_transcription_target(),
+            post_process_target: Some(test_post_process_target()),
             pipeline,
         };
         let options = RecordOptions::new().output(OutputOptions::new().no_clipboard(true));
@@ -2276,10 +3230,13 @@ mod tests {
         let resolved = ResolvedRunConfig {
             effective_format: None,
             effective_post_process: true,
+            transcription_base_url_source: None,
             pipeline_config: PipelineConfig {
                 post_process: true,
                 ..PipelineConfig::default()
             },
+            transcription_target: test_transcription_target(),
+            post_process_target: Some(test_post_process_target()),
             pipeline,
         };
         let options = RecordOptions::new().output(OutputOptions::new().no_clipboard(true));

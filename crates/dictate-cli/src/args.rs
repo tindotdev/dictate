@@ -147,7 +147,11 @@ pub struct OutputArgs {
 
 #[derive(Args)]
 pub struct TranscriptionArgs {
-    /// Override Groq transcription API URL (falls back to `GROQ_BASE_URL` when omitted)
+    /// Transcription provider (`groq`, `fireworks`, or `openai-compatible`)
+    #[arg(long = "transcription-provider", value_parser = ["groq", "fireworks", "openai-compatible"])]
+    pub provider: Option<String>,
+
+    /// Override transcription API URL (provider env/defaults are used when omitted)
     #[arg(long)]
     pub base_url: Option<String>,
 
@@ -167,9 +171,13 @@ pub struct TranscriptionArgs {
     #[arg(long, value_parser = ["json", "verbose_json", "text"])]
     pub format: Option<String>,
 
-    /// Transcription model: "whisper-large-v3-turbo" (default, faster) or "whisper-large-v3" (more accurate)
-    #[arg(long, value_parser = ["whisper-large-v3-turbo", "whisper-large-v3"])]
+    /// Semantic transcription preset: `large-v3-turbo` (default, faster) or `large-v3` (more accurate)
+    #[arg(long, value_parser = ["large-v3-turbo", "large-v3"], conflicts_with = "transcription_model_id")]
     pub transcription_model: Option<String>,
+
+    /// Raw provider model id for transcription
+    #[arg(long, conflicts_with = "transcription_model")]
+    pub transcription_model_id: Option<String>,
 
     /// Sampling temperature (0.0-1.0). Default 0.0 is recommended for transcription
     #[arg(long, value_parser = parse_temperature)]
@@ -190,6 +198,15 @@ pub struct RecordPostProcessArgs {
     #[arg(long = "post-process", short = 'p', id = "post_process")]
     pub enabled: bool,
 
+    /// Post-process provider (`groq`, `fireworks`, or `openai-compatible`)
+    #[arg(
+        long = "post-process-provider",
+        requires = "post_process",
+        value_parser = ["groq", "fireworks", "openai-compatible"],
+        id = "post_process_provider"
+    )]
+    pub provider: Option<String>,
+
     /// Model for post-processing (default: openai/gpt-oss-20b)
     #[arg(
         long = "post-process-model",
@@ -198,7 +215,7 @@ pub struct RecordPostProcessArgs {
     )]
     pub model: Option<ModelId>,
 
-    /// Override post-processing chat API URL (falls back to `GROQ_CHAT_BASE_URL` when omitted)
+    /// Override post-processing chat API URL
     #[arg(
         long = "post-process-base-url",
         requires = "post_process",
@@ -225,6 +242,15 @@ pub struct RetryPostProcessArgs {
         id = "no_post_process"
     )]
     pub disabled: bool,
+
+    /// Post-process provider (`groq`, `fireworks`, or `openai-compatible`)
+    #[arg(
+        long = "post-process-provider",
+        conflicts_with = "no_post_process",
+        value_parser = ["groq", "fireworks", "openai-compatible"],
+        id = "post_process_provider"
+    )]
+    pub provider: Option<String>,
 
     /// Model for post-processing (default: openai/gpt-oss-20b)
     #[arg(
@@ -471,12 +497,7 @@ mod tests {
 
     #[test]
     fn record_accepts_transcription_model_flag() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "record",
-            "--transcription-model",
-            "whisper-large-v3",
-        ]);
+        let cli = Cli::parse_from(["dictate", "record", "--transcription-model", "large-v3"]);
 
         let Some(Commands::Record(args)) = cli.command else {
             panic!("expected record subcommand");
@@ -484,8 +505,43 @@ mod tests {
 
         assert_eq!(
             args.transcription.transcription_model.as_deref(),
-            Some("whisper-large-v3")
+            Some("large-v3")
         );
+    }
+
+    #[test]
+    fn record_accepts_transcription_provider_and_model_id_flags() {
+        let cli = Cli::parse_from([
+            "dictate",
+            "record",
+            "--transcription-provider",
+            "fireworks",
+            "--transcription-model-id",
+            "whisper-v3",
+        ]);
+
+        let Some(Commands::Record(args)) = cli.command else {
+            panic!("expected record subcommand");
+        };
+
+        assert_eq!(args.transcription.provider.as_deref(), Some("fireworks"));
+        assert_eq!(
+            args.transcription.transcription_model_id.as_deref(),
+            Some("whisper-v3")
+        );
+    }
+
+    #[test]
+    fn record_rejects_transcription_model_and_model_id_together() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "record",
+            "--transcription-model",
+            "large-v3",
+            "--transcription-model-id",
+            "whisper-v3",
+        ]);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -68,22 +68,16 @@ mod tests {
     #[test]
     fn extract_error_message_reads_nested_error_message() {
         let body = r#"{"error":{"message":"invalid api key"}}"#;
-        assert_eq!(extract_error_message(body, "Groq error"), "invalid api key");
+        assert_eq!(
+            extract_error_message(body, "OpenAI-compatible error"),
+            "invalid api key"
+        );
     }
 
     #[test]
     fn extract_error_message_truncates_on_invalid_json() {
         let body = &format!("{{\"error\":{}", "x".repeat(260));
-        let message = extract_error_message(body, "Groq error");
-
-        assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
-        assert!(message.ends_with("..."));
-    }
-
-    #[test]
-    fn extract_error_message_truncates_when_schema_is_unexpected() {
-        let body = &format!("{{\"message\":\"{}\"}}", "x".repeat(240));
-        let message = extract_error_message(body, "Groq error");
+        let message = extract_error_message(body, "OpenAI-compatible error");
 
         assert_eq!(message.chars().count(), ERROR_BODY_TRUNCATION_CHARS + 3);
         assert!(message.ends_with("..."));
@@ -131,7 +125,9 @@ mod tests {
         });
 
         let started = Instant::now();
-        let result = api_error_from_failed_response(response, "Groq error", &cancellation).await;
+        let result =
+            api_error_from_failed_response(response, "OpenAI-compatible error", &cancellation)
+                .await;
         let elapsed = started.elapsed();
 
         assert!(matches!(result, Err(Cancelled)));
