@@ -631,6 +631,27 @@ struct ResolvedRunConfig {
     pipeline: Arc<TranscriptionPipeline>,
 }
 
+struct ResolvedPipelineSettings {
+    timestamp_granularities: Vec<TimestampGranularity>,
+    effective_format: Option<ResponseFormat>,
+    inherited_response_format: ResponseFormat,
+    effective_prompt: Option<String>,
+    effective_post_process: bool,
+    transcription_provider: TranscriptionProviderKind,
+    post_process_provider: PostProcessProviderKind,
+    request_policies: RequestPolicies,
+    transcription_model: Option<WhisperModel>,
+    transcription_model_id: String,
+    post_process_model: Option<ModelId>,
+    post_process_base_url: Option<String>,
+}
+
+struct ResolvedRunTargets {
+    transcription_base_url_source: Option<SavedBaseUrlSource>,
+    transcription_target: ResolvedTranscriptionTarget,
+    post_process_target: Option<ResolvedPostProcessTarget>,
+}
+
 #[derive(Debug, Clone)]
 struct SavedDefaults {
     output_format: Option<ResponseFormat>,
@@ -766,9 +787,33 @@ fn resolve_run_config(
     run_mode: RunMode,
     reporter: Reporter,
 ) -> Result<ResolvedRunConfig, RecordError> {
-    let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
+    let settings = resolve_pipeline_settings(options, defaults, run_mode, reporter)?;
+    let targets = resolve_run_targets(options, defaults, run_mode, &settings)?;
+    let config = build_resolved_pipeline_config(options, defaults, &settings, &targets);
+    let pipeline = build_pipeline(
+        &targets.transcription_target,
+        targets.post_process_target.as_ref(),
+        &config,
+    );
 
-    // Auto-upgrade format when timestamps are requested
+    Ok(ResolvedRunConfig {
+        effective_format: settings.effective_format,
+        effective_post_process: settings.effective_post_process,
+        transcription_base_url_source: targets.transcription_base_url_source,
+        pipeline_config: config,
+        transcription_target: targets.transcription_target,
+        post_process_target: targets.post_process_target,
+        pipeline,
+    })
+}
+
+fn resolve_pipeline_settings(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    run_mode: RunMode,
+    reporter: Reporter,
+) -> Result<ResolvedPipelineSettings, RecordError> {
+    let timestamp_granularities = resolve_timestamp_granularities(options, defaults);
     let effective_format = auto_upgrade_format(
         options
             .response_format
@@ -785,23 +830,16 @@ fn resolve_run_config(
         .provider
         .or_else(|| defaults.map(|saved| saved.pipeline_config.post_process_provider))
         .unwrap_or(PostProcessProviderKind::Groq);
-    let saved_transcription_config =
-        saved_transcription_config_for_provider(defaults, transcription_provider);
     let saved_post_process_config =
         saved_post_process_config_for_provider(defaults, post_process_provider);
-
     let post_process_base_url = options.post_process.base_url.clone().or_else(|| {
         saved_post_process_config.and_then(|config| config.post_process_base_url.clone())
     });
-
-    // Load vocabulary prompt hints for prompt injection.
-    // Best-effort: warn and continue on store errors.
     let effective_prompt = if options.prompt.is_some() || defaults.is_none() {
         load_prompt_hints(options.prompt.as_deref(), reporter)
     } else {
         defaults.and_then(|saved| saved.pipeline_config.prompt.clone())
     };
-
     let inherited_response_format = defaults.map_or(ResponseFormat::Json, |saved| {
         saved.pipeline_config.response_format
     });
@@ -816,78 +854,104 @@ fn resolve_run_config(
         transcription_provider,
         transcription_model,
     )?;
+    let post_process_model = resolve_post_process_model(options, defaults, post_process_provider)?;
+
+    Ok(ResolvedPipelineSettings {
+        timestamp_granularities,
+        effective_format,
+        inherited_response_format,
+        effective_prompt,
+        effective_post_process,
+        transcription_provider,
+        post_process_provider,
+        request_policies,
+        transcription_model,
+        transcription_model_id,
+        post_process_model,
+        post_process_base_url,
+    })
+}
+
+fn resolve_run_targets(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    run_mode: RunMode,
+    settings: &ResolvedPipelineSettings,
+) -> Result<ResolvedRunTargets, RecordError> {
+    let saved_transcription_config =
+        saved_transcription_config_for_provider(defaults, settings.transcription_provider);
     let transcription_base_url_source = resolve_transcription_base_url_source(
         options,
         saved_transcription_config,
         defaults.and_then(|saved| saved.transcription_base_url_source),
-        transcription_provider,
+        settings.transcription_provider,
         run_mode,
-        &transcription_model_id,
+        &settings.transcription_model_id,
     );
-    let base_url = resolve_transcription_base_url(
+    let transcription_base_url = resolve_transcription_base_url(
         options,
         saved_transcription_config,
         defaults.and_then(|saved| saved.transcription_base_url_source),
-        transcription_provider,
+        settings.transcription_provider,
         run_mode,
-        &transcription_model_id,
+        &settings.transcription_model_id,
     );
     let transcription_target = resolve_transcription_target(
-        transcription_provider,
-        base_url.clone(),
-        transcription_model_id.clone(),
-        request_policies.transcription,
+        settings.transcription_provider,
+        transcription_base_url,
+        settings.transcription_model_id.clone(),
+        settings.request_policies.transcription,
     )?;
-    let post_process_model = resolve_post_process_model(options, defaults, post_process_provider)?;
-    let post_process_target = if effective_post_process {
+    let post_process_target = if settings.effective_post_process {
         Some(resolve_post_process_target(
-            post_process_provider,
-            post_process_base_url.clone(),
-            post_process_model.clone(),
-            request_policies.post_process,
+            settings.post_process_provider,
+            settings.post_process_base_url.clone(),
+            settings.post_process_model.clone(),
+            settings.request_policies.post_process,
         )?)
     } else {
         None
     };
 
-    let mut config = PipelineConfig {
-        transcription_provider,
-        base_url,
+    Ok(ResolvedRunTargets {
+        transcription_base_url_source,
+        transcription_target,
+        post_process_target,
+    })
+}
+
+fn build_resolved_pipeline_config(
+    options: &RecordOptions,
+    defaults: Option<&SavedDefaults>,
+    settings: &ResolvedPipelineSettings,
+    targets: &ResolvedRunTargets,
+) -> PipelineConfig {
+    PipelineConfig {
+        transcription_provider: settings.transcription_provider,
+        base_url: Some(targets.transcription_target.endpoint.clone()),
         language: options
             .language
             .clone()
             .or_else(|| defaults.and_then(|saved| saved.pipeline_config.language.clone())),
-        prompt: effective_prompt,
-        response_format: effective_format.unwrap_or(inherited_response_format),
-        transcription_model,
-        transcription_model_id: Some(transcription_model_id),
+        prompt: settings.effective_prompt.clone(),
+        response_format: settings
+            .effective_format
+            .unwrap_or(settings.inherited_response_format),
+        transcription_model: settings.transcription_model,
+        transcription_model_id: Some(settings.transcription_model_id.clone()),
         temperature: options
             .temperature
             .or_else(|| defaults.and_then(|saved| saved.pipeline_config.temperature)),
-        timestamp_granularities,
-        post_process: effective_post_process,
-        post_process_provider,
-        post_process_model,
-        post_process_base_url,
-        request_policies,
-    };
-
-    config.base_url = Some(transcription_target.endpoint.clone());
-    config.post_process_base_url = post_process_target
-        .as_ref()
-        .map(|target| target.endpoint.clone());
-
-    let pipeline = build_pipeline(&transcription_target, post_process_target.as_ref(), &config);
-
-    Ok(ResolvedRunConfig {
-        effective_format,
-        effective_post_process,
-        transcription_base_url_source,
-        pipeline_config: config,
-        transcription_target,
-        post_process_target,
-        pipeline,
-    })
+        timestamp_granularities: settings.timestamp_granularities.clone(),
+        post_process: settings.effective_post_process,
+        post_process_provider: settings.post_process_provider,
+        post_process_model: settings.post_process_model.clone(),
+        post_process_base_url: targets
+            .post_process_target
+            .as_ref()
+            .map(|target| target.endpoint.clone()),
+        request_policies: settings.request_policies,
+    }
 }
 
 const fn request_policies_for_mode(run_mode: RunMode) -> RequestPolicies {
