@@ -297,7 +297,7 @@ record-format format device="": build-cli
         {{dictate_bin}} record --format "{{format}}"; \
     fi
 
-# Record with specific transcription model (whisper-large-v3-turbo, whisper-large-v3)
+# Record with specific transcription model (large-v3-turbo, large-v3)
 record-transcription-model model device="": build-cli
     if [ -n "{{device}}" ]; then \
         {{dictate_bin}} record --transcription-model "{{model}}" --device "{{device}}"; \
