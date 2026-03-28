@@ -377,25 +377,25 @@ impl SavedRecordingStore {
         std::fs::write(&manifest_tmp_path, manifest_json)
             .map_err(SavedRecordingError::from)
             .map_err(CancellationError::Error)?;
-        if cancellation.check().is_err() {
-            cleanup_staged_save_paths([
+        cancel_staged_save_if_requested(
+            cancellation,
+            [
                 audio_tmp_path.as_path(),
                 manifest_tmp_path.as_path(),
                 audio_path.as_path(),
-            ]);
-            return Err(CancellationError::Cancelled);
-        }
+            ],
+        )?;
         std::fs::rename(&audio_tmp_path, &audio_path)
             .map_err(SavedRecordingError::from)
             .map_err(CancellationError::Error)?;
-        if cancellation.check().is_err() {
-            cleanup_staged_save_paths([
+        cancel_staged_save_if_requested(
+            cancellation,
+            [
                 audio_tmp_path.as_path(),
                 manifest_tmp_path.as_path(),
                 audio_path.as_path(),
-            ]);
-            return Err(CancellationError::Cancelled);
-        }
+            ],
+        )?;
         std::fs::rename(&manifest_tmp_path, &self.manifest_path)
             .map_err(SavedRecordingError::from)
             .map_err(CancellationError::Error)?;
@@ -498,6 +498,18 @@ fn cleanup_staged_save_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) {
             Ok(()) | Err(_) => {}
         }
     }
+}
+
+fn cancel_staged_save_if_requested<'a>(
+    cancellation: &CancellationContext,
+    staged_paths: impl IntoIterator<Item = &'a Path>,
+) -> CancellationResult<(), SavedRecordingError> {
+    if cancellation.check().is_err() {
+        cleanup_staged_save_paths(staged_paths);
+        return Err(CancellationError::Cancelled);
+    }
+
+    Ok(())
 }
 
 fn validate_audio_filename(value: &str) -> Result<(), SavedRecordingError> {

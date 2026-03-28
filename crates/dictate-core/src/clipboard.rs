@@ -171,32 +171,7 @@ fn copy_via_wl_copy(text: &str) -> Result<(), ClipboardError> {
         });
     }
 
-    let mut child = Command::new("wl-copy")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| {
-            ClipboardError::OperationFailed(format!("failed to spawn wl-copy: {err}"))
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes()).map_err(|err| {
-            ClipboardError::OperationFailed(format!("failed to write to wl-copy: {err}"))
-        })?;
-    }
-
-    let status = child.wait().map_err(|err| {
-        ClipboardError::OperationFailed(format!("failed to wait for wl-copy: {err}"))
-    })?;
-
-    if !status.success() {
-        return Err(ClipboardError::OperationFailed(
-            "wl-copy exited with non-zero status".to_string(),
-        ));
-    }
-
-    Ok(())
+    run_clipboard_command("wl-copy", &[], text)
 }
 
 /// Copy text to clipboard using `xclip` or `xsel` (X11).
@@ -222,60 +197,12 @@ fn copy_via_x11(text: &str) -> Result<(), ClipboardError> {
 
 /// Copy text to clipboard using `xclip`.
 fn copy_via_xclip(text: &str) -> Result<(), ClipboardError> {
-    let mut child = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| ClipboardError::OperationFailed(format!("failed to spawn xclip: {err}")))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes()).map_err(|err| {
-            ClipboardError::OperationFailed(format!("failed to write to xclip: {err}"))
-        })?;
-    }
-
-    let status = child.wait().map_err(|err| {
-        ClipboardError::OperationFailed(format!("failed to wait for xclip: {err}"))
-    })?;
-
-    if !status.success() {
-        return Err(ClipboardError::OperationFailed(
-            "xclip exited with non-zero status".to_string(),
-        ));
-    }
-
-    Ok(())
+    run_clipboard_command("xclip", &["-selection", "clipboard"], text)
 }
 
 /// Copy text to clipboard using `xsel`.
 fn copy_via_xsel(text: &str) -> Result<(), ClipboardError> {
-    let mut child = Command::new("xsel")
-        .args(["--clipboard", "--input"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|err| ClipboardError::OperationFailed(format!("failed to spawn xsel: {err}")))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes()).map_err(|err| {
-            ClipboardError::OperationFailed(format!("failed to write to xsel: {err}"))
-        })?;
-    }
-
-    let status = child.wait().map_err(|err| {
-        ClipboardError::OperationFailed(format!("failed to wait for xsel: {err}"))
-    })?;
-
-    if !status.success() {
-        return Err(ClipboardError::OperationFailed(
-            "xsel exited with non-zero status".to_string(),
-        ));
-    }
-
-    Ok(())
+    run_clipboard_command("xsel", &["--clipboard", "--input"], text)
 }
 
 /// Copy text to clipboard using `pbcopy` (macOS).
@@ -283,27 +210,34 @@ fn copy_via_xsel(text: &str) -> Result<(), ClipboardError> {
 /// `pbcopy` ships with every macOS since 10.0, so no `command_exists` guard
 /// is needed — `spawn()` produces a clear error if somehow absent.
 fn copy_via_pbcopy(text: &str) -> Result<(), ClipboardError> {
-    let mut child = Command::new("pbcopy")
+    run_clipboard_command("pbcopy", &[], text)
+}
+
+fn run_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<(), ClipboardError> {
+    let mut child = Command::new(program)
+        .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|err| ClipboardError::OperationFailed(format!("failed to spawn pbcopy: {err}")))?;
+        .map_err(|err| {
+            ClipboardError::OperationFailed(format!("failed to spawn {program}: {err}"))
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(text.as_bytes()).map_err(|err| {
-            ClipboardError::OperationFailed(format!("failed to write to pbcopy: {err}"))
+            ClipboardError::OperationFailed(format!("failed to write to {program}: {err}"))
         })?;
     }
 
     let status = child.wait().map_err(|err| {
-        ClipboardError::OperationFailed(format!("failed to wait for pbcopy: {err}"))
+        ClipboardError::OperationFailed(format!("failed to wait for {program}: {err}"))
     })?;
 
     if !status.success() {
-        return Err(ClipboardError::OperationFailed(
-            "pbcopy exited with non-zero status".to_string(),
-        ));
+        return Err(ClipboardError::OperationFailed(format!(
+            "{program} exited with non-zero status"
+        )));
     }
 
     Ok(())

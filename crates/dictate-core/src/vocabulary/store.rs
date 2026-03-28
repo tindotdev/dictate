@@ -5,9 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
-
 use super::{Vocabulary, VocabularyError};
+use crate::config_store;
 
 /// File name for the vocabulary store.
 const VOCABULARY_FILENAME: &str = "vocabulary.json";
@@ -30,9 +29,8 @@ impl VocabularyStore {
     /// Returns [`VocabularyError::NoConfigDir`] if the platform config directory
     /// cannot be determined.
     pub fn open() -> Result<Self, VocabularyError> {
-        let dirs =
-            ProjectDirs::from("dev", "tin", "dictate").ok_or(VocabularyError::NoConfigDir)?;
-        let path = dirs.config_dir().join(VOCABULARY_FILENAME);
+        let path = config_store::open_config_path(VOCABULARY_FILENAME)
+            .ok_or(VocabularyError::NoConfigDir)?;
         Ok(Self { path })
     }
 
@@ -52,14 +50,7 @@ impl VocabularyStore {
     /// Returns [`VocabularyError::Io`] on read failure or
     /// [`VocabularyError::InvalidJson`] if the file contains malformed JSON.
     pub fn load(&self) -> Result<Vocabulary, VocabularyError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(contents) => {
-                let vocab: Vocabulary = serde_json::from_str(&contents)?;
-                Ok(vocab)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vocabulary::new()),
-            Err(err) => Err(VocabularyError::Io(err)),
-        }
+        config_store::load_json_file(&self.path)
     }
 
     /// Save the vocabulary to disk (atomic write).
@@ -72,19 +63,7 @@ impl VocabularyStore {
     /// Returns [`VocabularyError::Io`] on write or rename failure, or
     /// [`VocabularyError::InvalidJson`] on serialization failure.
     pub fn save(&self, vocab: &Vocabulary) -> Result<(), VocabularyError> {
-        let json = serde_json::to_string_pretty(vocab)?;
-
-        // Ensure parent directory exists.
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Atomic write: write to temp, then rename.
-        let tmp_path = self.path.with_file_name(VOCABULARY_TMP_FILENAME);
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &self.path)?;
-
-        Ok(())
+        config_store::save_json_file(&self.path, VOCABULARY_TMP_FILENAME, vocab)
     }
 
     /// The resolved file path.

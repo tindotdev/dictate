@@ -5,9 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
-use directories::ProjectDirs;
-
 use super::{Dictionary, DictionaryError};
+use crate::config_store;
 
 /// File name for the dictionary store.
 const DICTIONARY_FILENAME: &str = "dictionary.json";
@@ -30,9 +29,8 @@ impl DictionaryStore {
     /// Returns [`DictionaryError::NoConfigDir`] if the platform config directory
     /// cannot be determined.
     pub fn open() -> Result<Self, DictionaryError> {
-        let dirs =
-            ProjectDirs::from("dev", "tin", "dictate").ok_or(DictionaryError::NoConfigDir)?;
-        let path = dirs.config_dir().join(DICTIONARY_FILENAME);
+        let path = config_store::open_config_path(DICTIONARY_FILENAME)
+            .ok_or(DictionaryError::NoConfigDir)?;
         Ok(Self { path })
     }
 
@@ -52,14 +50,7 @@ impl DictionaryStore {
     /// Returns [`DictionaryError::Io`] on read failure or
     /// [`DictionaryError::InvalidJson`] if the file contains malformed JSON.
     pub fn load(&self) -> Result<Dictionary, DictionaryError> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(contents) => {
-                let dict: Dictionary = serde_json::from_str(&contents)?;
-                Ok(dict)
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Dictionary::new()),
-            Err(err) => Err(DictionaryError::Io(err)),
-        }
+        config_store::load_json_file(&self.path)
     }
 
     /// Save the dictionary to disk (atomic write).
@@ -72,19 +63,7 @@ impl DictionaryStore {
     /// Returns [`DictionaryError::Io`] on write or rename failure, or
     /// [`DictionaryError::InvalidJson`] on serialization failure.
     pub fn save(&self, dict: &Dictionary) -> Result<(), DictionaryError> {
-        let json = serde_json::to_string_pretty(dict)?;
-
-        // Ensure parent directory exists
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Atomic write: write to temp, then rename
-        let tmp_path = self.path.with_file_name(DICTIONARY_TMP_FILENAME);
-        std::fs::write(&tmp_path, json)?;
-        std::fs::rename(&tmp_path, &self.path)?;
-
-        Ok(())
+        config_store::save_json_file(&self.path, DICTIONARY_TMP_FILENAME, dict)
     }
 
     /// The resolved file path.
