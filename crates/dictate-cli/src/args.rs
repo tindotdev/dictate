@@ -304,18 +304,64 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    #[test]
-    fn record_accepts_base_url_flag() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "record",
-            "--base-url",
-            "http://127.0.0.1:8080/openai/v1/audio/transcriptions",
-        ]);
+    fn parse_cli<'a>(args: impl IntoIterator<Item = &'a str>) -> Cli {
+        Cli::parse_from(std::iter::once("dictate").chain(args))
+    }
+
+    fn parse_record<'a>(args: impl IntoIterator<Item = &'a str>) -> RecordArgs {
+        let cli = parse_cli(std::iter::once("record").chain(args));
 
         let Some(Commands::Record(args)) = cli.command else {
             panic!("expected record subcommand");
         };
+
+        args
+    }
+
+    fn parse_retry<'a>(args: impl IntoIterator<Item = &'a str>) -> RetryArgs {
+        let cli = parse_cli(std::iter::once("retry").chain(args));
+
+        let Some(Commands::Retry(args)) = cli.command else {
+            panic!("expected retry subcommand");
+        };
+
+        args
+    }
+
+    fn parse_vocab<'a>(args: impl IntoIterator<Item = &'a str>) -> VocabArgs {
+        let cli = parse_cli(std::iter::once("vocab").chain(args));
+
+        let Some(Commands::Vocab(args)) = cli.command else {
+            panic!("expected vocab subcommand");
+        };
+
+        args
+    }
+
+    fn parse_completions<'a>(args: impl IntoIterator<Item = &'a str>) -> CompletionsArgs {
+        let cli = parse_cli(std::iter::once("completions").chain(args));
+
+        let Some(Commands::Completions(args)) = cli.command else {
+            panic!("expected completions subcommand");
+        };
+
+        args
+    }
+
+    fn parse_top_level<'a>(args: impl IntoIterator<Item = &'a str>) -> RecordArgs {
+        let cli = parse_cli(args);
+
+        assert!(cli.command.is_none());
+
+        cli.record_args
+    }
+
+    #[test]
+    fn record_accepts_base_url_flag() {
+        let args = parse_record([
+            "--base-url",
+            "http://127.0.0.1:8080/openai/v1/audio/transcriptions",
+        ]);
 
         assert_eq!(
             args.transcription.base_url.as_deref(),
@@ -325,33 +371,21 @@ mod tests {
 
     #[test]
     fn record_defaults_base_url_to_none() {
-        let cli = Cli::parse_from(["dictate", "record"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record([]);
 
         assert_eq!(args.transcription.base_url, None);
     }
 
     #[test]
     fn record_save_last_audio_flag_can_be_enabled() {
-        let cli = Cli::parse_from(["dictate", "record", "--save-last-audio"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--save-last-audio"]);
 
         assert!(args.save_last_audio);
     }
 
     #[test]
     fn record_accepts_stop_after_flag() {
-        let cli = Cli::parse_from(["dictate", "record", "--stop-after", "2.5s"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--stop-after", "2.5s"]);
 
         assert_eq!(args.stop_after, Some(Duration::from_secs_f64(2.5)));
     }
@@ -376,17 +410,11 @@ mod tests {
 
     #[test]
     fn retry_accepts_base_url_flag() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "retry",
+        let args = parse_retry([
             "--json-events",
             "--base-url",
             "http://127.0.0.1:8080/openai/v1/audio/transcriptions",
         ]);
-
-        let Some(Commands::Retry(args)) = cli.command else {
-            panic!("expected retry subcommand");
-        };
 
         assert_eq!(
             args.transcription.base_url.as_deref(),
@@ -397,11 +425,7 @@ mod tests {
 
     #[test]
     fn record_accepts_json_events_flag() {
-        let cli = Cli::parse_from(["dictate", "record", "--json-events"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--json-events"]);
 
         assert!(args.transcription.json_events);
     }
@@ -414,11 +438,7 @@ mod tests {
 
     #[test]
     fn retry_no_post_process_flag() {
-        let cli = Cli::parse_from(["dictate", "retry", "--no-post-process"]);
-
-        let Some(Commands::Retry(args)) = cli.command else {
-            panic!("expected retry subcommand");
-        };
+        let args = parse_retry(["--no-post-process"]);
 
         assert!(args.post_process.disabled);
         assert!(!args.post_process.enabled);
@@ -433,16 +453,7 @@ mod tests {
 
     #[test]
     fn retry_accepts_post_process_model_without_post_process_flag() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "retry",
-            "--post-process-model",
-            "openai/gpt-oss-20b",
-        ]);
-
-        let Some(Commands::Retry(args)) = cli.command else {
-            panic!("expected retry subcommand");
-        };
+        let args = parse_retry(["--post-process-model", "openai/gpt-oss-20b"]);
 
         assert_eq!(
             args.post_process.model.as_ref().map(ModelId::as_str),
@@ -452,16 +463,10 @@ mod tests {
 
     #[test]
     fn retry_accepts_post_process_base_url_without_post_process_flag() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "retry",
+        let args = parse_retry([
             "--post-process-base-url",
             "http://127.0.0.1:8080/openai/v1/chat/completions",
         ]);
-
-        let Some(Commands::Retry(args)) = cli.command else {
-            panic!("expected retry subcommand");
-        };
 
         assert_eq!(
             args.post_process.base_url.as_deref(),
@@ -497,11 +502,7 @@ mod tests {
 
     #[test]
     fn record_accepts_transcription_model_flag() {
-        let cli = Cli::parse_from(["dictate", "record", "--transcription-model", "large-v3"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--transcription-model", "large-v3"]);
 
         assert_eq!(
             args.transcription.transcription_model.as_deref(),
@@ -511,18 +512,12 @@ mod tests {
 
     #[test]
     fn record_accepts_transcription_provider_and_model_id_flags() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "record",
+        let args = parse_record([
             "--transcription-provider",
             "fireworks",
             "--transcription-model-id",
             "whisper-v3",
         ]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
 
         assert_eq!(args.transcription.provider.as_deref(), Some("fireworks"));
         assert_eq!(
@@ -558,55 +553,35 @@ mod tests {
 
     #[test]
     fn temperature_accepts_valid_value() {
-        let cli = Cli::try_parse_from(["dictate", "record", "--temperature", "0.5"]).unwrap();
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--temperature", "0.5"]);
 
         assert_eq!(args.transcription.temperature, Some(0.5));
     }
 
     #[test]
     fn stdout_flag_defaults_to_false() {
-        let cli = Cli::parse_from(["dictate", "record"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record([]);
 
         assert!(!args.transcription.output.stdout);
     }
 
     #[test]
     fn stdout_flag_can_be_enabled() {
-        let cli = Cli::parse_from(["dictate", "record", "--stdout"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--stdout"]);
 
         assert!(args.transcription.output.stdout);
     }
 
     #[test]
     fn no_clipboard_flag_defaults_to_false() {
-        let cli = Cli::parse_from(["dictate", "record"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record([]);
 
         assert!(!args.transcription.output.no_clipboard);
     }
 
     #[test]
     fn no_clipboard_flag_can_be_enabled() {
-        let cli = Cli::parse_from(["dictate", "record", "--no-clipboard"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--no-clipboard"]);
 
         assert!(args.transcription.output.no_clipboard);
     }
@@ -621,39 +596,31 @@ mod tests {
 
     #[test]
     fn top_level_stdout_flag() {
-        let cli = Cli::parse_from(["dictate", "--stdout"]);
-        assert!(cli.command.is_none());
-        assert!(cli.record_args.transcription.output.stdout);
+        let args = parse_top_level(["--stdout"]);
+        assert!(args.transcription.output.stdout);
     }
 
     #[test]
     fn top_level_no_clipboard_flag() {
-        let cli = Cli::parse_from(["dictate", "--no-clipboard"]);
-        assert!(cli.command.is_none());
-        assert!(cli.record_args.transcription.output.no_clipboard);
+        let args = parse_top_level(["--no-clipboard"]);
+        assert!(args.transcription.output.no_clipboard);
     }
 
     #[test]
     fn top_level_device_flag() {
-        let cli = Cli::parse_from(["dictate", "--device", "USB"]);
-        assert!(cli.command.is_none());
-        assert_eq!(cli.record_args.device.as_deref(), Some("USB"));
+        let args = parse_top_level(["--device", "USB"]);
+        assert_eq!(args.device.as_deref(), Some("USB"));
     }
 
     #[test]
     fn top_level_language_flag() {
-        let cli = Cli::parse_from(["dictate", "--language", "en"]);
-        assert!(cli.command.is_none());
-        assert_eq!(
-            cli.record_args.transcription.language.as_deref(),
-            Some("en")
-        );
+        let args = parse_top_level(["--language", "en"]);
+        assert_eq!(args.transcription.language.as_deref(), Some("en"));
     }
 
     #[test]
     fn top_level_multiple_flags() {
-        let cli = Cli::parse_from([
-            "dictate",
+        let args = parse_top_level([
             "--stdout",
             "--language",
             "es",
@@ -662,23 +629,18 @@ mod tests {
             "--stop-after",
             "45s",
         ]);
-        assert!(cli.command.is_none());
-        assert!(cli.record_args.transcription.output.stdout);
-        assert_eq!(
-            cli.record_args.transcription.language.as_deref(),
-            Some("es")
-        );
-        assert_eq!(cli.record_args.device.as_deref(), Some("mic"));
-        assert_eq!(cli.record_args.stop_after, Some(Duration::from_secs(45)));
+        assert!(args.transcription.output.stdout);
+        assert_eq!(args.transcription.language.as_deref(), Some("es"));
+        assert_eq!(args.device.as_deref(), Some("mic"));
+        assert_eq!(args.stop_after, Some(Duration::from_secs(45)));
     }
 
     #[test]
     fn top_level_no_args_defaults_to_record() {
-        let cli = Cli::parse_from(["dictate"]);
-        assert!(cli.command.is_none());
-        assert!(!cli.record_args.transcription.output.stdout);
-        assert!(!cli.record_args.transcription.output.no_clipboard);
-        assert!(cli.record_args.device.is_none());
+        let args = parse_top_level([]);
+        assert!(!args.transcription.output.stdout);
+        assert!(!args.transcription.output.no_clipboard);
+        assert!(args.device.is_none());
     }
 
     #[test]
@@ -691,11 +653,7 @@ mod tests {
 
     #[test]
     fn parse_vocab_add_subcommand() {
-        let cli = Cli::parse_from(["dictate", "vocab", "add", "AWS", "OpenAI"]);
-
-        let Some(Commands::Vocab(vocab)) = cli.command else {
-            panic!("expected vocab subcommand");
-        };
+        let vocab = parse_vocab(["add", "AWS", "OpenAI"]);
 
         let VocabCommand::Add { words } = vocab.command else {
             panic!("expected vocab add");
@@ -706,11 +664,7 @@ mod tests {
 
     #[test]
     fn parse_vocab_remove_subcommand() {
-        let cli = Cli::parse_from(["dictate", "vocab", "remove", "AWS"]);
-
-        let Some(Commands::Vocab(vocab)) = cli.command else {
-            panic!("expected vocab subcommand");
-        };
+        let vocab = parse_vocab(["remove", "AWS"]);
 
         let VocabCommand::Remove { words } = vocab.command else {
             panic!("expected vocab remove");
@@ -721,22 +675,14 @@ mod tests {
 
     #[test]
     fn parse_vocab_list_subcommand() {
-        let cli = Cli::parse_from(["dictate", "vocab", "list"]);
-
-        let Some(Commands::Vocab(vocab)) = cli.command else {
-            panic!("expected vocab subcommand");
-        };
+        let vocab = parse_vocab(["list"]);
 
         assert!(matches!(vocab.command, VocabCommand::List));
     }
 
     #[test]
     fn parse_vocab_edit_subcommand() {
-        let cli = Cli::parse_from(["dictate", "vocab", "edit"]);
-
-        let Some(Commands::Vocab(vocab)) = cli.command else {
-            panic!("expected vocab subcommand");
-        };
+        let vocab = parse_vocab(["edit"]);
 
         assert!(matches!(vocab.command, VocabCommand::Edit));
     }
@@ -769,11 +715,7 @@ mod tests {
 
     #[test]
     fn post_process_flag_defaults_to_false() {
-        let cli = Cli::parse_from(["dictate", "record"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record([]);
 
         assert!(!args.post_process.enabled);
         assert!(args.post_process.model.is_none());
@@ -781,22 +723,14 @@ mod tests {
 
     #[test]
     fn post_process_long_flag() {
-        let cli = Cli::parse_from(["dictate", "record", "--post-process"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--post-process"]);
 
         assert!(args.post_process.enabled);
     }
 
     #[test]
     fn post_process_short_flag() {
-        let cli = Cli::parse_from(["dictate", "record", "-p"]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["-p"]);
 
         assert!(args.post_process.enabled);
     }
@@ -814,17 +748,11 @@ mod tests {
 
     #[test]
     fn post_process_model_accepted_with_post_process() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "record",
+        let args = parse_record([
             "--post-process",
             "--post-process-model",
             "llama-3.1-8b-instant",
         ]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
 
         assert!(args.post_process.enabled);
         assert_eq!(
@@ -838,9 +766,8 @@ mod tests {
 
     #[test]
     fn top_level_post_process_flag() {
-        let cli = Cli::parse_from(["dictate", "-p"]);
-        assert!(cli.command.is_none());
-        assert!(cli.record_args.post_process.enabled);
+        let args = parse_top_level(["-p"]);
+        assert!(args.post_process.enabled);
     }
 
     #[test]
@@ -856,17 +783,11 @@ mod tests {
 
     #[test]
     fn post_process_base_url_accepted_with_post_process() {
-        let cli = Cli::parse_from([
-            "dictate",
-            "record",
+        let args = parse_record([
             "--post-process",
             "--post-process-base-url",
             "https://chat.example.com/v1/chat/completions",
         ]);
-
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
 
         assert!(args.post_process.enabled);
         assert_eq!(
@@ -879,10 +800,7 @@ mod tests {
 
     #[test]
     fn parse_completions_fish() {
-        let cli = Cli::parse_from(["dictate", "completions", "fish"]);
-        let Some(Commands::Completions(args)) = cli.command else {
-            panic!("expected completions subcommand");
-        };
+        let args = parse_completions(["fish"]);
         assert_eq!(args.shell, clap_complete::Shell::Fish);
     }
 
@@ -908,10 +826,7 @@ mod tests {
 
     #[test]
     fn format_accepts_verbose_json() {
-        let cli = Cli::parse_from(["dictate", "record", "--format", "verbose_json"]);
-        let Some(Commands::Record(args)) = cli.command else {
-            panic!("expected record subcommand");
-        };
+        let args = parse_record(["--format", "verbose_json"]);
         assert_eq!(args.transcription.format.as_deref(), Some("verbose_json"));
     }
 }
