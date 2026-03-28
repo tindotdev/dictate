@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod cancellation;
 pub mod clipboard;
+mod config_store;
 pub mod dictionary;
 pub mod encoder;
 pub mod error;
