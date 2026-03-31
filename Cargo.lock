@@ -173,12 +173,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "audioadapter"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "91f87b70b051c5866680ad79f6743a42ccab264c009d1a71f4d33a3872ae60c8"
+dependencies = [
+ "audio-core",
+ "num-traits",
+]
+
+[[package]]
 name = "audioadapter-buffers"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6af89882334c4e501faa08992888593ada468f9e1ab211635c32f9ada7786e0"
 dependencies = [
- "audioadapter",
+ "audioadapter 2.0.1",
  "audioadapter-sample",
  "num-traits",
 ]
@@ -528,7 +538,7 @@ dependencies = [
 name = "dictate-core"
 version = "1.9.0"
 dependencies = [
- "audioadapter",
+ "audioadapter 3.0.0",
  "audioadapter-buffers",
  "bytes",
  "cpal",
@@ -1887,7 +1897,7 @@ version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90173154a8a14e6adb109ea641743bc95ec81c093d94e70c6763565f7108ebeb"
 dependencies = [
- "audioadapter",
+ "audioadapter 2.0.1",
  "audioadapter-buffers",
  "num-complex",
  "num-integer",
