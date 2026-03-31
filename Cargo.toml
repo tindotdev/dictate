@@ -14,7 +14,7 @@ thiserror = "2.0.18"
 
 # Audio processing
 audioadapter = "2.0.0"
-audioadapter-buffers = "2.0.0"
+audioadapter-buffers = "3.0.0"
 cpal = "0.17.1"
 ringbuf = "0.4.8"
 rubato = "1.0.1"
