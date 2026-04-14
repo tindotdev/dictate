@@ -1,3 +1,4 @@
+local Capabilities = require("dictate.capabilities")
 local Config = require("dictate.config")
 
 local M = {}
@@ -27,6 +28,17 @@ local function strip_trailing_newlines(text)
   return (text:gsub("[\r\n]+$", ""))
 end
 
+local function has_flag(args, flag)
+  for _, arg in ipairs(args) do
+    local name = arg:match("^([^=]+)=") or arg
+    if name == flag then
+      return true
+    end
+  end
+
+  return false
+end
+
 local function append_stdout(session, data)
   for index, chunk in ipairs(data) do
     if index == 1 then
@@ -46,7 +58,49 @@ end
 local function build_record_command()
   local cfg = Config.get()
   local args = { "record" }
-  vim.list_extend(args, vim.deepcopy(cfg.args))
+  local record_args = vim.deepcopy(cfg.args)
+  if Capabilities.supports_save_last_audio() and not has_flag(record_args, "--save-last-audio") then
+    table.insert(record_args, "--save-last-audio")
+  end
+  vim.list_extend(args, record_args)
+  vim.list_extend(args, { "--format", "text", "--json-events" })
+  table.insert(args, cfg.clipboard and "--stdout" or "--no-clipboard")
+  return Config.command(args)
+end
+
+local retry_ignored_args = {
+  ["--device"] = true,
+  ["--save-last-audio"] = false,
+  ["--stop-after"] = true,
+  ["--timestamps"] = true,
+}
+
+local function retry_args(cfg_args)
+  local args = {}
+  local skip_next = false
+
+  for _, arg in ipairs(cfg_args) do
+    if skip_next then
+      skip_next = false
+    else
+      local name = arg:match("^([^=]+)=") or arg
+      local expects_value = retry_ignored_args[name]
+
+      if expects_value ~= nil then
+        skip_next = expects_value and name == arg
+      else
+        table.insert(args, arg)
+      end
+    end
+  end
+
+  return args
+end
+
+local function build_retry_command()
+  local cfg = Config.get()
+  local args = { "retry" }
+  vim.list_extend(args, retry_args(vim.deepcopy(cfg.args)))
   vim.list_extend(args, { "--format", "text", "--json-events" })
   table.insert(args, cfg.clipboard and "--stdout" or "--no-clipboard")
   return Config.command(args)
@@ -364,6 +418,71 @@ function M.toggle()
     return M.stop()
   end
   return M.start()
+end
+
+function M.retry()
+  if state.current then
+    notify("Dictation is already active", vim.log.levels.WARN)
+    return false
+  end
+
+  local bufnr = vim.api.nvim_get_current_buf()
+  local allowed, reason = Config.is_buffer_allowed(bufnr)
+  if not allowed then
+    notify(("Cannot retry dictate here: %s"):format(reason), vim.log.levels.WARN)
+    return false
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local session = {
+    stdout = "",
+    stdout_tail = "",
+    stderr_tail = "",
+    phase = "retrying",
+    result = nil,
+    invalid_stderr = false,
+    target = {
+      bufnr = bufnr,
+      extmark = vim.api.nvim_buf_set_extmark(bufnr, namespace, cursor[1] - 1, cursor[2], {
+        right_gravity = true,
+      }),
+    },
+  }
+
+  local job_id = vim.fn.jobstart(build_retry_command(), {
+    stdout_buffered = false,
+    on_stdout = function(_, data)
+      if state.current ~= session or not data then
+        return
+      end
+      append_stdout(session, data)
+    end,
+    on_stderr = function(_, data)
+      if state.current ~= session or not data then
+        return
+      end
+      consume_stderr(session, data)
+    end,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        flush_stdout(session)
+        flush_stderr(session)
+        finalize_session(session, code)
+      end)
+    end,
+  })
+
+  if job_id <= 0 then
+    notify("Failed to start dictate retry", vim.log.levels.ERROR)
+    return false
+  end
+
+  session.job_id = job_id
+  session.pid = vim.fn.jobpid(job_id)
+  state.current = session
+  state.phase = "retrying"
+  notify("Retrying transcription…")
+  return true
 end
 
 function M.get_state()

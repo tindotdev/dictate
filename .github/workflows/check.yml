@@ -54,7 +54,7 @@ jobs:
       - name: Run Neovim tests
         run: |
           chmod +x tests/fixtures/fake-dictate.sh tests/fixtures/fake-dictate-no-json.sh
-          nvim --headless -l tests/run.lua tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua
+          nvim --headless -l tests/run.lua tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua tests/init_spec.lua
 
   rust-macos:
     runs-on: macos-latest

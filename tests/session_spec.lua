@@ -8,6 +8,7 @@ describe("dictate session", function()
 
   before_each(function()
     package.loaded["dictate"] = nil
+    package.loaded["dictate.capabilities"] = nil
     package.loaded["dictate.config"] = nil
     package.loaded["dictate.session"] = nil
     package.loaded["dictate.health"] = nil
@@ -55,6 +56,214 @@ describe("dictate session", function()
 
     local line = vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]
     assert.equals("hello from dictate ", line)
+  end)
+
+  it("saves the last audio for plugin-managed recordings", function()
+    local script = vim.fn.tempname()
+    local argv_log = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'for arg in "$@"; do',
+      '  if [[ "$arg" == "--help" ]]; then',
+      "    printf 'dictate record\\n  --json-events\\n  --save-last-audio\\n'",
+      "    printf 'dictate retry\\n  --json-events\\n'",
+      "    exit 0",
+      "  fi",
+      "done",
+      'printf \'%s\\n\' "$*" > "' .. argv_log .. '"',
+      'phase="recording"',
+      "trap 'phase=\"transcribing\"' USR1",
+      'printf \'{"event":"session","mode":"record","phase":"recording","stop_after_ms":null}\\n\' >&2',
+      'while [[ "$phase" == "recording" ]]; do',
+      "  sleep 0.05",
+      "done",
+      'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+      "printf 'logged args\\n'",
+      'printf \'{"event":"result","status":"completed","char_count":11,"copied_to_clipboard":false}\\n\' >&2',
+    }, script)
+    vim.fn.setfperm(script, "rwx------")
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("record --save-last-audio --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("does not duplicate an explicit save-last-audio flag", function()
+    local script = vim.fn.tempname()
+    local argv_log = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'for arg in "$@"; do',
+      '  if [[ "$arg" == "--help" ]]; then',
+      "    printf 'dictate record\\n  --json-events\\n  --save-last-audio\\n'",
+      "    printf 'dictate retry\\n  --json-events\\n'",
+      "    exit 0",
+      "  fi",
+      "done",
+      'printf \'%s\\n\' "$*" > "' .. argv_log .. '"',
+      'phase="recording"',
+      "trap 'phase=\"transcribing\"' USR1",
+      'printf \'{"event":"session","mode":"record","phase":"recording","stop_after_ms":null}\\n\' >&2',
+      'while [[ "$phase" == "recording" ]]; do',
+      "  sleep 0.05",
+      "done",
+      'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+      "printf 'logged args\\n'",
+      'printf \'{"event":"result","status":"completed","char_count":11,"copied_to_clipboard":false}\\n\' >&2',
+    }, script)
+    vim.fn.setfperm(script, "rwx------")
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "--save-last-audio", "--device=USB Mic" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("record --save-last-audio --device=USB Mic --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("does not force save-last-audio when record help omits it", function()
+    local script = vim.fn.tempname()
+    local argv_log = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'if [[ "${1:-}" == "record" && "${2:-}" == "--help" ]]; then',
+      "  printf 'dictate record\\n  --json-events\\n'",
+      "  exit 0",
+      "fi",
+      'if [[ "${1:-}" == "retry" && "${2:-}" == "--help" ]]; then',
+      "  printf 'dictate retry\\n  --json-events\\n'",
+      "  exit 0",
+      "fi",
+      'printf \'%s\\n\' "$*" > "' .. argv_log .. '"',
+      'phase="recording"',
+      "trap 'phase=\"transcribing\"' USR1",
+      'printf \'{"event":"session","mode":"record","phase":"recording","stop_after_ms":null}\\n\' >&2',
+      'while [[ "$phase" == "recording" ]]; do',
+      "  sleep 0.05",
+      "done",
+      'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+      "printf 'logged args\\n'",
+      'printf \'{"event":"result","status":"completed","char_count":11,"copied_to_clipboard":false}\\n\' >&2',
+    }, script)
+    vim.fn.setfperm(script, "rwx------")
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("record --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("does not probe record help on start after setup warms the cache", function()
+    local script = vim.fn.tempname()
+    local argv_log = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'printf \'%s\\n\' "$*" >> "' .. argv_log .. '"',
+      'if [[ "${1:-}" == "record" && "${2:-}" == "--help" ]]; then',
+      "  printf 'dictate record\\n  --json-events\\n  --save-last-audio\\n'",
+      "  exit 0",
+      "fi",
+      'if [[ "${1:-}" == "retry" && "${2:-}" == "--help" ]]; then',
+      "  printf 'dictate retry\\n  --json-events\\n'",
+      "  exit 0",
+      "fi",
+      'phase="recording"',
+      "trap 'phase=\"transcribing\"' USR1",
+      'printf \'{"event":"session","mode":"record","phase":"recording","stop_after_ms":null}\\n\' >&2',
+      'while [[ "$phase" == "recording" ]]; do',
+      "  sleep 0.05",
+      "done",
+      'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+      "printf 'logged args\\n'",
+      'printf \'{"event":"result","status":"completed","char_count":11,"copied_to_clipboard":false}\\n\' >&2',
+    }, script)
+    vim.fn.setfperm(script, "rwx------")
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+    vim.fn.writefile({}, argv_log)
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.are.same({ "record --save-last-audio --format text --json-events --no-clipboard" }, argv)
   end)
 
   it("cancels during transcription", function()
@@ -224,6 +433,147 @@ describe("dictate session", function()
 
     assert.is_true(vim.iter(notifications):any(function(item)
       return item.message == "recording failed: GROQ_API_KEY is not set"
+    end))
+  end)
+
+  it("retries and inserts transcript at the original cursor", function()
+    vim.env.DICTATE_FIXTURE_SCENARIO = "success"
+    vim.env.DICTATE_FIXTURE_TRANSCRIPT = "retry transcript"
+
+    assert.is_true(Dictate.retry())
+    assert.equals("retrying", Dictate.get_state())
+
+    vim.wait(3000, function()
+      return Dictate.get_state() == "idle"
+    end)
+
+    local line = vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]
+    assert.equals("retry transcript ", line)
+  end)
+
+  it("filters record-only args from retry while preserving retry overrides", function()
+    local script = vim.fn.tempname()
+    local argv_log = vim.fn.tempname()
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      'for arg in "$@"; do',
+      '  if [[ "$arg" == "--help" ]]; then',
+      "    printf 'dictate record\\n  --json-events\\n'",
+      "    printf 'dictate retry\\n  --json-events\\n'",
+      "    exit 0",
+      "  fi",
+      "done",
+      'printf \'%s\\n\' "$*" > "' .. argv_log .. '"',
+      'for arg in "$@"; do',
+      '  if [[ "$arg" == "--save-last-audio" || "$arg" == "--device" || "$arg" == "--stop-after" || "$arg" == "--timestamps" || "$arg" == "--device="* || "$arg" == "--stop-after="* || "$arg" == "--timestamps="* ]]; then',
+      '    printf \'{"event":"result","status":"failed","message":"unexpected retry arg","causes":["%s"]}\\n\' "$arg" >&2',
+      "    exit 1",
+      "  fi",
+      "done",
+      'printf \'{"event":"session","mode":"retry","phase":"retrying","stop_after_ms":null}\\n\' >&2',
+      'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+      "printf 'retry args filtered\\n'",
+      'printf \'{"event":"result","status":"completed","char_count":19,"copied_to_clipboard":false}\\n\' >&2',
+    }, script)
+    vim.fn.setfperm(script, "rwx------")
+
+    Dictate.setup({
+      cmd = { script },
+      args = {
+        "--save-last-audio",
+        "--stop-after",
+        "30s",
+        "--device=USB Mic",
+        "--timestamps",
+        "word,segment",
+        "--post-process",
+        "--transcription-model",
+        "large-v3",
+      },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    local line = vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]
+    assert.equals("retry args filtered ", line)
+    assert.equals(
+      "retry --post-process --transcription-model large-v3 --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
+  it("cancels an in-flight retry", function()
+    vim.env.DICTATE_FIXTURE_SCENARIO = "cancel_during_transcribing"
+
+    assert.is_true(Dictate.retry())
+    assert.equals("retrying", Dictate.get_state())
+
+    assert.is_true(vim.wait(1000, function()
+      return Dictate.get_state() == "transcribing"
+    end))
+    assert.is_true(Dictate.stop())
+
+    assert.is_true(vim.wait(3000, function()
+      return Dictate.get_state() == "idle"
+    end))
+
+    local line = vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]
+    assert.equals("", line)
+    assert.is_true(vim.iter(notifications):any(function(item)
+      return item.message == "Dictation cancelled"
+    end))
+  end)
+
+  it("rejects retry when a dictate session is already active", function()
+    vim.env.DICTATE_FIXTURE_SCENARIO = "success"
+    vim.env.DICTATE_FIXTURE_TRANSCRIPT = "original"
+
+    assert.is_true(Dictate.start())
+    assert.equals("recording", Dictate.get_state())
+
+    assert.is_false(Dictate.retry())
+    assert.is_true(vim.iter(notifications):any(function(item)
+      return item.message == "Dictation is already active"
+    end))
+
+    assert.is_true(Dictate.stop())
+    vim.wait(3000, function()
+      return Dictate.get_state() == "idle"
+    end)
+  end)
+
+  it("surfaces retry CLI failure", function()
+    vim.env.DICTATE_FIXTURE_SCENARIO = "fail_immediately"
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.is_true(vim.iter(notifications):any(function(item)
+      return item.message == "retry failed: no saved recording"
     end))
   end)
 end)
