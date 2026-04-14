@@ -5,7 +5,7 @@ default:
 export TMPDIR := justfile_directory() + "/tmp"
 
 dictate_bin := "target/debug/dictate"
-nvim_test_files := "tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua"
+nvim_test_files := "tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua tests/init_spec.lua"
 manual_nvim_init := "tests/manual/init.lua"
 manual_nvim_fixture_config_dir := "tests/manual/fixtures/config/dictate"
 manual_nvim_tmp_root := "tmp/nvim-dev-real"

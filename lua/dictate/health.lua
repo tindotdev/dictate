@@ -1,13 +1,9 @@
+local Capabilities = require("dictate.capabilities")
 local Config = require("dictate.config")
 
 local M = {}
 
 local health = vim.health or require("health")
-
-local function command_output(cmd)
-  local output = vim.fn.system(cmd)
-  return output, vim.v.shell_error
-end
 
 local function run_checks(h)
   h.start("dictate.nvim")
@@ -36,13 +32,27 @@ local function run_checks(h)
     return
   end
 
-  local help_cmd = Config.command({ "record", "--help" })
-  local help_output, help_status = command_output(help_cmd)
-  if help_status == 0 and help_output:find("%-%-json%-events", 1, false) then
+  if Capabilities.supports_json_events() then
     h.ok("dictate supports --json-events")
   else
     h.error("dictate does not advertise --json-events", {
       "Update dictate-cli to a version that includes the Neovim integration event stream",
+    })
+  end
+
+  if Capabilities.supports_save_last_audio() then
+    h.ok("dictate supports --save-last-audio")
+  else
+    h.warn("dictate does not advertise --save-last-audio", {
+      "dictate.nvim will skip forcing audio persistence for DictateRetry on plugin-managed recordings",
+    })
+  end
+
+  if Capabilities.supports_retry() then
+    h.ok("dictate supports retry")
+  else
+    h.warn("dictate does not support retry", {
+      "Update dictate-cli to enable the DictateRetry command",
     })
   end
 

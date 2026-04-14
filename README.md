@@ -186,7 +186,7 @@ Install with `lazy.nvim` using `opts`, `cmd`, and `keys`:
 {
   "tindotdev/dictate",
   opts = {},
-  cmd = { "DictateStart", "DictateStop", "DictateToggle" },
+  cmd = { "DictateStart", "DictateStop", "DictateToggle", "DictateRetry" },
   keys = {
     {
       "<F9>",
@@ -215,6 +215,15 @@ Commands (available after the plugin is loaded):
 - `:DictateStart`
 - `:DictateStop`
 - `:DictateToggle`
+- `:DictateRetry`
+
+Notes:
+
+- Plugin-managed recordings automatically save the last audio so `:DictateRetry` works after `:DictateStart` and `:DictateStop`
+- `:DictateRetry` runs `dictate retry` on that saved recording
+- Record-only plugin args such as `--save-last-audio`, `--stop-after`, and `--device` are ignored for `:DictateRetry`
+- Retry cannot be started while another dictate session is active
+- The CLI handles retry-specific networking (longer timeouts, more retries) compared to interactive recordings
 
 Health checks:
 
