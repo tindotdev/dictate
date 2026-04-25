@@ -10,11 +10,11 @@
 
 ## 2. Neovim Context Enrichment
 
-- [ ] 2.1 Add a disabled-by-default `context_enrichment` option to `lua/dictate/config.lua` with validation for enabled state, filetypes, line window, and character limit.
-- [ ] 2.2 Implement bounded markdown context extraction near the insertion point with term deduplication and exact spelling/casing preservation.
-- [ ] 2.3 Update record command construction to pass `--post-process` and `--post-process-context` when enrichment is enabled and context is non-empty.
-- [ ] 2.4 Update retry command construction to collect fresh current-buffer context and respect explicit `--no-post-process`.
-- [ ] 2.5 Add Lua tests for default disabled behavior, markdown extraction of `SNAKE_CASE`, non-markdown exclusion, bounded truncation, record command args, and retry command args.
+- [x] 2.1 Add a disabled-by-default `context_enrichment` option to `lua/dictate/config.lua` with validation for enabled state, filetypes, line window, and character limit.
+- [x] 2.2 Implement bounded markdown context extraction near the insertion point with term deduplication and exact spelling/casing preservation.
+- [x] 2.3 Update record command construction to pass `--post-process` and `--post-process-context` when enrichment is enabled and context is non-empty.
+- [x] 2.4 Update retry command construction to collect fresh current-buffer context and respect explicit `--no-post-process`.
+- [x] 2.5 Add Lua tests for default disabled behavior, markdown extraction of `SNAKE_CASE`, non-markdown exclusion, bounded truncation, record command args, and retry command args.
 
 ## 3. Promptfoo Evaluation
 

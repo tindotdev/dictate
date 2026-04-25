@@ -7,6 +7,13 @@ local defaults = {
   insert_trailing_space = true,
   disabled_filetypes = { "help", "lazy", "mason", "TelescopePrompt" },
   disabled_buftypes = { "nofile", "prompt", "quickfix", "terminal" },
+  context_enrichment = {
+    enabled = false,
+    filetypes = { "markdown" },
+    max_lines_before = 20,
+    max_lines_after = 5,
+    max_chars = 1000,
+  },
 }
 
 local config = vim.deepcopy(defaults)
@@ -33,6 +40,18 @@ local function normalize_cmd(value)
   return vim.deepcopy(value)
 end
 
+local function validate_non_negative_integer(name, value)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
+    error(("dictate.nvim: opts.context_enrichment.%s must be a non-negative integer"):format(name))
+  end
+end
+
+local function validate_positive_integer(name, value)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+    error(("dictate.nvim: opts.context_enrichment.%s must be a positive integer"):format(name))
+  end
+end
+
 function M.setup(opts)
   opts = opts or {}
 
@@ -41,10 +60,15 @@ function M.setup(opts)
   list_of_strings("args", merged.args)
   list_of_strings("disabled_filetypes", merged.disabled_filetypes)
   list_of_strings("disabled_buftypes", merged.disabled_buftypes)
+  list_of_strings("context_enrichment.filetypes", merged.context_enrichment.filetypes)
+  validate_non_negative_integer("max_lines_before", merged.context_enrichment.max_lines_before)
+  validate_non_negative_integer("max_lines_after", merged.context_enrichment.max_lines_after)
+  validate_positive_integer("max_chars", merged.context_enrichment.max_chars)
 
   vim.validate({
     clipboard = { merged.clipboard, "boolean" },
     insert_trailing_space = { merged.insert_trailing_space, "boolean" },
+    ["context_enrichment.enabled"] = { merged.context_enrichment.enabled, "boolean" },
   })
 
   config = merged

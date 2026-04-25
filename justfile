@@ -5,7 +5,7 @@ default:
 export TMPDIR := justfile_directory() + "/tmp"
 
 dictate_bin := "target/debug/dictate"
-nvim_test_files := "tests/config_spec.lua tests/session_spec.lua tests/health_spec.lua tests/init_spec.lua"
+nvim_test_files := "tests/config_spec.lua tests/context_spec.lua tests/session_spec.lua tests/health_spec.lua tests/init_spec.lua"
 manual_nvim_init := "tests/manual/init.lua"
 manual_nvim_fixture_config_dir := "tests/manual/fixtures/config/dictate"
 manual_nvim_tmp_root := "tmp/nvim-dev-real"
@@ -76,6 +76,18 @@ nvim-dev-real: build-cli
     cp {{manual_nvim_fixture_config_dir}}/dictionary.json {{manual_nvim_tmp_root}}/config/dictate/dictionary.json
     env \
         DICTATE_NVIM_MODE=real \
+        XDG_CONFIG_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/config" \
+        XDG_DATA_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/data" \
+        nvim --clean -u {{manual_nvim_init}}
+
+# Launch real Neovim with context enrichment enabled.
+nvim-dev-real-context: build-cli
+    mkdir -p {{manual_nvim_tmp_root}}/config/dictate {{manual_nvim_tmp_root}}/data
+    cp {{manual_nvim_fixture_config_dir}}/vocabulary.json {{manual_nvim_tmp_root}}/config/dictate/vocabulary.json
+    cp {{manual_nvim_fixture_config_dir}}/dictionary.json {{manual_nvim_tmp_root}}/config/dictate/dictionary.json
+    env \
+        DICTATE_NVIM_MODE=real \
+        DICTATE_NVIM_CONTEXT_ENRICHMENT=1 \
         XDG_CONFIG_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/config" \
         XDG_DATA_HOME="{{ justfile_directory() }}/{{manual_nvim_tmp_root}}/data" \
         nvim --clean -u {{manual_nvim_init}}

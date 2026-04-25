@@ -1,5 +1,6 @@
 local Capabilities = require("dictate.capabilities")
 local Config = require("dictate.config")
+local Context = require("dictate.context")
 
 local M = {}
 
@@ -39,6 +40,23 @@ local function has_flag(args, flag)
   return false
 end
 
+local function append_context_args(args, context, force_post_process)
+  if context == "" then
+    return
+  end
+
+  if force_post_process and not has_flag(args, "--post-process") then
+    table.insert(args, "--post-process")
+  end
+
+  if has_flag(args, "--post-process-context") then
+    return
+  end
+
+  table.insert(args, "--post-process-context")
+  table.insert(args, context)
+end
+
 local function append_stdout(session, data)
   for index, chunk in ipairs(data) do
     if index == 1 then
@@ -55,14 +73,16 @@ local function flush_stdout(session)
   session.stdout_tail = ""
 end
 
-local function build_record_command()
+local function build_record_command(bufnr, row)
   local cfg = Config.get()
   local args = { "record" }
   local record_args = vim.deepcopy(cfg.args)
+  local context = Context.extract_for_buffer(bufnr, row, cfg.context_enrichment)
   if Capabilities.supports_save_last_audio() and not has_flag(record_args, "--save-last-audio") then
     table.insert(record_args, "--save-last-audio")
   end
   vim.list_extend(args, record_args)
+  append_context_args(args, context, true)
   vim.list_extend(args, { "--format", "text", "--json-events" })
   table.insert(args, cfg.clipboard and "--stdout" or "--no-clipboard")
   return Config.command(args)
@@ -97,10 +117,14 @@ local function retry_args(cfg_args)
   return args
 end
 
-local function build_retry_command()
+local function build_retry_command(bufnr, row)
   local cfg = Config.get()
   local args = { "retry" }
-  vim.list_extend(args, retry_args(vim.deepcopy(cfg.args)))
+  local filtered_args = retry_args(vim.deepcopy(cfg.args))
+  local context = has_flag(filtered_args, "--no-post-process") and ""
+    or Context.extract_for_buffer(bufnr, row, cfg.context_enrichment)
+  vim.list_extend(args, filtered_args)
+  append_context_args(args, context, true)
   vim.list_extend(args, { "--format", "text", "--json-events" })
   table.insert(args, cfg.clipboard and "--stdout" or "--no-clipboard")
   return Config.command(args)
@@ -348,7 +372,7 @@ function M.start()
     },
   }
 
-  local job_id = vim.fn.jobstart(build_record_command(), {
+  local job_id = vim.fn.jobstart(build_record_command(bufnr, cursor[1] - 1), {
     stdout_buffered = false,
     on_stdout = function(_, data)
       if state.current ~= session or not data then
@@ -449,7 +473,7 @@ function M.retry()
     },
   }
 
-  local job_id = vim.fn.jobstart(build_retry_command(), {
+  local job_id = vim.fn.jobstart(build_retry_command(bufnr, cursor[1] - 1), {
     stdout_buffered = false,
     on_stdout = function(_, data)
       if state.current ~= session or not data then
