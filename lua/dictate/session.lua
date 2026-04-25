@@ -40,12 +40,16 @@ local function has_flag(args, flag)
   return false
 end
 
+local function has_post_process_flag(args)
+  return has_flag(args, "--post-process") or has_flag(args, "-p")
+end
+
 local function append_context_args(args, context, force_post_process)
   if context == "" then
     return
   end
 
-  if force_post_process and not has_flag(args, "--post-process") then
+  if force_post_process and not has_post_process_flag(args) then
     table.insert(args, "--post-process")
   end
 
