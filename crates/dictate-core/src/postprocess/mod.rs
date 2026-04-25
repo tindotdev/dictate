@@ -95,6 +95,24 @@ pub trait PostProcessor: Send + Sync {
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError>;
 
+    /// Clean up the given transcription text with supplemental request context.
+    ///
+    /// Implementations that do not support request context may use the default
+    /// behavior, which ignores `context` and delegates to [`Self::process`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TranscriptionError`] on network, API, or parsing failures.
+    fn process_with_context(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        let _ = context;
+        self.process(text, config)
+    }
+
     /// Clean up the given transcription text while observing cancellation.
     ///
     /// # Errors
@@ -110,6 +128,28 @@ pub trait PostProcessor: Send + Sync {
         cancellation.check()?;
         let result = self
             .process(text, config)
+            .map_err(CancellationError::Error)?;
+        cancellation.check()?;
+        Ok(result)
+    }
+
+    /// Clean up the given transcription text with supplemental request context
+    /// while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_context_and_cancellation(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        cancellation.check()?;
+        let result = self
+            .process_with_context(text, context, config)
             .map_err(CancellationError::Error)?;
         cancellation.check()?;
         Ok(result)
@@ -132,6 +172,30 @@ pub trait PostProcessor: Send + Sync {
         self.process_with_cancellation(
             text,
             config.with_request_policy(request_policy),
+            cancellation,
+        )
+    }
+
+    /// Clean up the given transcription text with supplemental request context
+    /// using the supplied transport policy while observing cancellation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CancellationError`] with [`TranscriptionError`] for network,
+    /// API, or parsing failures, or `Cancelled` when the session is aborted.
+    fn process_with_context_and_request_policy(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        let _ = context;
+        self.process_with_cancellation_and_request_policy(
+            text,
+            config.with_request_policy(request_policy),
+            request_policy,
             cancellation,
         )
     }

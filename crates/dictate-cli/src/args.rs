@@ -222,6 +222,14 @@ pub struct RecordPostProcessArgs {
         id = "post_process_base_url"
     )]
     pub base_url: Option<String>,
+
+    /// Supplemental context sent only to the post-processing request
+    #[arg(
+        long = "post-process-context",
+        requires = "post_process",
+        id = "post_process_context"
+    )]
+    pub context: Option<String>,
 }
 
 #[derive(Args)]
@@ -267,6 +275,14 @@ pub struct RetryPostProcessArgs {
         id = "post_process_base_url"
     )]
     pub base_url: Option<String>,
+
+    /// Supplemental context sent only to this retry post-processing request
+    #[arg(
+        long = "post-process-context",
+        conflicts_with = "no_post_process",
+        id = "post_process_context"
+    )]
+    pub context: Option<String>,
 }
 
 #[derive(Args)]
@@ -794,6 +810,39 @@ mod tests {
             args.post_process.base_url.as_deref(),
             Some("https://chat.example.com/v1/chat/completions")
         );
+    }
+
+    #[test]
+    fn record_post_process_context_requires_post_process() {
+        let result =
+            Cli::try_parse_from(["dictate", "record", "--post-process-context", "SNAKE_CASE"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn record_accepts_post_process_context_with_post_process() {
+        let args = parse_record(["--post-process", "--post-process-context", "SNAKE_CASE"]);
+
+        assert_eq!(args.post_process.context.as_deref(), Some("SNAKE_CASE"));
+    }
+
+    #[test]
+    fn retry_accepts_post_process_context_without_post_process_flag() {
+        let args = parse_retry(["--post-process-context", "FRESH_CONTEXT"]);
+
+        assert_eq!(args.post_process.context.as_deref(), Some("FRESH_CONTEXT"));
+    }
+
+    #[test]
+    fn retry_rejects_post_process_context_when_no_post_process_is_set() {
+        let result = Cli::try_parse_from([
+            "dictate",
+            "retry",
+            "--no-post-process",
+            "--post-process-context",
+            "SNAKE_CASE",
+        ]);
+        assert!(result.is_err());
     }
 
     // --- Completions subcommand tests ---

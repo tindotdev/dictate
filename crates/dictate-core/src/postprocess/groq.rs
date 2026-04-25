@@ -26,6 +26,15 @@ impl PostProcessor for GroqPostProcessor {
         SharedOpenAiCompatiblePostProcessor::groq().process(text, config)
     }
 
+    fn process_with_context(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::groq().process_with_context(text, context, config)
+    }
+
     fn process_with_cancellation(
         &self,
         text: &str,
@@ -48,6 +57,23 @@ impl PostProcessor for GroqPostProcessor {
     ) -> CancellationResult<String, TranscriptionError> {
         SharedOpenAiCompatiblePostProcessor::groq().process_with_cancellation_and_request_policy(
             text,
+            config,
+            request_policy,
+            cancellation,
+        )
+    }
+
+    fn process_with_context_and_request_policy(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::groq().process_with_context_and_request_policy(
+            text,
+            context,
             config,
             request_policy,
             cancellation,

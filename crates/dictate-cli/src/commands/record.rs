@@ -384,6 +384,7 @@ pub struct PostProcessOptions {
     provider: Option<PostProcessProviderKind>,
     model: Option<ModelId>,
     base_url: Option<String>,
+    context: Option<String>,
 }
 
 impl PostProcessOptions {
@@ -413,6 +414,12 @@ impl PostProcessOptions {
     /// Override the post-processing chat API base URL.
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = Some(url.into());
+        self
+    }
+
+    /// Set supplemental context for this post-processing request.
+    pub fn context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
         self
     }
 }
@@ -950,6 +957,7 @@ fn build_resolved_pipeline_config(
             .post_process_target
             .as_ref()
             .map(|target| target.endpoint.clone()),
+        post_process_context: options.post_process.context.clone(),
         request_policies: settings.request_policies,
     }
 }
@@ -2965,6 +2973,59 @@ mod tests {
 
         assert!(!resolved.pipeline_config.post_process);
         assert_eq!(resolved.pipeline_config.post_process_base_url, None);
+    }
+
+    #[test]
+    fn post_process_context_is_runtime_only_and_not_inherited_by_retry() {
+        let env = EnvGuard::new(&[GROQ_API_KEY_VAR, GROQ_CHAT_BASE_URL_VAR]);
+        EnvGuard::set_var(GROQ_API_KEY_VAR, "test-key");
+        EnvGuard::remove_var(GROQ_CHAT_BASE_URL_VAR);
+
+        let recorded = resolve_run_config(
+            &RecordOptions::new().post_process_options(
+                PostProcessOptions::new()
+                    .enabled(true)
+                    .context("SNAKE_CASE"),
+            ),
+            None,
+            RunMode::Record,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let defaults = saved_defaults_from_resolved_run(&recorded);
+
+        assert_eq!(
+            recorded.pipeline_config.post_process_context.as_deref(),
+            Some("SNAKE_CASE")
+        );
+        assert_eq!(defaults.pipeline_config.post_process_context, None);
+
+        let retried = resolve_run_config(
+            &RecordOptions::new(),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        let retried_with_fresh_context = resolve_run_config(
+            &RecordOptions::new()
+                .post_process_options(PostProcessOptions::new().context("FRESH_CONTEXT")),
+            Some(&defaults),
+            RunMode::Retry,
+            Reporter::new(false),
+        )
+        .unwrap();
+        drop(env);
+
+        assert!(retried.pipeline_config.post_process);
+        assert_eq!(retried.pipeline_config.post_process_context, None);
+        assert_eq!(
+            retried_with_fresh_context
+                .pipeline_config
+                .post_process_context
+                .as_deref(),
+            Some("FRESH_CONTEXT")
+        );
     }
 
     #[test]

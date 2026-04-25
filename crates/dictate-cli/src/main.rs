@@ -164,6 +164,9 @@ fn apply_record_post_process(
     if let Some(url) = args.base_url {
         post_process = post_process.base_url(url);
     }
+    if let Some(context) = args.context {
+        post_process = post_process.context(context);
+    }
 
     options.post_process_options(post_process)
 }
@@ -190,6 +193,9 @@ fn apply_retry_post_process(
     }
     if let Some(url) = args.base_url {
         post_process = post_process.base_url(url);
+    }
+    if let Some(context) = args.context {
+        post_process = post_process.context(context);
     }
 
     options.post_process_options(post_process)
@@ -291,6 +297,7 @@ mod tests {
                 provider: None,
                 model: None,
                 base_url: None,
+                context: None,
             },
             save_last_audio: false,
         });

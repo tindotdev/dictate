@@ -281,6 +281,7 @@ impl SavedPipelineConfig {
             post_process_provider,
             post_process_model,
             post_process_base_url: self.post_process_base_url.clone(),
+            post_process_context: None,
             ..PipelineConfig::default()
         })
     }
@@ -658,6 +659,7 @@ mod tests {
             post_process_base_url: Some(
                 "https://chat.example.com/openai/v1/chat/completions".to_string(),
             ),
+            post_process_context: Some("SNAKE_CASE".to_string()),
             request_policies: crate::request_policy::RequestPolicies::default(),
         };
 
@@ -903,6 +905,17 @@ mod tests {
             config.post_process_base_url.as_deref(),
             Some("https://chat.example.com/openai/v1/chat/completions")
         );
+        assert_eq!(config.post_process_context, None);
+    }
+
+    #[test]
+    fn manifest_serialization_excludes_post_process_context() {
+        let manifest = sample_recording().manifest;
+        let value = serde_json::to_value(&manifest).unwrap();
+        let rendered = serde_json::to_string(&value).unwrap();
+
+        assert!(!rendered.contains("SNAKE_CASE"));
+        assert!(!rendered.contains("post_process_context"));
     }
 
     #[test]

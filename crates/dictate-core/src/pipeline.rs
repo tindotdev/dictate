@@ -92,6 +92,8 @@ pub struct PipelineConfig {
     pub post_process_model: Option<ModelId>,
     /// Optional chat endpoint override.
     pub post_process_base_url: Option<String>,
+    /// Optional supplemental post-processing context for this runtime request.
+    pub post_process_context: Option<String>,
     /// Timeout and retry settings.
     pub request_policies: RequestPolicies,
 }
@@ -112,6 +114,7 @@ impl Default for PipelineConfig {
             post_process_provider: PostProcessProviderKind::Groq,
             post_process_model: None,
             post_process_base_url: None,
+            post_process_context: None,
             request_policies: RequestPolicies::default(),
         }
     }
@@ -248,8 +251,9 @@ impl TranscriptionPipeline {
             request_policy: target.request_policy,
         };
 
-        match pp.process_with_cancellation_and_request_policy(
+        match pp.process_with_context_and_request_policy(
             &result.text,
+            self.config.post_process_context.as_deref(),
             config,
             target.request_policy,
             cancellation,
@@ -389,7 +393,7 @@ mod tests {
     use super::*;
     use crate::encoder::EncodedAudio;
     use crate::postprocess::ResolvedPostProcessTarget;
-    use crate::request_policy::RequestPolicies;
+    use crate::request_policy::{RequestPolicies, RequestPolicy};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -487,7 +491,7 @@ mod tests {
         }
     }
 
-    type PostProcessCalls = Arc<Mutex<Vec<(String, String, String)>>>;
+    type PostProcessCalls = Arc<Mutex<Vec<(String, String, String, Option<String>)>>>;
 
     struct MockPostProcessor {
         calls: PostProcessCalls,
@@ -523,10 +527,20 @@ mod tests {
             text: &str,
             config: PostProcessConfig<'_>,
         ) -> Result<String, TranscriptionError> {
+            self.process_with_context(text, None, config)
+        }
+
+        fn process_with_context(
+            &self,
+            text: &str,
+            context: Option<&str>,
+            config: PostProcessConfig<'_>,
+        ) -> Result<String, TranscriptionError> {
             self.calls.lock().unwrap().push((
                 text.to_string(),
                 config.base_url.unwrap().to_string(),
                 config.model.unwrap().to_string(),
+                context.map(str::to_string),
             ));
             self.output.as_ref().map_or_else(
                 || {
@@ -537,6 +551,22 @@ mod tests {
                     ))
                 },
                 |output| Ok(output.clone()),
+            )
+        }
+
+        fn process_with_context_and_request_policy(
+            &self,
+            text: &str,
+            context: Option<&str>,
+            config: PostProcessConfig<'_>,
+            request_policy: RequestPolicy,
+            cancellation: &CancellationContext,
+        ) -> CancellationResult<String, TranscriptionError> {
+            self.process_with_context_and_cancellation(
+                text,
+                context,
+                config.with_request_policy(request_policy),
+                cancellation,
             )
         }
     }
@@ -722,7 +752,44 @@ mod tests {
             &[(
                 "raw".into(),
                 "https://chat.example.com/v1/chat/completions".into(),
-                "openai/gpt-oss-20b".into()
+                "openai/gpt-oss-20b".into(),
+                None
+            )]
+        );
+    }
+
+    #[test]
+    fn post_process_passes_runtime_context_to_processor() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let pipeline = TranscriptionPipeline::new(
+            Box::new(MockProvider::new("raw")),
+            target(),
+            PipelineConfig {
+                post_process: true,
+                post_process_context: Some("SNAKE_CASE".to_string()),
+                ..PipelineConfig::default()
+            },
+        )
+        .with_post_processor(
+            Box::new(MockPostProcessor::success(Arc::clone(&calls), "clean")),
+            post_target(),
+        );
+
+        let (_processed, outcome) =
+            pipeline.post_process_result_with_outcome(TranscriptionResult {
+                text: "raw".into(),
+                segments: None,
+                words: None,
+            });
+
+        assert_eq!(outcome, PostProcessOutcome::Applied);
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            &[(
+                "raw".into(),
+                "https://chat.example.com/v1/chat/completions".into(),
+                "openai/gpt-oss-20b".into(),
+                Some("SNAKE_CASE".into())
             )]
         );
     }
