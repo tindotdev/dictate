@@ -225,6 +225,31 @@ Notes:
 - Retry cannot be started while another dictate session is active
 - The CLI handles retry-specific networking (longer timeouts, more retries) compared to interactive recordings
 
+### Context enrichment
+
+`context_enrichment` is opt-in and disabled by default. When enabled on supported
+filetypes, the plugin extracts bounded markdown context near the insertion point
+and passes it to the post-processing LLM as spelling and terminology hints.
+
+```lua
+require("dictate").setup({
+  context_enrichment = {
+    enabled = true,
+    filetypes = { "markdown" },
+    max_lines_before = 50,
+    max_lines_after = 5,
+    max_chars = 500,
+  },
+})
+```
+
+Notes:
+
+- Context is sent to your configured post-processing provider only; enabling context enrichment implicitly enables post-processing for that recording
+- Context is ephemeral: it is not saved with `--save-last-audio` recordings and is never replayed by `dictate retry`
+- `:DictateRetry` collects fresh context from the current buffer rather than reusing context from the original recording
+- Non-markdown buffers and filetypes not in `filetypes` never send context
+
 Health checks:
 
 ```vim

@@ -93,6 +93,15 @@ impl PostProcessor for OpenAiCompatiblePostProcessor {
         SharedOpenAiCompatiblePostProcessor::generic().process(text, config)
     }
 
+    fn process_with_context(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::generic().process_with_context(text, context, config)
+    }
+
     fn process_with_cancellation(
         &self,
         text: &str,
@@ -120,6 +129,23 @@ impl PostProcessor for OpenAiCompatiblePostProcessor {
             cancellation,
         )
     }
+
+    fn process_with_context_and_request_policy(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::generic().process_with_context_and_request_policy(
+            text,
+            context,
+            config,
+            request_policy,
+            cancellation,
+        )
+    }
 }
 
 impl PostProcessor for SharedOpenAiCompatiblePostProcessor {
@@ -132,10 +158,20 @@ impl PostProcessor for SharedOpenAiCompatiblePostProcessor {
         text: &str,
         config: PostProcessConfig<'_>,
     ) -> Result<String, TranscriptionError> {
+        self.process_with_context(text, None, config)
+    }
+
+    fn process_with_context(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
         let request_policy = config.request_policy;
         crate::runtime::block_on(process_request_async(
             *self,
             text,
+            context,
             config,
             request_policy,
             &CancellationContext::new(),
@@ -170,9 +206,27 @@ impl PostProcessor for SharedOpenAiCompatiblePostProcessor {
         request_policy: RequestPolicy,
         cancellation: &CancellationContext,
     ) -> CancellationResult<String, TranscriptionError> {
+        self.process_with_context_and_request_policy(
+            text,
+            None,
+            config,
+            request_policy,
+            cancellation,
+        )
+    }
+
+    fn process_with_context_and_request_policy(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
         crate::runtime::block_on(process_request_async(
             *self,
             text,
+            context,
             config,
             request_policy,
             cancellation,
@@ -191,6 +245,7 @@ fn chat_client(timeout: Duration) -> Result<Client, TranscriptionError> {
 async fn process_request_async(
     provider: SharedOpenAiCompatiblePostProcessor,
     text: &str,
+    context: Option<&str>,
     config: PostProcessConfig<'_>,
     request_policy: RequestPolicy,
     cancellation: &CancellationContext,
@@ -224,6 +279,7 @@ async fn process_request_async(
         model,
         text,
         system_prompt,
+        context,
         temperature: config.temperature,
     };
 
@@ -280,6 +336,7 @@ struct ChatRequestParams<'a> {
     model: &'a str,
     text: &'a str,
     system_prompt: &'a str,
+    context: Option<&'a str>,
     temperature: Option<f32>,
 }
 
@@ -292,6 +349,7 @@ async fn send_chat_request(
 ) -> CancellationResult<String, TranscriptionError> {
     cancellation.check()?;
 
+    let user_content = build_user_message(params.text, params.context);
     let body = ChatRequest {
         model: params.model,
         messages: vec![
@@ -301,7 +359,7 @@ async fn send_chat_request(
             },
             ChatMessage {
                 role: "user",
-                content: params.text,
+                content: &user_content,
             },
         ],
         temperature: params.temperature,
@@ -348,6 +406,33 @@ async fn send_chat_request(
         })
 }
 
+fn build_user_message(text: &str, context: Option<&str>) -> String {
+    let Some(context) = context.map(str::trim).filter(|context| !context.is_empty()) else {
+        return text.to_string();
+    };
+
+    format!(
+        "<transcription>\n{}\n</transcription>\n\n<context>\n{}\n</context>",
+        escape_xml(text),
+        escape_xml(context)
+    )
+}
+
+fn escape_xml(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +450,31 @@ mod tests {
         assert_eq!(
             SharedOpenAiCompatiblePostProcessor::generic().default_model(),
             None
+        );
+    }
+
+    #[test]
+    fn user_message_serializes_transcription_and_context_sections() {
+        assert_eq!(
+            build_user_message("snake case", Some("SNAKE_CASE")),
+            "<transcription>\nsnake case\n</transcription>\n\n<context>\nSNAKE_CASE\n</context>"
+        );
+    }
+
+    #[test]
+    fn user_message_omits_empty_context_section() {
+        assert_eq!(build_user_message("snake case", None), "snake case");
+        assert_eq!(
+            build_user_message("snake case", Some("   \n\t")),
+            "snake case"
+        );
+    }
+
+    #[test]
+    fn user_message_escapes_xml_reserved_characters() {
+        assert_eq!(
+            build_user_message("a < b & c \"quote\"", Some("A&B's <tag>")),
+            "<transcription>\na &lt; b &amp; c &quot;quote&quot;\n</transcription>\n\n<context>\nA&amp;B&apos;s &lt;tag&gt;\n</context>"
         );
     }
 }

@@ -65,13 +65,13 @@ impl RequestPolicies {
     pub const fn persistent() -> Self {
         Self {
             transcription: RequestPolicy::new(
-                Duration::from_secs(300),
+                Duration::from_mins(5),
                 3,
                 Duration::from_secs(1),
                 Duration::from_secs(16),
             ),
             post_process: RequestPolicy::new(
-                Duration::from_secs(60),
+                Duration::from_mins(1),
                 3,
                 Duration::from_secs(1),
                 Duration::from_secs(16),

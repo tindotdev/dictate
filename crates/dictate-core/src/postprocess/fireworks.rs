@@ -26,6 +26,15 @@ impl PostProcessor for FireworksPostProcessor {
         SharedOpenAiCompatiblePostProcessor::fireworks().process(text, config)
     }
 
+    fn process_with_context(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+    ) -> Result<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::fireworks().process_with_context(text, context, config)
+    }
+
     fn process_with_cancellation(
         &self,
         text: &str,
@@ -53,5 +62,22 @@ impl PostProcessor for FireworksPostProcessor {
                 request_policy,
                 cancellation,
             )
+    }
+
+    fn process_with_context_and_request_policy(
+        &self,
+        text: &str,
+        context: Option<&str>,
+        config: PostProcessConfig<'_>,
+        request_policy: RequestPolicy,
+        cancellation: &CancellationContext,
+    ) -> CancellationResult<String, TranscriptionError> {
+        SharedOpenAiCompatiblePostProcessor::fireworks().process_with_context_and_request_policy(
+            text,
+            context,
+            config,
+            request_policy,
+            cancellation,
+        )
     }
 }

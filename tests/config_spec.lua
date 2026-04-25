@@ -26,6 +26,28 @@ describe("dictate.config", function()
     assert.is_false(ok)
   end)
 
+  it("keeps context enrichment disabled by default", function()
+    Config.setup({})
+    assert.is_false(Config.get().context_enrichment.enabled)
+  end)
+
+  it("rejects invalid context enrichment options", function()
+    local invalid_options = {
+      { context_enrichment = { enabled = "yes" } },
+      { context_enrichment = { filetypes = "markdown" } },
+      { context_enrichment = { max_lines_before = -1 } },
+      { context_enrichment = { max_lines_after = 1.5 } },
+      { context_enrichment = { max_chars = 0 } },
+    }
+
+    for _, opts in ipairs(invalid_options) do
+      local ok = pcall(function()
+        Config.setup(opts)
+      end)
+      assert.is_false(ok)
+    end
+  end)
+
   it("rejects disabled buffers", function()
     vim.cmd("enew")
     vim.bo.filetype = "help"

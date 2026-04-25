@@ -1,5 +1,39 @@
 local fixture = vim.fn.fnamemodify("tests/fixtures/fake-dictate.sh", ":p")
 
+local function write_command_logging_script(argv_log)
+  local script = vim.fn.tempname()
+  vim.fn.writefile({
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    'if [[ "${1:-}" == "record" && "${2:-}" == "--help" ]]; then',
+    "  printf 'dictate record\\n  --json-events\\n  --save-last-audio\\n'",
+    "  exit 0",
+    "fi",
+    'if [[ "${1:-}" == "retry" && "${2:-}" == "--help" ]]; then',
+    "  printf 'dictate retry\\n  --json-events\\n'",
+    "  exit 0",
+    "fi",
+    'printf \'%s\\n\' "$*" > "' .. argv_log .. '"',
+    'if [[ "${1:-}" == "retry" ]]; then',
+    '  printf \'{"event":"session","mode":"retry","phase":"retrying","stop_after_ms":null}\\n\' >&2',
+    "  printf 'retry logged\\n'",
+    '  printf \'{"event":"result","status":"completed","char_count":12,"copied_to_clipboard":false}\\n\' >&2',
+    "  exit 0",
+    "fi",
+    'phase="recording"',
+    "trap 'phase=\"transcribing\"' USR1",
+    'printf \'{"event":"session","mode":"record","phase":"recording","stop_after_ms":null}\\n\' >&2',
+    'while [[ "$phase" == "recording" ]]; do',
+    "  sleep 0.05",
+    "done",
+    'printf \'{"event":"phase","phase":"transcribing","chunk_count":1,"model":null}\\n\' >&2',
+    "printf 'record logged\\n'",
+    'printf \'{"event":"result","status":"completed","char_count":13,"copied_to_clipboard":false}\\n\' >&2',
+  }, script)
+  vim.fn.setfperm(script, "rwx------")
+  return script
+end
+
 describe("dictate session", function()
   local Dictate
   local Session
@@ -266,6 +300,166 @@ describe("dictate session", function()
     assert.are.same({ "record --save-last-audio --format text --json-events --no-clipboard" }, argv)
   end)
 
+  it("does not send context args by default in markdown buffers", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "This is SNAKE_CASE.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("record --save-last-audio --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("adds post-processing context args for markdown record commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "This is SNAKE_CASE.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals(
+      "record --save-last-audio --post-process --post-process-context SNAKE_CASE --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
+  it("does not duplicate short post-processing flags for enriched record commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "-p" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "This is SNAKE_CASE.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals(
+      "record -p --save-last-audio --post-process-context SNAKE_CASE --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
+  it("preserves manual post-processing context for enriched record commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "--post-process-context", "STATIC" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "This is SNAKE_CASE.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.start())
+      assert.is_true(Dictate.stop())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals(
+      "record --post-process-context STATIC --save-last-audio --post-process --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
   it("cancels during transcription", function()
     vim.env.DICTATE_FIXTURE_SCENARIO = "cancel_during_transcribing"
     assert.is_true(Dictate.start())
@@ -514,6 +708,167 @@ describe("dictate session", function()
     assert.equals("retry args filtered ", line)
     assert.equals(
       "retry --post-process --transcription-model large-v3 --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
+  it("adds fresh current-buffer context args for retry commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Use HTTP2 here.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals(
+      "retry --post-process --post-process-context HTTP2 --format text --json-events --no-clipboard",
+      argv[1]
+    )
+  end)
+
+  it("does not duplicate short post-processing flags for enriched retry commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "-p" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Use HTTP2 here.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("retry -p --post-process-context HTTP2 --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("does not send retry context when post-processing is explicitly disabled", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "--no-post-process" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Use HTTP2 here.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals("retry --no-post-process --format text --json-events --no-clipboard", argv[1])
+  end)
+
+  it("preserves manual post-processing context for enriched retry commands", function()
+    local argv_log = vim.fn.tempname()
+    local script = write_command_logging_script(argv_log)
+
+    Dictate.setup({
+      cmd = { script },
+      args = { "--post-process-context=STATIC" },
+      disabled_filetypes = {},
+      disabled_buftypes = {},
+      context_enrichment = {
+        enabled = true,
+        filetypes = { "markdown" },
+        max_lines_before = 20,
+        max_lines_after = 5,
+        max_chars = 1000,
+      },
+    })
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "Use HTTP2 here.", "" })
+    vim.api.nvim_win_set_cursor(0, { 2, 0 })
+
+    local ok, err = pcall(function()
+      assert.is_true(Dictate.retry())
+      assert.is_true(vim.wait(3000, function()
+        return Dictate.get_state() == "idle"
+      end))
+    end)
+
+    local argv = vim.fn.readfile(argv_log)
+    os.remove(script)
+    os.remove(argv_log)
+
+    if not ok then
+      error(err, 0)
+    end
+
+    assert.equals(
+      "retry --post-process-context=STATIC --post-process --format text --json-events --no-clipboard",
       argv[1]
     )
   end)

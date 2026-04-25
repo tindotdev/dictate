@@ -77,6 +77,17 @@ just eval-matrix
 
 Both require `GROQ_API_KEY` environment variable.
 
+Context enrichment prompt behavior is evaluated with Promptfoo:
+
+```bash
+just eval-promptfoo-context
+```
+
+The Promptfoo evaluation requires:
+
+- `promptfoo` on `PATH`
+- `GROQ_API_KEY` for the configured Groq chat provider
+
 ## Adding Test Cases
 
 To add a new golden case, edit `golden_cases.json`:
