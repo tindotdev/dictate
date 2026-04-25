@@ -446,5 +446,9 @@ eval-prompt:
 eval-matrix:
     cargo test -p dictate-core matrix_eval_models_x_prompts -- --ignored --nocapture
 
+# Evaluate post-processing context prompt cases with promptfoo (requires GROQ_API_KEY)
+eval-promptfoo-context:
+    promptfoo eval --config promptfooconfig.yaml --no-cache
+
 # Run all checks (fmt + clippy + test)
 check: fmt-check clippy lint-nvim test
