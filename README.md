@@ -236,8 +236,9 @@ require("dictate").setup({
   context_enrichment = {
     enabled = true,
     filetypes = { "markdown" },
-    line_window = 50,
-    char_limit = 500,
+    max_lines_before = 50,
+    max_lines_after = 5,
+    max_chars = 500,
   },
 })
 ```
