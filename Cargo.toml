@@ -17,7 +17,7 @@ audioadapter = "3.0.0"
 audioadapter-buffers = "3.0.0"
 cpal = "0.17.1"
 ringbuf = "0.5.0"
-rubato = "2.0.0"
+rubato = "4.0.0"
 
 # Text processing
 unicode-normalization = "0.1.25"
