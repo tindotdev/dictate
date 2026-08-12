@@ -13,7 +13,7 @@ repository = "https://github.com/tindotdev/dictate"
 thiserror = "2.0.18"
 
 # Audio processing
-audioadapter = "3.0.0"
+audioadapter = "5.0.0"
 audioadapter-buffers = "3.0.0"
 cpal = "0.18.0"
 ringbuf = "0.5.0"
