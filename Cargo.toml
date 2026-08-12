@@ -39,7 +39,7 @@ clap_complete = "4.5.66"
 ctrlc = { version = "3.5.1", features = ["termination"] }
 owo-colors = "4.2.3"
 signal-hook = "0.4.3"
-shlex = "1.3.0"
+shlex = "2.0.0"
 unicode-width = "0.2.2"
 
 # Testing
